@@ -559,12 +559,11 @@ class MainActivity : AppCompatActivity() {
         if (isSatellite || DevicePrefs.isNightActive(this) || !DevicePrefs.isHillshadeEnabled(this)) return
         runCatching {
             if (style.getSource(HILLSHADE_SOURCE) == null) {
-                val ts = TileSet("2.2.0", "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png").apply {
-                    setEncoding("terrarium")
-                    setMinZoom(0f)
-                    setMaxZoom(14f)
+                val demFile = java.io.File(cacheDir, "terrarium_dem.json")
+                if (!demFile.exists()) {
+                    demFile.writeText("""{"tilejson":"2.2.0","tiles":["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],"minzoom":0,"maxzoom":14,"encoding":"terrarium"}""")
                 }
-                style.addSource(RasterDemSource(HILLSHADE_SOURCE, ts, 256))
+                style.addSource(RasterDemSource(HILLSHADE_SOURCE, demFile.toURI()))
             }
             if (style.getLayer(HILLSHADE_LAYER) == null) {
                 val hill = HillshadeLayer(HILLSHADE_LAYER, HILLSHADE_SOURCE).withProperties(
