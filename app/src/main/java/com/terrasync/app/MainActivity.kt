@@ -316,7 +316,7 @@ class MainActivity : AppCompatActivity() {
         mapView.getMapAsync { m ->
             map = m
             m.uiSettings.isCompassEnabled = true
-            m.uiSettings.isCompassFadeFacingNorth = true
+            m.uiSettings.setCompassFadeFacingNorth(true)
             m.uiSettings.setCompassMargins(0, statusBarInsetTop + dp(12), dp(14), 0)
             m.uiSettings.isLogoEnabled = false
             m.uiSettings.isAttributionEnabled = false
