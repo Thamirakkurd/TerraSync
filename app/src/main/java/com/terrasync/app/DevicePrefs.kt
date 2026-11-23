@@ -13,13 +13,16 @@ object DevicePrefs {
     private const val KEY_JOINED_LAYERS = "joined_layer_ids"
     private const val KEY_HIDDEN_LAYERS = "hidden_layer_ids"
     private const val KEY_BOOKMARKS = "bookmarked_pin_ids"
+    private const val KEY_VISIBLE_STATUSES = "visible_pin_statuses"
+    private const val KEY_SHOW_BOOKMARK_TITLES = "show_bookmark_titles"
     private const val KEY_DEFAULT_SAT = "default_satellite"
     private const val KEY_AUTO_FOLLOW = "auto_follow_gps"
     private const val KEY_KEEP_AWAKE = "keep_screen_awake"
     private const val KEY_VOICE_NAV = "voice_guidance"
     private const val KEY_HILLSHADE = "terrain_hillshade"
-    private const val KEY_CLUSTERING = "pin_clustering"
     private const val KEY_NIGHT_MODE = "night_map_mode" // 0=Off, 1=Auto, 2=On
+
+    val ALL_STATUSES = setOf("pending", "done", "issue")
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -79,6 +82,17 @@ object DevicePrefs {
         prefs(ctx).edit().putStringSet(KEY_HIDDEN_LAYERS, next).apply()
     }
 
+    fun getVisibleStatuses(ctx: Context): Set<String> {
+        return prefs(ctx).getStringSet(KEY_VISIBLE_STATUSES, ALL_STATUSES)?.toSet() ?: ALL_STATUSES
+    }
+
+    fun setVisibleStatuses(ctx: Context, statuses: Set<String>) {
+        prefs(ctx).edit().putStringSet(KEY_VISIBLE_STATUSES, statuses.toSet()).apply()
+    }
+
+    fun isShowBookmarkTitles(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_BOOKMARK_TITLES, false)
+    fun setShowBookmarkTitles(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_BOOKMARK_TITLES, v).apply()
+
     fun getBookmarks(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_BOOKMARKS, emptySet())?.toSet() ?: emptySet()
     }
@@ -112,9 +126,6 @@ object DevicePrefs {
 
     fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, true)
     fun setHillshadeEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_HILLSHADE, v).apply()
-
-    fun isClusteringEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CLUSTERING, true)
-    fun setClusteringEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_CLUSTERING, v).apply()
 
     fun getNightMode(ctx: Context): Int = prefs(ctx).getInt(KEY_NIGHT_MODE, 0)
     fun setNightMode(ctx: Context, mode: Int) = prefs(ctx).edit().putInt(KEY_NIGHT_MODE, mode.coerceIn(0, 2)).apply()

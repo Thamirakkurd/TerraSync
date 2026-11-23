@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Open Pin in TerraSync</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; text-align: center; }
+    .card { background: #1e293b; border-radius: 18px; padding: 24px; max-width: 360px; width: 100%; }
+    h1 { font-size: 19px; margin: 0 0 8px; }
+    p { font-size: 14px; color: #94a3b8; margin: 0 0 18px; word-break: break-word; }
+    a { display: inline-block; background: #2563eb; color: #fff; text-decoration: none; font-weight: 600; padding: 12px 20px; border-radius: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="title">Shared TerraSync Pin</h1>
+    <p id="coords"></p>
+    <a id="openBtn" href="#">Open in TerraSync</a>
+  </div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const lat = q.get("lat") || "";
+    const lng = q.get("lng") || "";
+    const name = q.get("name") || "Shared Pin";
+    const deep = "terrasync://pin" + location.search;
+    document.getElementById("title").textContent = name;
+    document.getElementById("coords").textContent = lat && lng ? `${lat}, ${lng}` : "";
+    document.getElementById("openBtn").href = deep;
+    if (lat && lng) { setTimeout(() => { location.href = deep; }, 120); }
+  </script>
+</body>
+</html>

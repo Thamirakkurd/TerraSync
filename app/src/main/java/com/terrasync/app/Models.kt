@@ -1,11 +1,5 @@
 package com.terrasync.app
 
-enum class StatusFilter(val label: String) {
-    ALL("All Pins"),
-    PENDING("Pending Only"),
-    ISSUE("Issues Only")
-}
-
 data class LayerItem(
     val id: String = "",
     val name: String = "",
