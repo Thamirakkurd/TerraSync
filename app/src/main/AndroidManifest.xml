@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
 
     <application
         android:allowBackup="true"
@@ -12,6 +13,13 @@
         android:label="TerraSync"
         android:supportsRtl="true"
         android:theme="@style/Theme.TerraSync">
+
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -23,6 +31,17 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <service
+            android:name=".TerraSyncCarAppService"
+            android:exported="true"
+            android:icon="@drawable/ic_app_icon"
+            android:label="TerraSync">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.POI" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -32,7 +51,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Join shared layer links -->
+            <!-- Join shared folder links -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

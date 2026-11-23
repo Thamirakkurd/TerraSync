@@ -10,47 +10,95 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Top Left Floating Icon Cluster -->
+    <!-- Top Left Controls + Optional Route-From Origin Pill -->
     <LinearLayout
-        android:id="@+id/topBar"
-        android:layout_width="wrap_content"
+        android:id="@+id/topCluster"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp"
         android:clipChildren="false"
         android:clipToPadding="false"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="2dp">
+        android:orientation="vertical">
 
-        <ImageButton
-            android:id="@+id/btnStyleToggle"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:contentDescription="Map Style"
-            android:padding="10dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_layers" />
+        <LinearLayout
+            android:id="@+id/topBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="2dp">
 
-        <ImageButton
-            android:id="@+id/btnStatusFilter"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:layout_marginStart="10dp"
-            android:contentDescription="Filter Pins"
-            android:padding="10dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_filter" />
+            <ImageButton
+                android:id="@+id/btnStyleToggle"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:contentDescription="Map Style"
+                android:padding="10dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_layers" />
 
-        <ImageButton
-            android:id="@+id/btnSyncStatus"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="10dp"
-            android:contentDescription="Sync Status"
-            android:padding="9dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_cloud_sync" />
+            <ImageButton
+                android:id="@+id/btnStatusFilter"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_marginStart="10dp"
+                android:contentDescription="Filter Pins"
+                android:padding="10dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_filter" />
+
+            <ImageButton
+                android:id="@+id/btnSyncStatus"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="10dp"
+                android:contentDescription="Sync Status"
+                android:padding="9dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_cloud_sync" />
+        </LinearLayout>
+
+        <!-- Custom Route-From Indicator Banner -->
+        <LinearLayout
+            android:id="@+id/routeFromBanner"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="6dp"
+            android:paddingBottom="6dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvRouteFromText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:maxWidth="240dp"
+                android:text="From: Custom Point"
+                android:textColor="#FFFFFF"
+                android:textSize="12.5sp"
+                android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/btnClearRouteFrom"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginStart="6dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Clear Route From"
+                android:padding="5dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_close" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Active Turn-by-Turn Navigation Banner -->
@@ -123,7 +171,7 @@
             android:src="@drawable/ic_close" />
     </LinearLayout>
 
-    <!-- Bottom Controls: Clean Horizontal Row (Scale Bar left + Map Buttons right) over 4 Floating Bottom Squares -->
+    <!-- Bottom Controls: Speedometer + Scale Bar left, Ruler/Zoom/Import/GPS right, 4 Tabs or Ruler Card below -->
     <LinearLayout
         android:id="@+id/bottomDock"
         android:layout_width="match_parent"
@@ -145,34 +193,73 @@
             android:gravity="bottom"
             android:orientation="horizontal">
 
-            <!-- Dynamic Distance Scale Bar (Bottom-Left) -->
+            <!-- Left Column: Live Driving Speed Indicator + Scale Bar -->
             <LinearLayout
-                android:id="@+id/scaleBarContainer"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:layout_marginBottom="4dp"
+                android:clipChildren="false"
+                android:clipToPadding="false"
                 android:gravity="start|bottom"
                 android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/tvScaleLabel"
+                <LinearLayout
+                    android:id="@+id/speedBadge"
+                    android:layout_width="58dp"
+                    android:layout_height="58dp"
+                    android:layout_marginBottom="12dp"
+                    android:elevation="6dp"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/tvSpeedValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
+                        android:text="0"
+                        android:textColor="#0F172A"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvSpeedUnit"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:includeFontPadding="false"
+                        android:text="km/h"
+                        android:textColor="#64748B"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/scaleBarContainer"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="5 km"
-                    android:textColor="#1E293B"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
+                    android:orientation="vertical">
 
-                <View
-                    android:id="@+id/scaleBarLine"
-                    android:layout_width="80dp"
-                    android:layout_height="3dp"
-                    android:layout_marginTop="2dp"
-                    android:background="#1E293B" />
+                    <TextView
+                        android:id="@+id/tvScaleLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="5 km"
+                        android:textColor="#1E293B"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <View
+                        android:id="@+id/scaleBarLine"
+                        android:layout_width="80dp"
+                        android:layout_height="3dp"
+                        android:layout_marginTop="2dp"
+                        android:background="#1E293B" />
+                </LinearLayout>
             </LinearLayout>
 
-            <!-- Right-Edge Floating Controls (+, -, Import, My Location) -->
+            <!-- Right-Edge Floating Controls (Ruler, +, -, Import, My Location) -->
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -180,6 +267,16 @@
                 android:clipToPadding="false"
                 android:gravity="center_horizontal"
                 android:orientation="vertical">
+
+                <ImageButton
+                    android:id="@+id/btnRuler"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:layout_marginBottom="10dp"
+                    android:contentDescription="Measure Distance"
+                    android:padding="10dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_ruler" />
 
                 <ImageButton
                     android:id="@+id/btnZoomIn"
@@ -220,6 +317,82 @@
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_my_location" />
             </LinearLayout>
+        </LinearLayout>
+
+        <!-- Ruler Measurement Card (Visible Only in Ruler Mode) -->
+        <LinearLayout
+            android:id="@+id/rulerCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:elevation="10dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="12dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="12dp"
+            android:visibility="gone">
+
+            <ImageButton
+                android:id="@+id/btnRulerUndo"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Undo Point"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_undo" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvRulerDistance"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0 m"
+                    android:textColor="#0F172A"
+                    android:textSize="21sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvRulerSubtitle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Tap map to add measurement points"
+                    android:textColor="#64748B"
+                    android:textSize="12.5sp" />
+
+                <TextView
+                    android:id="@+id/btnRulerReset"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:paddingStart="10dp"
+                    android:paddingTop="4dp"
+                    android:paddingEnd="10dp"
+                    android:paddingBottom="4dp"
+                    android:text="Reset all pins"
+                    android:textColor="#2563EB"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/btnRulerClose"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Close Ruler"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_close" />
         </LinearLayout>
 
         <!-- 4 Separate Floating Rounded-Square Icons -->

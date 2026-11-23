@@ -15,11 +15,15 @@ object DevicePrefs {
     private const val KEY_BOOKMARKS = "bookmarked_pin_ids"
     private const val KEY_VISIBLE_STATUSES = "visible_pin_statuses"
     private const val KEY_SHOW_BOOKMARK_TITLES = "show_bookmark_titles"
+    private const val KEY_MAP_STYLE_MODE = "map_style_mode"
     private const val KEY_DEFAULT_SAT = "default_satellite"
     private const val KEY_AUTO_FOLLOW = "auto_follow_gps"
     private const val KEY_KEEP_AWAKE = "keep_screen_awake"
     private const val KEY_VOICE_NAV = "voice_guidance"
     private const val KEY_HILLSHADE = "terrain_hillshade"
+    private const val KEY_3D_BUILDINGS = "buildings_3d_enabled"
+    private const val KEY_TRAVEL_MODE = "travel_mode"
+    private const val KEY_SPEED_INDICATOR = "speed_indicator_enabled"
     private const val KEY_NIGHT_MODE = "night_map_mode" // 0=Off, 1=Auto, 2=On
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
@@ -46,7 +50,7 @@ object DevicePrefs {
         val id = getDeviceId(ctx)
         val mfg = Build.MANUFACTURER.trim().replaceFirstChar { it.uppercase() }
         val mdl = Build.MODEL.trim()
-        val deviceModel = if (mdl.startsWith(mfg, ignoreCase = true)) mdl else "$mfg$mdl".trim()
+        val deviceModel = if (mdl.startsWith(mfg, ignoreCase = true)) mdl else "$mfg $mdl".trim()
         val custom = getCustomName(ctx)
         return if (custom.isNotBlank()) "$custom ($deviceModel • #$id)" else "$deviceModel • #$id"
     }
@@ -93,6 +97,27 @@ object DevicePrefs {
     fun isShowBookmarkTitles(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_BOOKMARK_TITLES, false)
     fun setShowBookmarkTitles(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_BOOKMARK_TITLES, v).apply()
 
+    fun getMapStyleMode(ctx: Context): MapStyleMode {
+        val p = prefs(ctx)
+        if (!p.contains(KEY_MAP_STYLE_MODE)) {
+            return if (p.getBoolean(KEY_DEFAULT_SAT, false)) MapStyleMode.SATELLITE else MapStyleMode.OSM
+        }
+        return MapStyleMode.fromId(p.getInt(KEY_MAP_STYLE_MODE, MapStyleMode.OSM.id))
+    }
+
+    fun setMapStyleMode(ctx: Context, mode: MapStyleMode) {
+        prefs(ctx).edit().putInt(KEY_MAP_STYLE_MODE, mode.id).apply()
+    }
+
+    fun is3dBuildingsEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_3D_BUILDINGS, false)
+    fun set3dBuildingsEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_3D_BUILDINGS, v).apply()
+
+    fun getTravelMode(ctx: Context): TravelMode = TravelMode.fromId(prefs(ctx).getString(KEY_TRAVEL_MODE, TravelMode.CAR.id))
+    fun setTravelMode(ctx: Context, mode: TravelMode) = prefs(ctx).edit().putString(KEY_TRAVEL_MODE, mode.id).apply()
+
+    fun isSpeedIndicatorEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SPEED_INDICATOR, true)
+    fun setSpeedIndicatorEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_SPEED_INDICATOR, v).apply()
+
     fun getBookmarks(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_BOOKMARKS, emptySet())?.toSet() ?: emptySet()
     }
@@ -111,9 +136,6 @@ object DevicePrefs {
         prefs(ctx).edit().putStringSet(KEY_BOOKMARKS, next).apply()
         return added
     }
-
-    fun isDefaultSatellite(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_DEFAULT_SAT, false)
-    fun setDefaultSatellite(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_DEFAULT_SAT, v).apply()
 
     fun isAutoFollow(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_AUTO_FOLLOW, true)
     fun setAutoFollow(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_AUTO_FOLLOW, v).apply()

@@ -1,5 +1,32 @@
 package com.terrasync.app
 
+enum class MapStyleMode(val id: Int, val label: String) {
+    OSM(0, "OpenStreetMap"),
+    VECTOR(1, "Vector Street"),
+    SATELLITE(2, "Satellite Hybrid"),
+    NIGHT(3, "Night Dark");
+
+    companion object {
+        fun fromId(id: Int): MapStyleMode = entries.firstOrNull { it.id == id } ?: OSM
+    }
+}
+
+enum class TravelMode(
+    val id: String,
+    val label: String,
+    val icon: String,
+    val osrmPrefix: String,
+    val routeColorHex: String
+) {
+    CAR("car", "Car", "🚗", "routed-car", "#2563EB"),
+    BICYCLE("bike", "Bicycle", "🚲", "routed-bike", "#0F766E"),
+    WALKING("walk", "Walk", "🚶", "routed-foot", "#7C3AED");
+
+    companion object {
+        fun fromId(id: String?): TravelMode = entries.firstOrNull { it.id == id } ?: CAR
+    }
+}
+
 data class LayerItem(
     val id: String = "",
     val name: String = "",
@@ -45,7 +72,8 @@ data class NavRoute(
     val geometry: List<Pair<Double, Double>>,
     val totalDistanceMeters: Double,
     val totalDurationSeconds: Double,
-    val steps: List<NavStep>
+    val steps: List<NavStep>,
+    val mode: TravelMode = TravelMode.CAR
 )
 
 data class PlaceResult(
@@ -78,6 +106,6 @@ fun formatDistanceShort(meters: Double): String {
     return when {
         meters < 1000.0 -> "${meters.toInt()} m"
         meters < 10000.0 -> "${"%.1f".format(meters / 1000.0)} km"
-        else -> "${(meters / 1000.0).toInt()} km"
+        else -> "${"%.1f".format(meters / 1000.0)} km"
     }
 }
