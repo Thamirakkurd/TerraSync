@@ -16,6 +16,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.EditText
@@ -68,7 +69,7 @@ class MainActivity : AppCompatActivity() {
           "sources": {
             "street": {
               "type": "raster",
-              "tiles": ["https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"],
+              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"],
               "tileSize": 256,
               "maxzoom": 19
             }
@@ -89,16 +90,23 @@ class MainActivity : AppCompatActivity() {
               "tileSize": 256,
               "maxzoom": 19
             },
-            "labels": {
+            "roads": {
               "type": "raster",
-              "tiles": ["https://a.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}@2x.png"],
+              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"],
+              "tileSize": 256,
+              "maxzoom": 19
+            },
+            "places": {
+              "type": "raster",
+              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
               "tileSize": 256,
               "maxzoom": 19
             }
           },
           "layers": [
             { "id": "sat-layer", "type": "raster", "source": "sat", "minzoom": 0, "maxzoom": 22 },
-            { "id": "labels-layer", "type": "raster", "source": "labels", "minzoom": 0, "maxzoom": 22 }
+            { "id": "roads-layer", "type": "raster", "source": "roads", "minzoom": 0, "maxzoom": 22 },
+            { "id": "places-layer", "type": "raster", "source": "places", "minzoom": 0, "maxzoom": 22 }
           ]
         }
         """
@@ -344,7 +352,7 @@ class MainActivity : AppCompatActivity() {
         val layerName = layers.find { it.id == pin.layerId }?.name ?: "General"
         root.addView(TextView(this).apply {
             text = pin.name
-            textSize = 19f
+            textSize = 18f
             setTypeface(null, android.graphics.Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
@@ -373,16 +381,21 @@ class MainActivity : AppCompatActivity() {
             Triple("pending", "Pending", "#F59E0B"),
             Triple("done", "Done", "#22C55E"),
             Triple("issue", "Issue", "#EF4444")
-        ).forEach { (key, title, hex) ->
+        ).forEachIndexed { idx, (key, title, hex) ->
             val active = pin.status.equals(key, ignoreCase = true)
             val btn = MaterialButton(this).apply {
                 text = if (active) "✓ $title" else title
+                textSize = 12f
+                maxLines = 1
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(4), 0, dp(4), 0)
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor(hex))
                 alpha = if (active) 1f else 0.55f
                 cornerRadius = dp(12)
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(6)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                    if (idx < 2) marginEnd = dp(6)
                 }
                 setOnClickListener {
                     repo.updatePinStatus(pin.id, key)
@@ -395,14 +408,15 @@ class MainActivity : AppCompatActivity() {
 
         val navRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(14), 0, 0)
+            setPadding(0, dp(12), 0, 0)
         }
         navRow.addView(MaterialButton(this).apply {
-            text = "Navigate (Maps / Organic)"
+            text = "Navigate"
+            maxLines = 1
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#2563EB"))
             cornerRadius = dp(12)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.5f).apply {
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1.4f).apply {
                 marginEnd = dp(8)
             }
             setOnClickListener {
@@ -414,10 +428,11 @@ class MainActivity : AppCompatActivity() {
         })
         navRow.addView(MaterialButton(this).apply {
             text = "Copy"
+            maxLines = 1
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#334155"))
             cornerRadius = dp(12)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.7f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 0.8f)
             setOnClickListener {
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("coords", "${pin.lat}, ${pin.lng}"))
@@ -528,14 +543,19 @@ class MainActivity : AppCompatActivity() {
                     showPinSheet(pin)
                 }
             }
-            row.addView(TextView(this).apply {
-                text = "●  "
-                textSize = 16f
-                setTextColor(Color.parseColor(statusColorHex(pin.status)))
+            row.addView(View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor(statusColorHex(pin.status)))
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(11), dp(11)).apply {
+                    marginEnd = dp(10)
+                }
             })
             row.addView(TextView(this).apply {
                 text = "${pin.name}  (${statusLabel(pin.status)})"
                 textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
             root.addView(row)
         }

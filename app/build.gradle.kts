@@ -12,13 +12,24 @@ android {
         applicationId = "com.terrasync.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "2.1.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("terrasync-release.p12")
+            storeType = "PKCS12"
+            storePassword = "TerraSync2026"
+            keyAlias = "terrasync"
+            keyPassword = "TerraSync2026"
+        }
     }
 
     buildTypes {
-        release {
+        getByName("release") {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
