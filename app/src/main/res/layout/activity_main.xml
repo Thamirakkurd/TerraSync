@@ -10,92 +10,196 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Top Floating Bar -->
-    <LinearLayout
+    <!-- Top Icon-Only Overlay Row -->
+    <FrameLayout
         android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:layout_marginStart="12dp"
-        android:layout_marginEnd="12dp"
-        android:background="@android:color/transparent"
+        android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp">
+
+        <ImageButton
+            android:id="@+id/btnSyncStatus"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_gravity="start|center_vertical"
+            android:contentDescription="Sync Status"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_cloud_sync" />
+
+        <ImageButton
+            android:id="@+id/btnStyleToggle"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="end|center_vertical"
+            android:contentDescription="Switch Map Style"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_satellite" />
+    </FrameLayout>
+
+    <!-- Active Turn-by-Turn Navigation Card (Only shown while navigating) -->
+    <LinearLayout
+        android:id="@+id/navBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp"
         android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:visibility="gone">
 
         <TextView
-            android:id="@+id/statusBadge"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:paddingStart="14dp"
-            android:paddingTop="10dp"
-            android:paddingEnd="14dp"
-            android:paddingBottom="10dp"
-            android:text="● CONNECTING..."
-            android:textColor="#FFFFFF"
-            android:textSize="13sp"
+            android:id="@+id/tvNavArrow"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:gravity="center"
+            android:text="↑"
+            android:textColor="#38BDF8"
+            android:textSize="28sp"
             android:textStyle="bold" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnStyleToggle"
-            style="@style/Widget.Material3.Button.ElevatedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="Satellite"
-            android:textSize="12sp"
-            app:backgroundTint="#1E293B"
-            app:cornerRadius="20dp"
-            app:strokeColor="#475569"
-            app:strokeWidth="1dp"
-            android:textColor="#FFFFFF" />
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tvNavInstruction"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvNavMeta"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textColor="#94A3B8"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btnNavVoice"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Toggle Voice"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_volume_on" />
+
+        <ImageButton
+            android:id="@+id/btnNavStop"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Stop Navigation"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_close" />
     </LinearLayout>
 
-    <!-- Bottom Right Action Stack -->
+    <!-- Bottom Controls: Floating Right Map Action Icons + 4-Icon Bottom Bar -->
     <LinearLayout
-        android:id="@+id/fabStack"
-        android:layout_width="wrap_content"
+        android:id="@+id/bottomDock"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="14dp"
         android:layout_marginEnd="14dp"
-        android:gravity="end"
         android:orientation="vertical">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnLocate"
-            style="@style/Widget.Material3.Button.ElevatedButton"
+        <LinearLayout
             android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginBottom="8dp"
-            android:text="My Location"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp"
-            app:backgroundTint="#1E293B"
-            app:cornerRadius="22dp" />
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:layout_marginBottom="12dp"
+            android:orientation="vertical">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnImport"
-            style="@style/Widget.Material3.Button.ElevatedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:layout_marginBottom="8dp"
-            android:text="+ Import KML/KMZ"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp"
-            app:backgroundTint="#0F766E"
-            app:cornerRadius="22dp" />
+            <ImageButton
+                android:id="@+id/btnImport"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginBottom="10dp"
+                android:contentDescription="Import KML or KMZ"
+                android:padding="12dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_import_file" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnLayers"
-            style="@style/Widget.Material3.Button.ElevatedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="46dp"
-            android:text="Layers &amp; Pins"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp"
-            app:backgroundTint="#2563EB"
-            app:cornerRadius="23dp" />
+            <ImageButton
+                android:id="@+id/btnLocate"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:contentDescription="My Location"
+                android:padding="12dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_my_location" />
+        </LinearLayout>
+
+        <!-- 4-Icon Navigation Bar (No Text) -->
+        <LinearLayout
+            android:id="@+id/bottomIconBar"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp">
+
+            <ImageButton
+                android:id="@+id/btnTabSearch"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="Search"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_search" />
+
+            <ImageButton
+                android:id="@+id/btnTabLayers"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="Layers"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_layers" />
+
+            <ImageButton
+                android:id="@+id/btnTabBookmarks"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="Bookmarks"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_bookmark" />
+
+            <ImageButton
+                android:id="@+id/btnTabSettings"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="Settings"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_settings" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>

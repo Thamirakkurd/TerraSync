@@ -1,76 +1,120 @@
 package com.terrasync.app
 
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.PersistentCacheSettings
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 class SyncRepo {
-    private val db = FirebaseFirestore.getInstance()
+    private val db: FirebaseFirestore = FirebaseFirestore.getInstance().apply {
+        runCatching {
+            firestoreSettings = FirebaseFirestoreSettings.Builder()
+                .setLocalCacheSettings(
+                    PersistentCacheSettings.newBuilder()
+                        .setSizeBytes(100L * 1024L * 1024L)
+                        .build()
+                )
+                .build()
+        }
+    }
+
     private val regs = mutableListOf<ListenerRegistration>()
-
-    private var layers: List<LayerItem> = emptyList()
-    private var pins: List<PinItem> = emptyList()
-    private var tracks: List<TrackItem> = emptyList()
+    private val layerMap = mutableMapOf<String, LayerItem>()
+    private val pinsByLayer = mutableMapOf<String, List<PinItem>>()
+    private val tracksByLayer = mutableMapOf<String, List<TrackItem>>()
     private var connected: Boolean = false
+    private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
 
-    fun startListening(
+    fun syncJoinedLayers(
+        joinedLayerIds: Set<String>,
         onUpdate: (List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit
     ) {
+        listenerCallback = onUpdate
         stopListening()
+        layerMap.clear()
+        pinsByLayer.clear()
+        tracksByLayer.clear()
 
-        regs += db.collection("layers").addSnapshotListener { snap, err ->
-            if (err != null) {
-                connected = false
-                onUpdate(layers, pins, tracks, false)
-                return@addSnapshotListener
+        if (joinedLayerIds.isEmpty()) {
+            connected = true
+            emit()
+            return
+        }
+
+        joinedLayerIds.forEach { layerId ->
+            regs += db.collection("layers").document(layerId).addSnapshotListener { doc, err ->
+                if (err != null) {
+                    connected = false
+                    emit()
+                    return@addSnapshotListener
+                }
+                connected = true
+                if (doc != null && doc.exists()) {
+                    layerMap[layerId] = LayerItem(
+                        id = doc.id,
+                        name = doc.getString("name") ?: "Layer",
+                        shareCode = doc.getString("shareCode") ?: "",
+                        createdBy = doc.getString("createdBy") ?: "",
+                        visible = doc.getBoolean("visible") ?: true,
+                        updatedAt = doc.getLong("updatedAt") ?: 0L
+                    )
+                } else {
+                    layerMap.remove(layerId)
+                }
+                emit()
             }
-            connected = true
-            layers = snap?.documents?.map { d ->
-                LayerItem(
-                    id = d.id,
-                    name = d.getString("name") ?: "Layer",
-                    visible = d.getBoolean("visible") ?: true,
-                    updatedAt = d.getLong("updatedAt") ?: 0L
-                )
-            }?.sortedByDescending { it.updatedAt } ?: emptyList()
-            onUpdate(layers, pins, tracks, connected)
-        }
 
-        regs += db.collection("pins").addSnapshotListener { snap, err ->
-            if (err != null) return@addSnapshotListener
-            connected = true
-            pins = snap?.documents?.mapNotNull { d ->
-                val lat = d.getDouble("lat") ?: return@mapNotNull null
-                val lng = d.getDouble("lng") ?: return@mapNotNull null
-                PinItem(
-                    id = d.id,
-                    layerId = d.getString("layerId") ?: "manual",
-                    name = d.getString("name") ?: "Pin",
-                    description = d.getString("description") ?: "",
-                    lat = lat,
-                    lng = lng,
-                    status = d.getString("status") ?: "pending",
-                    updatedAt = d.getLong("updatedAt") ?: 0L
-                )
-            } ?: emptyList()
-            onUpdate(layers, pins, tracks, connected)
-        }
+            regs += db.collection("pins").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
+                if (err != null) return@addSnapshotListener
+                connected = true
+                pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
+                    val lat = d.getDouble("lat") ?: return@mapNotNull null
+                    val lng = d.getDouble("lng") ?: return@mapNotNull null
+                    PinItem(
+                        id = d.id,
+                        layerId = d.getString("layerId") ?: layerId,
+                        name = d.getString("name") ?: "Pin",
+                        description = d.getString("description") ?: "",
+                        lat = lat,
+                        lng = lng,
+                        status = d.getString("status") ?: "pending",
+                        updatedAt = d.getLong("updatedAt") ?: 0L,
+                        isEdited = d.getBoolean("isEdited") ?: false,
+                        editedBy = d.getString("editedBy") ?: "",
+                        editedAt = d.getLong("editedAt") ?: 0L,
+                        editHistory = d.getString("editHistory") ?: ""
+                    )
+                } ?: emptyList()
+                emit()
+            }
 
-        regs += db.collection("tracks").addSnapshotListener { snap, err ->
-            if (err != null) return@addSnapshotListener
-            connected = true
-            tracks = snap?.documents?.mapNotNull { d ->
-                val coords = d.getString("coords") ?: return@mapNotNull null
-                TrackItem(
-                    id = d.id,
-                    layerId = d.getString("layerId") ?: "manual",
-                    name = d.getString("name") ?: "Track",
-                    coords = coords,
-                    updatedAt = d.getLong("updatedAt") ?: 0L
-                )
-            } ?: emptyList()
-            onUpdate(layers, pins, tracks, connected)
+            regs += db.collection("tracks").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
+                if (err != null) return@addSnapshotListener
+                connected = true
+                tracksByLayer[layerId] = snap?.documents?.mapNotNull { d ->
+                    val coords = d.getString("coords") ?: return@mapNotNull null
+                    TrackItem(
+                        id = d.id,
+                        layerId = d.getString("layerId") ?: layerId,
+                        name = d.getString("name") ?: "Track",
+                        coords = coords,
+                        updatedAt = d.getLong("updatedAt") ?: 0L
+                    )
+                } ?: emptyList()
+                emit()
+            }
         }
+    }
+
+    private fun emit() {
+        val sortedLayers = layerMap.values.sortedByDescending { it.updatedAt }
+        val allPins = pinsByLayer.values.flatten()
+        val allTracks = tracksByLayer.values.flatten()
+        listenerCallback?.invoke(sortedLayers, allPins, allTracks, connected)
     }
 
     fun stopListening() {
@@ -78,95 +122,165 @@ class SyncRepo {
         regs.clear()
     }
 
+    fun generateShareCode(): String {
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        return (1..6).map { chars.random() }.joinToString("")
+    }
+
     fun importLayer(
         layerId: String,
         layerName: String,
+        createdBy: String,
         parsed: ParsedKml,
-        onDone: (Boolean, String) -> Unit
+        onDone: (Boolean, String, String) -> Unit
     ) {
         val now = System.currentTimeMillis()
-        val ops = mutableListOf<() -> Pair<com.google.firebase.firestore.DocumentReference, Map<String, Any>>>()
+        val shareCode = generateShareCode()
+        val ops = mutableListOf<Pair<com.google.firebase.firestore.DocumentReference, Map<String, Any>>>()
 
-        ops += {
-            db.collection("layers").document(layerId) to mapOf(
-                "id" to layerId,
-                "name" to layerName,
-                "visible" to true,
-                "updatedAt" to now
+        ops += db.collection("layers").document(layerId) to mapOf(
+            "id" to layerId,
+            "name" to layerName,
+            "shareCode" to shareCode,
+            "createdBy" to createdBy,
+            "visible" to true,
+            "updatedAt" to now
+        )
+
+        parsed.pins.forEach { p ->
+            ops += db.collection("pins").document(p.id) to mapOf(
+                "id" to p.id,
+                "layerId" to layerId,
+                "name" to p.name,
+                "description" to p.description,
+                "lat" to p.lat,
+                "lng" to p.lng,
+                "status" to p.status,
+                "updatedAt" to now,
+                "isEdited" to false,
+                "editedBy" to "",
+                "editedAt" to 0L,
+                "editHistory" to ""
             )
         }
-        parsed.pins.forEach { p ->
-            ops += {
-                db.collection("pins").document(p.id) to mapOf(
-                    "id" to p.id,
-                    "layerId" to layerId,
-                    "name" to p.name,
-                    "description" to p.description,
-                    "lat" to p.lat,
-                    "lng" to p.lng,
-                    "status" to p.status,
-                    "updatedAt" to now
-                )
-            }
-        }
+
         parsed.tracks.forEach { t ->
-            ops += {
-                db.collection("tracks").document(t.id) to mapOf(
-                    "id" to t.id,
-                    "layerId" to layerId,
-                    "name" to t.name,
-                    "coords" to t.coords,
-                    "updatedAt" to now
-                )
-            }
+            ops += db.collection("tracks").document(t.id) to mapOf(
+                "id" to t.id,
+                "layerId" to layerId,
+                "name" to t.name,
+                "coords" to t.coords,
+                "updatedAt" to now
+            )
         }
 
         val chunks = ops.chunked(400)
         fun commitChunk(idx: Int) {
             if (idx >= chunks.size) {
-                onDone(true, "Synced ${parsed.pins.size} pins, ${parsed.tracks.size} tracks")
+                onDone(true, "Imported ${parsed.pins.size} pins (Code: $shareCode)", shareCode)
                 return
             }
             val batch = db.batch()
-            chunks[idx].forEach { item ->
-                val (ref, data) = item()
-                batch.set(ref, data)
-            }
+            chunks[idx].forEach { (ref, data) -> batch.set(ref, data) }
             batch.commit()
                 .addOnSuccessListener { commitChunk(idx + 1) }
-                .addOnFailureListener { e -> onDone(false, e.message ?: "Sync failed") }
+                .addOnFailureListener { e -> onDone(false, e.message ?: "Sync failed", shareCode) }
         }
         commitChunk(0)
     }
 
-    fun updatePinStatus(pinId: String, status: String) {
-        db.collection("pins").document(pinId).update(
-            mapOf("status" to status, "updatedAt" to System.currentTimeMillis())
+    fun joinLayerByCode(rawCode: String, onDone: (Boolean, String, String?) -> Unit) {
+        val code = rawCode.trim().uppercase().replace("-", "")
+        if (code.length < 4) {
+            onDone(false, "Enter a valid share code", null)
+            return
+        }
+        db.collection("layers")
+            .whereEqualTo("shareCode", code)
+            .limit(1)
+            .get()
+            .addOnSuccessListener { snap ->
+                val doc = snap.documents.firstOrNull()
+                if (doc == null) {
+                    onDone(false, "No layer found for code $code", null)
+                } else {
+                    val name = doc.getString("name") ?: "Shared Layer"
+                    onDone(true, "Joined \"$name\"", doc.id)
+                }
+            }
+            .addOnFailureListener { e ->
+                onDone(false, e.message ?: "Lookup failed", null)
+            }
+    }
+
+    fun updatePinStatus(pin: PinItem, status: String, deviceStamp: String) {
+        val now = System.currentTimeMillis()
+        val line = "${formatTime(now)} • $deviceStamp → ${statusLabel(status)}"
+        val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
+        db.collection("pins").document(pin.id).update(
+            mapOf(
+                "status" to status,
+                "updatedAt" to now,
+                "isEdited" to true,
+                "editedBy" to deviceStamp,
+                "editedAt" to now,
+                "editHistory" to history
+            )
         )
     }
 
-    fun addManualPin(name: String, lat: Double, lng: Double) {
+    fun updatePinText(pin: PinItem, newName: String, newDesc: String, deviceStamp: String) {
         val now = System.currentTimeMillis()
+        val line = "${formatTime(now)} • $deviceStamp edited text"
+        val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
+        db.collection("pins").document(pin.id).update(
+            mapOf(
+                "name" to newName.ifBlank { pin.name },
+                "description" to newDesc,
+                "updatedAt" to now,
+                "isEdited" to true,
+                "editedBy" to deviceStamp,
+                "editedAt" to now,
+                "editHistory" to history
+            )
+        )
+    }
+
+    fun addManualPin(name: String, description: String, lat: Double, lng: Double, deviceStamp: String): String {
+        val now = System.currentTimeMillis()
+        val layerId = "manual_${deviceStamp.substringAfterLast('#', "LOCAL")}"
         val id = UUID.randomUUID().toString()
         val batch = db.batch()
         batch.set(
-            db.collection("layers").document("manual"),
-            mapOf("id" to "manual", "name" to "Manual Pins", "visible" to true, "updatedAt" to now)
+            db.collection("layers").document(layerId),
+            mapOf(
+                "id" to layerId,
+                "name" to "My Field Pins",
+                "shareCode" to layerId.takeLast(6).uppercase(),
+                "createdBy" to deviceStamp,
+                "visible" to true,
+                "updatedAt" to now
+            )
         )
         batch.set(
             db.collection("pins").document(id),
             mapOf(
                 "id" to id,
-                "layerId" to "manual",
+                "layerId" to layerId,
                 "name" to name.ifBlank { "New Pin" },
-                "description" to "",
+                "description" to description,
                 "lat" to lat,
                 "lng" to lng,
                 "status" to "pending",
-                "updatedAt" to now
+                "updatedAt" to now,
+                "isEdited" to false,
+                "editedBy" to deviceStamp,
+                "editedAt" to now,
+                "editHistory" to ""
             )
         )
         batch.commit()
+        return layerId
     }
 
     fun deletePin(pinId: String) {
@@ -186,5 +300,9 @@ class SyncRepo {
             chunk.forEach { batch.delete(it) }
             batch.commit()
         }
+    }
+
+    private fun formatTime(ts: Long): String {
+        return SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(ts))
     }
 }
