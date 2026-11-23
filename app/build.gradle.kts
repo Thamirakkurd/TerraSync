@@ -12,8 +12,8 @@ android {
         applicationId = "com.terrasync.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "2.2.1"
+        versionCode = 6
+        versionName = "2.3.0"
     }
 
     signingConfigs {
@@ -45,6 +45,7 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.maplibre.gl:android-sdk:11.8.0")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))

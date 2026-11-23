@@ -1,5 +1,11 @@
 package com.terrasync.app
 
+enum class StatusFilter(val label: String) {
+    ALL("All Pins"),
+    PENDING("Pending Only"),
+    ISSUE("Issues Only")
+}
+
 data class LayerItem(
     val id: String = "",
     val name: String = "",
@@ -48,15 +54,36 @@ data class NavRoute(
     val steps: List<NavStep>
 )
 
+data class PlaceResult(
+    val title: String,
+    val subtitle: String,
+    val lat: Double,
+    val lng: Double
+)
+
 fun statusColorHex(status: String): String = when (status.lowercase()) {
     "done" -> "#22C55E"
     "issue" -> "#EF4444"
     "pending" -> "#F59E0B"
-    else -> "#3B82F6"
+    else -> "#2563EB"
+}
+
+fun statusIconId(status: String): String = when (status.lowercase()) {
+    "done" -> "pin-done"
+    "issue" -> "pin-issue"
+    else -> "pin-pending"
 }
 
 fun statusLabel(status: String): String = when (status.lowercase()) {
     "done" -> "Done"
     "issue" -> "Issue"
     else -> "Pending"
+}
+
+fun formatDistanceShort(meters: Double): String {
+    return when {
+        meters < 1000.0 -> "${meters.toInt()} m"
+        meters < 10000.0 -> "${"%.1f".format(meters / 1000.0)} km"
+        else -> "${(meters / 1000.0).toInt()} km"
+    }
 }

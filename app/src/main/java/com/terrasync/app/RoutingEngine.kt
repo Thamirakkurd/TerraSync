@@ -11,13 +11,6 @@ import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-data class PlaceResult(
-    val title: String,
-    val subtitle: String,
-    val lat: Double,
-    val lng: Double
-)
-
 object RoutingEngine {
 
     fun fetchDrivingRoute(
@@ -33,7 +26,7 @@ object RoutingEngine {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 10000
                     readTimeout = 10000
-                    setRequestProperty("User-Agent", "TerraSync/2.2.1")
+                    setRequestProperty("User-Agent", "TerraSync/2.3.0")
                 }
                 if (conn.responseCode != 200) {
                     onResult(null, "Routing server error (${conn.responseCode})")
@@ -111,7 +104,7 @@ object RoutingEngine {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
-                    setRequestProperty("User-Agent", "TerraSync/2.2.1 (https://github.com/Thamirakkurd/TerraSync)")
+                    setRequestProperty("User-Agent", "TerraSync/2.3.0 (https://github.com/Thamirakkurd/TerraSync)")
                 }
                 if (conn.responseCode == 200) {
                     val arr = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
@@ -133,6 +126,29 @@ object RoutingEngine {
         }.start()
     }
 
+    fun reverseGeocode(lat: Double, lng: Double, onResult: (PlaceResult?) -> Unit) {
+        Thread {
+            val result = runCatching {
+                val urlStr = "https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=json&zoom=18&addressdetails=1"
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 6000
+                    readTimeout = 6000
+                    setRequestProperty("User-Agent", "TerraSync/2.3.0 (https://github.com/Thamirakkurd/TerraSync)")
+                }
+                if (conn.responseCode == 200) {
+                    val obj = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    val name = obj.optString("name", "").trim()
+                    val display = obj.optString("display_name", "").trim()
+                    val parts = display.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    val title = name.ifBlank { parts.firstOrNull() ?: "Selected Location" }
+                    val sub = parts.filterNot { it.equals(title, ignoreCase = true) }.take(3).joinToString(", ")
+                    PlaceResult(title, sub, lat, lng)
+                } else null
+            }.getOrNull()
+            onResult(result)
+        }.start()
+    }
+
     fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371000.0
         val dLat = Math.toRadians(lat2 - lat1)
@@ -142,7 +158,6 @@ object RoutingEngine {
         return 2 * r * atan2(sqrt(a), sqrt(1 - a))
     }
 
-    /** Returns Pair(offRouteMeters, remainingRoadMetersAlongPolyline) */
     fun measureAlongRoute(lat: Double, lng: Double, geom: List<Pair<Double, Double>>): Pair<Double, Double> {
         if (geom.size < 2) return 0.0 to 0.0
         val cosLat = cos(Math.toRadians(lat))

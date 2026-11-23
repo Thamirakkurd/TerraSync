@@ -1,7 +1,9 @@
 package com.terrasync.app
 
 import android.content.Context
+import android.content.res.Configuration
 import android.os.Build
+import java.util.Calendar
 import java.util.UUID
 
 object DevicePrefs {
@@ -15,6 +17,9 @@ object DevicePrefs {
     private const val KEY_AUTO_FOLLOW = "auto_follow_gps"
     private const val KEY_KEEP_AWAKE = "keep_screen_awake"
     private const val KEY_VOICE_NAV = "voice_guidance"
+    private const val KEY_HILLSHADE = "terrain_hillshade"
+    private const val KEY_CLUSTERING = "pin_clustering"
+    private const val KEY_NIGHT_MODE = "night_map_mode" // 0=Off, 1=Auto, 2=On
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -69,6 +74,11 @@ object DevicePrefs {
         prefs(ctx).edit().putStringSet(KEY_HIDDEN_LAYERS, next).apply()
     }
 
+    fun setAllLayersVisible(ctx: Context, allLayerIds: Collection<String>, visible: Boolean) {
+        val next = if (visible) emptySet() else allLayerIds.toSet()
+        prefs(ctx).edit().putStringSet(KEY_HIDDEN_LAYERS, next).apply()
+    }
+
     fun getBookmarks(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_BOOKMARKS, emptySet())?.toSet() ?: emptySet()
     }
@@ -99,4 +109,25 @@ object DevicePrefs {
 
     fun isVoiceNav(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_VOICE_NAV, true)
     fun setVoiceNav(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_VOICE_NAV, v).apply()
+
+    fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, true)
+    fun setHillshadeEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_HILLSHADE, v).apply()
+
+    fun isClusteringEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CLUSTERING, true)
+    fun setClusteringEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_CLUSTERING, v).apply()
+
+    fun getNightMode(ctx: Context): Int = prefs(ctx).getInt(KEY_NIGHT_MODE, 0)
+    fun setNightMode(ctx: Context, mode: Int) = prefs(ctx).edit().putInt(KEY_NIGHT_MODE, mode.coerceIn(0, 2)).apply()
+
+    fun isNightActive(ctx: Context): Boolean {
+        return when (getNightMode(ctx)) {
+            2 -> true
+            1 -> {
+                val sysDark = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+                val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                sysDark || hour >= 19 || hour < 6
+            }
+            else -> false
+        }
+    }
 }
