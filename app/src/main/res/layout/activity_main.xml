@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/rootContainer"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
@@ -21,8 +20,8 @@
 
         <ImageButton
             android:id="@+id/btnSyncStatus"
-            android:layout_width="42dp"
-            android:layout_height="42dp"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:layout_gravity="start|center_vertical"
             android:contentDescription="Sync Status"
             android:padding="10dp"
@@ -93,7 +92,7 @@
             android:id="@+id/btnNavVoice"
             android:layout_width="40dp"
             android:layout_height="40dp"
-            android:background="@android:color/transparent"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Toggle Voice"
             android:padding="8dp"
             android:scaleType="fitCenter"
@@ -103,7 +102,7 @@
             android:id="@+id/btnNavStop"
             android:layout_width="40dp"
             android:layout_height="40dp"
-            android:background="@android:color/transparent"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Stop Navigation"
             android:padding="8dp"
             android:scaleType="fitCenter"
@@ -147,7 +146,7 @@
                 android:src="@drawable/ic_my_location" />
         </LinearLayout>
 
-        <!-- 4-Icon Navigation Bar (No Text) -->
+        <!-- 4-Icon Navigation Bar: Search | Layers & Bookmarks | Settings | About -->
         <LinearLayout
             android:id="@+id/bottomIconBar"
             android:layout_width="match_parent"
@@ -162,7 +161,7 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:background="@android:color/transparent"
+                android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Search"
                 android:padding="15dp"
                 android:scaleType="fitCenter"
@@ -173,33 +172,33 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:background="@android:color/transparent"
-                android:contentDescription="Layers"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Layers and Bookmarks"
                 android:padding="15dp"
                 android:scaleType="fitCenter"
                 android:src="@drawable/ic_layers" />
-
-            <ImageButton
-                android:id="@+id/btnTabBookmarks"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@android:color/transparent"
-                android:contentDescription="Bookmarks"
-                android:padding="15dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_bookmark" />
 
             <ImageButton
                 android:id="@+id/btnTabSettings"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:background="@android:color/transparent"
+                android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Settings"
                 android:padding="15dp"
                 android:scaleType="fitCenter"
                 android:src="@drawable/ic_settings" />
+
+            <ImageButton
+                android:id="@+id/btnTabAbout"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="About"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_info" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

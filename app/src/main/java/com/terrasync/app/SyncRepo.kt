@@ -59,7 +59,7 @@ class SyncRepo {
                         name = doc.getString("name") ?: "Layer",
                         shareCode = doc.getString("shareCode") ?: "",
                         createdBy = doc.getString("createdBy") ?: "",
-                        visible = doc.getBoolean("visible") ?: true,
+                        creatorDeviceId = doc.getString("creatorDeviceId") ?: "",
                         updatedAt = doc.getLong("updatedAt") ?: 0L
                     )
                 } else {
@@ -82,6 +82,7 @@ class SyncRepo {
                         lat = lat,
                         lng = lng,
                         status = d.getString("status") ?: "pending",
+                        issueReason = d.getString("issueReason") ?: "",
                         updatedAt = d.getLong("updatedAt") ?: 0L,
                         isEdited = d.getBoolean("isEdited") ?: false,
                         editedBy = d.getString("editedBy") ?: "",
@@ -131,6 +132,7 @@ class SyncRepo {
         layerId: String,
         layerName: String,
         createdBy: String,
+        creatorDeviceId: String,
         parsed: ParsedKml,
         onDone: (Boolean, String, String) -> Unit
     ) {
@@ -143,7 +145,7 @@ class SyncRepo {
             "name" to layerName,
             "shareCode" to shareCode,
             "createdBy" to createdBy,
-            "visible" to true,
+            "creatorDeviceId" to creatorDeviceId,
             "updatedAt" to now
         )
 
@@ -156,6 +158,7 @@ class SyncRepo {
                 "lat" to p.lat,
                 "lng" to p.lng,
                 "status" to p.status,
+                "issueReason" to "",
                 "updatedAt" to now,
                 "isEdited" to false,
                 "editedBy" to "",
@@ -174,19 +177,13 @@ class SyncRepo {
             )
         }
 
-        val chunks = ops.chunked(400)
-        fun commitChunk(idx: Int) {
-            if (idx >= chunks.size) {
-                onDone(true, "Imported ${parsed.pins.size} pins (Code: $shareCode)", shareCode)
-                return
-            }
+        // Queue all chunks immediately so large imports work offline in Firestore cache without stalling
+        ops.chunked(400).forEach { chunk ->
             val batch = db.batch()
-            chunks[idx].forEach { (ref, data) -> batch.set(ref, data) }
+            chunk.forEach { (ref, data) -> batch.set(ref, data) }
             batch.commit()
-                .addOnSuccessListener { commitChunk(idx + 1) }
-                .addOnFailureListener { e -> onDone(false, e.message ?: "Sync failed", shareCode) }
         }
-        commitChunk(0)
+        onDone(true, "Imported ${parsed.pins.size} pins (Code: $shareCode)", shareCode)
     }
 
     fun joinLayerByCode(rawCode: String, onDone: (Boolean, String, String?) -> Unit) {
@@ -213,13 +210,16 @@ class SyncRepo {
             }
     }
 
-    fun updatePinStatus(pin: PinItem, status: String, deviceStamp: String) {
+    fun updatePinStatus(pin: PinItem, status: String, deviceStamp: String, issueReason: String = "") {
         val now = System.currentTimeMillis()
-        val line = "${formatTime(now)} • $deviceStamp → ${statusLabel(status)}"
+        val cleanReason = if (status.equals("issue", ignoreCase = true)) issueReason.trim() else ""
+        val detail = if (cleanReason.isNotBlank()) "Issue: $cleanReason" else statusLabel(status)
+        val line = "${formatTime(now)} • $deviceStamp → $detail"
         val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
         db.collection("pins").document(pin.id).update(
             mapOf(
                 "status" to status,
+                "issueReason" to cleanReason,
                 "updatedAt" to now,
                 "isEdited" to true,
                 "editedBy" to deviceStamp,
@@ -246,9 +246,18 @@ class SyncRepo {
         )
     }
 
-    fun addManualPin(name: String, description: String, lat: Double, lng: Double, deviceStamp: String): String {
+    fun addManualPin(
+        name: String,
+        description: String,
+        lat: Double,
+        lng: Double,
+        deviceStamp: String,
+        deviceId: String
+    ): String {
         val now = System.currentTimeMillis()
-        val layerId = "manual_${deviceStamp.substringAfterLast('#', "LOCAL")}"
+        val cleanId = deviceId.filter { it.isLetterOrDigit() }.uppercase().ifBlank { "LOCAL" }
+        val layerId = "manual_$cleanId"
+        val shareCode = "FP$cleanId".take(6)
         val id = UUID.randomUUID().toString()
         val batch = db.batch()
         batch.set(
@@ -256,9 +265,9 @@ class SyncRepo {
             mapOf(
                 "id" to layerId,
                 "name" to "My Field Pins",
-                "shareCode" to layerId.takeLast(6).uppercase(),
+                "shareCode" to shareCode,
                 "createdBy" to deviceStamp,
-                "visible" to true,
+                "creatorDeviceId" to cleanId,
                 "updatedAt" to now
             )
         )
@@ -272,6 +281,7 @@ class SyncRepo {
                 "lat" to lat,
                 "lng" to lng,
                 "status" to "pending",
+                "issueReason" to "",
                 "updatedAt" to now,
                 "isEdited" to false,
                 "editedBy" to deviceStamp,
@@ -285,10 +295,6 @@ class SyncRepo {
 
     fun deletePin(pinId: String) {
         db.collection("pins").document(pinId).delete()
-    }
-
-    fun toggleLayerVisibility(layerId: String, visible: Boolean) {
-        db.collection("layers").document(layerId).update("visible", visible)
     }
 
     fun deleteLayer(layerId: String, pinIds: List<String>, trackIds: List<String>) {

@@ -7,10 +7,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -31,7 +33,6 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,6 +45,7 @@ import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -66,10 +68,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
 
@@ -82,6 +80,14 @@ class MainActivity : AppCompatActivity() {
         private const val PINS_LAYER = "terrasync-pins-layer"
         private const val USER_LOC_SOURCE = "terrasync-userloc-source"
         private const val USER_LOC_LAYER = "terrasync-userloc-layer"
+
+        private val ISSUE_PRESETS = listOf(
+            "Customer Refused / No Access",
+            "Meter Missing / Damaged",
+            "Wrong Location / Coordinates",
+            "Closed / Nobody Home",
+            "Safety Hazard / Network Fault"
+        )
 
         private const val STYLE_SATELLITE = """
         {
@@ -129,7 +135,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnNavVoice: ImageButton
 
     private var map: MapLibreMap? = null
-    private lateinit var tileServer: OfflineTileServer
+    private lateinit var offlineMaps: OfflineMapManager
     private val repo = SyncRepo()
 
     private var layers: List<LayerItem> = emptyList()
@@ -139,6 +145,7 @@ class MainActivity : AppCompatActivity() {
     private var isSatellite = false
     private var isFollowingGps = false
     private var hasAutoZoomedInitial = false
+    private var statusBarInsetTop = 0
 
     private var currentLocation: Location? = null
     private var gpsTrackingActive = false
@@ -147,6 +154,7 @@ class MainActivity : AppCompatActivity() {
     private var activeNavRoute: NavRoute? = null
     private var navDestLatLng: LatLng? = null
     private var navDestName: String = ""
+    private var navCurrentStepIdx: Int = 0
     private var lastSpokenStepIdx: Int = -1
     private var lastRerouteTime: Long = 0L
     private var tts: TextToSpeech? = null
@@ -181,7 +189,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         MapLibre.getInstance(this)
-        tileServer = OfflineTileServer(this).apply { start() }
+        offlineMaps = OfflineMapManager(this).apply { refreshAll() }
         setContentView(R.layout.activity_main)
 
         mapView = findViewById(R.id.mapView)
@@ -197,12 +205,12 @@ class MainActivity : AppCompatActivity() {
         tvNavMeta = findViewById(R.id.tvNavMeta)
         btnNavVoice = findViewById(R.id.btnNavVoice)
 
-        styleCircle(btnSyncStatus, "#CC0F172A", 21)
-        styleCircle(btnStyleToggle, "#CC0F172A", 22)
-        styleCircle(btnImport, "#CC0F766E", 24)
-        styleCircle(btnLocate, "#CC0F172A", 24)
-        styleCircle(bottomIconBar, "#E60F172A", 28)
-        styleCircle(navBanner, "#F20F172A", 18)
+        styleRipplePill(btnSyncStatus, "#CC0F172A", 22)
+        styleRipplePill(btnStyleToggle, "#CC0F172A", 22)
+        styleRipplePill(btnImport, "#CC0F766E", 24)
+        styleRipplePill(btnLocate, "#CC0F172A", 24)
+        stylePill(bottomIconBar, "#E60F172A", 28)
+        stylePill(navBanner, "#F20F172A", 18)
 
         isSatellite = DevicePrefs.isDefaultSatellite(this)
         btnStyleToggle.setImageResource(if (isSatellite) R.drawable.ic_map else R.drawable.ic_satellite)
@@ -219,12 +227,14 @@ class MainActivity : AppCompatActivity() {
         val bottomDock = findViewById<LinearLayout>(R.id.bottomDock)
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            statusBarInsetTop = sys.top
             (topBar.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(10)
             (navBanner.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(10)
             (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = sys.bottom + dp(14)
             topBar.requestLayout()
             navBanner.requestLayout()
             bottomDock.requestLayout()
+            map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(62), dp(14), 0)
             insets
         }
 
@@ -268,19 +278,21 @@ class MainActivity : AppCompatActivity() {
             stopNavigation()
         }
 
+        // 4-Icon Bottom Bar: Search | Layers & Bookmarks | Settings | About
         findViewById<ImageButton>(R.id.btnTabSearch).setOnClickListener { showSearchSheet() }
-        findViewById<ImageButton>(R.id.btnTabLayers).setOnClickListener { showLayersSheet() }
-        findViewById<ImageButton>(R.id.btnTabBookmarks).setOnClickListener { showBookmarksSheet() }
+        findViewById<ImageButton>(R.id.btnTabLayers).setOnClickListener { showLayersAndBookmarksSheet(startOnBookmarks = false) }
         findViewById<ImageButton>(R.id.btnTabSettings).setOnClickListener { showSettingsSheet() }
+        findViewById<ImageButton>(R.id.btnTabAbout).setOnClickListener { showAboutSheet() }
 
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { m ->
             map = m
             m.uiSettings.isCompassEnabled = true
+            m.uiSettings.setCompassMargins(0, statusBarInsetTop + dp(62), dp(14), 0)
             m.uiSettings.isLogoEnabled = false
             m.uiSettings.isAttributionEnabled = false
             m.cameraPosition = CameraPosition.Builder()
-                .target(LatLng(36.86, 42.99))
+                .target(LatLng(36.75, 43.88))
                 .zoom(10.0)
                 .build()
 
@@ -311,10 +323,6 @@ class MainActivity : AppCompatActivity() {
                 showAddPinDialog(latLng)
                 true
             }
-        }
-
-        if (hasLocationPermission()) {
-            startLiveGpsUpdates()
         }
 
         refreshJoinedSync()
@@ -362,30 +370,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun osmStyleJson(): String {
-        val p = tileServer.port
-        return """
-        {
-          "version": 8,
-          "sources": {
-            "osm": {
-              "type": "raster",
-              "tiles": ["http://127.0.0.1:$p/tiles/{z}/{x}/{y}.png"],
-              "tileSize": 256,
-              "maxzoom": 19
-            }
-          },
-          "layers": [
-            { "id": "osm-layer", "type": "raster", "source": "osm", "minzoom": 0, "maxzoom": 22 }
-          ]
-        }
-        """.trimIndent()
-    }
-
     private fun loadMapStyle() {
         val m = map ?: return
-        val json = if (isSatellite) STYLE_SATELLITE else osmStyleJson()
-        m.setStyle(Style.Builder().fromJson(json)) { style ->
+        val builder = if (isSatellite) {
+            Style.Builder().fromJson(STYLE_SATELLITE)
+        } else {
+            Style.Builder().fromUri(OfflineMapManager.STYLE_STREET_URL)
+        }
+        m.setStyle(builder) { style ->
             attachOverlayLayers(style)
             renderMapData()
         }
@@ -441,7 +433,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderMapData() {
         btnSyncStatus.setColorFilter(Color.parseColor(if (isLiveConnected) "#22C55E" else "#F59E0B"))
 
-        val hiddenLayerIds = layers.filter { !it.visible }.map { it.id }.toSet()
+        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
         val visiblePins = pins.filter { it.layerId !in hiddenLayerIds }
         val visibleTracks = tracks.filter { it.layerId !in hiddenLayerIds }
 
@@ -485,7 +477,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- Live GPS Tracking ---
+    // --- Live GPS Tracking (Battery-Safe Lifecycle) ---
 
     private fun hasLocationPermission(): Boolean {
         val f = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -512,6 +504,15 @@ class MainActivity : AppCompatActivity() {
         gpsTrackingActive = true
     }
 
+    private fun stopLiveGpsUpdates() {
+        if (!gpsTrackingActive) return
+        runCatching {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            lm.removeUpdates(gpsListener)
+        }
+        gpsTrackingActive = false
+    }
+
     private fun onNewLocation(loc: Location) {
         currentLocation = loc
         renderMapData()
@@ -529,7 +530,7 @@ class MainActivity : AppCompatActivity() {
         btnLocate.setColorFilter(Color.parseColor(if (isFollowingGps) "#38BDF8" else "#FFFFFF"))
     }
 
-    // --- Built-In Turn-by-Turn Navigation ---
+    // --- Built-In Turn-by-Turn Navigation (Fixed Segment Math + Ordered Steps) ---
 
     private fun startInAppNavigation(destLat: Double, destLng: Double, destTitle: String) {
         if (!hasLocationPermission()) {
@@ -555,6 +556,7 @@ class MainActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
                 activeNavRoute = route
+                navCurrentStepIdx = if (route.steps.size > 1) 1 else 0
                 topBar.visibility = View.GONE
                 navBanner.visibility = View.VISIBLE
                 isFollowingGps = true
@@ -574,35 +576,48 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateNavigationProgress(loc: Location, route: NavRoute, dest: LatLng) {
-        val distToDest = haversineMeters(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
-        if (distToDest < 30.0) {
+        val directToDest = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
+        if (directToDest < 28.0) {
             speakPrompt("You have arrived at $navDestName")
             Toast.makeText(this, "Arrived at $navDestName", Toast.LENGTH_LONG).show()
             stopNavigation()
             return
         }
 
-        // Find closest upcoming step
-        var bestStepIdx = 0
-        var bestStepDist = Double.MAX_VALUE
-        route.steps.forEachIndexed { idx, step ->
-            val d = haversineMeters(loc.latitude, loc.longitude, step.lat, step.lng)
-            if (d < bestStepDist) {
-                bestStepDist = d
-                bestStepIdx = idx
+        val (offRouteMeters, remainingRoadMeters) = RoutingEngine.measureAlongRoute(loc.latitude, loc.longitude, route.geometry)
+
+        // Advance maneuver step monotonically when within 30m of current maneuver
+        if (route.steps.isNotEmpty()) {
+            navCurrentStepIdx = navCurrentStepIdx.coerceIn(0, route.steps.lastIndex)
+            while (navCurrentStepIdx < route.steps.lastIndex) {
+                val s = route.steps[navCurrentStepIdx]
+                val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, s.lat, s.lng)
+                if (d < 30.0) {
+                    navCurrentStepIdx++
+                } else {
+                    break
+                }
             }
         }
-        val nextIdx = (bestStepIdx + 1).coerceAtMost(route.steps.lastIndex)
-        val step = route.steps.getOrElse(nextIdx) { NavStep("Continue to destination", "↑", distToDest, dest.latitude, dest.longitude) }
-        val distToStep = haversineMeters(loc.latitude, loc.longitude, step.lat, step.lng)
+
+        val step = route.steps.getOrElse(navCurrentStepIdx) {
+            NavStep("Continue to destination", "↑", remainingRoadMeters, dest.latitude, dest.longitude)
+        }
+        val distToStep = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, step.lat, step.lng)
+
+        val etaSec = if (route.totalDistanceMeters > 10.0 && route.totalDurationSeconds > 0.0) {
+            (remainingRoadMeters / route.totalDistanceMeters) * route.totalDurationSeconds
+        } else {
+            (remainingRoadMeters / 1000.0) / 45.0 * 3600.0
+        }
+        val etaMin = (etaSec / 60.0).toInt().coerceAtLeast(1)
 
         tvNavArrow.text = step.arrow
         tvNavInstruction.text = step.instruction
-        val etaMin = ((distToDest / 1000.0) / 45.0 * 60.0).toInt().coerceAtLeast(1)
-        tvNavMeta.text = "In ${formatDistance(distToStep)}  •  ${formatDistance(distToDest)} left (~$etaMin min)"
+        tvNavMeta.text = "In ${formatDistance(distToStep)}  •  ${formatDistance(remainingRoadMeters)} left (~$etaMin min)"
 
-        if (nextIdx != lastSpokenStepIdx && distToStep < 250.0) {
-            lastSpokenStepIdx = nextIdx
+        if (navCurrentStepIdx != lastSpokenStepIdx && distToStep < 250.0) {
+            lastSpokenStepIdx = navCurrentStepIdx
             speakPrompt("In ${formatDistance(distToStep)}, ${step.instruction}")
         }
 
@@ -616,16 +631,16 @@ class MainActivity : AppCompatActivity() {
             map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 800)
         }
 
-        // Auto-reroute if off route by > 70m
-        val minDistToLine = route.geometry.minOfOrNull { haversineMeters(loc.latitude, loc.longitude, it.second, it.first) } ?: 0.0
+        // True point-to-segment off-route check (> 65m off road line)
         val now = System.currentTimeMillis()
-        if (minDistToLine > 70.0 && now - lastRerouteTime > 12000L) {
+        if (offRouteMeters > 65.0 && now - lastRerouteTime > 12000L) {
             lastRerouteTime = now
             speakPrompt("Recalculating route")
             RoutingEngine.fetchDrivingRoute(loc.latitude, loc.longitude, dest.latitude, dest.longitude) { newRoute, _ ->
                 if (newRoute != null) {
                     runOnUiThread {
                         activeNavRoute = newRoute
+                        navCurrentStepIdx = if (newRoute.steps.size > 1) 1 else 0
                         lastSpokenStepIdx = -1
                         renderMapData()
                     }
@@ -637,6 +652,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopNavigation() {
         activeNavRoute = null
         navDestLatLng = null
+        navCurrentStepIdx = 0
         navBanner.visibility = View.GONE
         topBar.visibility = View.VISIBLE
         renderMapData()
@@ -655,6 +671,7 @@ class MainActivity : AppCompatActivity() {
         val fileName = getDisplayName(uri).substringBeforeLast('.')
         val layerId = UUID.randomUUID().toString()
         val stamp = DevicePrefs.getDeviceStamp(this)
+        val devId = DevicePrefs.getDeviceId(this)
         Toast.makeText(this, "Importing $fileName...", Toast.LENGTH_SHORT).show()
 
         Thread {
@@ -667,7 +684,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "No pins or tracks found in file", Toast.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
-                repo.importLayer(layerId, fileName.ifBlank { "Imported Layer" }, stamp, parsed) { ok, msg, _ ->
+                repo.importLayer(layerId, fileName.ifBlank { "Imported Layer" }, stamp, devId, parsed) { ok, msg, _ ->
                     runOnUiThread {
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         if (ok) {
@@ -683,7 +700,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // --- Pin Details Sheet (Edit, Copy, Device Stamp, Bookmark, Turn-by-Turn Nav) ---
+    // --- Pin Details Sheet (Issue Pop-up Menu, Edit, Copy, Device Stamp, Bookmark, Turn-by-Turn Nav) ---
 
     private fun showPinSheet(pin: PinItem) {
         val dialog = BottomSheetDialog(this)
@@ -693,7 +710,6 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(20), dp(18), dp(20), dp(24))
         }
 
-        // Header Row: Title + Bookmark + Edit + Copy Name
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -753,10 +769,28 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
+        // Active Issue Banner
+        if (pin.status.equals("issue", ignoreCase = true) && pin.issueReason.isNotBlank()) {
+            root.addView(TextView(this).apply {
+                text = "⚠ Issue: ${pin.issueReason}"
+                textSize = 13f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#DC2626"))
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1AEF4444"))
+                    cornerRadius = dp(8).toFloat()
+                }
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                }
+            })
+        }
+
         // Edited Stamp Banner
         if (pin.isEdited && pin.editedBy.isNotBlank()) {
             val stampTime = if (pin.editedAt > 0L) SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(pin.editedAt)) else ""
-            val stampBox = TextView(this).apply {
+            root.addView(TextView(this).apply {
                 text = "✎ Edited by ${pin.editedBy}${if (stampTime.isNotBlank()) " • $stampTime" else ""}"
                 textSize = 12f
                 setTextColor(Color.parseColor("#0F766E"))
@@ -765,18 +799,17 @@ class MainActivity : AppCompatActivity() {
                     setColor(Color.parseColor("#1A0F766E"))
                     cornerRadius = dp(8).toFloat()
                 }
-            }
-            root.addView(stampBox)
+            })
         }
 
-        // Copy Chips Row (Copy Name, Copy Desc, Copy Coords)
+        // Copy Chips Row
         val copyRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, dp(6))
         }
         listOf(
             "Copy Name" to pin.name,
-            "Copy Desc" to pin.description.ifBlank { pin.name },
+            "Copy Desc" to pin.description,
             "Copy GPS" to "${pin.lat}, ${pin.lng}"
         ).forEachIndexed { idx, (label, clipVal) ->
             copyRow.addView(MaterialButton(this).apply {
@@ -793,13 +826,17 @@ class MainActivity : AppCompatActivity() {
                     if (idx < 2) marginEnd = dp(6)
                 }
                 setOnClickListener {
-                    copyToClipboard(label, clipVal)
+                    if (clipVal.isBlank()) {
+                        Toast.makeText(this@MainActivity, "No description to copy", Toast.LENGTH_SHORT).show()
+                    } else {
+                        copyToClipboard(label, clipVal)
+                    }
                 }
             })
         }
         root.addView(copyRow)
 
-        // Status Buttons Row
+        // Status Buttons Row (Tapping Issue opens the "What is the issue?" pop-up menu!)
         val statusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(6), 0, 0)
@@ -826,14 +863,19 @@ class MainActivity : AppCompatActivity() {
                     if (idx < 2) marginEnd = dp(6)
                 }
                 setOnClickListener {
-                    repo.updatePinStatus(pin, key, stamp)
-                    dialog.dismiss()
+                    if (key == "issue") {
+                        dialog.dismiss()
+                        showIssueReasonDialog(pin)
+                    } else {
+                        repo.updatePinStatus(pin, key, stamp)
+                        dialog.dismiss()
+                    }
                 }
             })
         }
         root.addView(statusRow)
 
-        // Navigation Row: Built-in Turn-by-Turn + External App Fallback
+        // Navigation Row
         val navRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, 0)
@@ -883,14 +925,86 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#EF4444"))
             setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener {
-                repo.deletePin(pin.id)
-                dialog.dismiss()
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Delete \"${pin.name}\"?")
+                    .setMessage("This removes the pin for everyone in this layer.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        repo.deletePin(pin.id)
+                        dialog.dismiss()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         })
 
         scroll.addView(root)
         dialog.setContentView(scroll)
         dialog.show()
+    }
+
+    private fun showIssueReasonDialog(pin: PinItem) {
+        val scroll = ScrollView(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+
+        box.addView(TextView(this).apply {
+            text = "Tap a common issue or type details below:"
+            textSize = 13f
+            setTextColor(Color.parseColor("#64748B"))
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        val etReason = EditText(this).apply {
+            hint = "Describe what the issue is..."
+            setText(pin.issueReason)
+            minLines = 2
+        }
+
+        ISSUE_PRESETS.forEach { preset ->
+            box.addView(MaterialButton(this).apply {
+                text = preset
+                textSize = 12f
+                isAllCaps = false
+                setTextColor(Color.parseColor("#1E293B"))
+                setBackgroundColor(Color.parseColor("#F1F5F9"))
+                cornerRadius = dp(10)
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                    bottomMargin = dp(6)
+                }
+                setOnClickListener {
+                    etReason.setText(preset)
+                    etReason.setSelection(preset.length)
+                }
+            })
+        }
+
+        box.addView(etReason)
+        scroll.addView(box)
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("What is the issue?")
+            .setView(scroll)
+            .setPositiveButton("Save Issue", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val reason = etReason.text.toString().trim()
+                if (reason.isBlank()) {
+                    Toast.makeText(this, "Please select or type the issue first", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val stamp = DevicePrefs.getDeviceStamp(this)
+                repo.updatePinStatus(pin, "issue", stamp, reason)
+                Toast.makeText(this, "Marked Issue: $reason", Toast.LENGTH_SHORT).show()
+                dlg.dismiss()
+            }
+        }
+        dlg.show()
     }
 
     private fun showEditPinDialog(pin: PinItem) {
@@ -939,7 +1053,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         val etQuery = EditText(this).apply {
-            hint = "Search pin name, street, or 36.86, 42.99..."
+            hint = "Search pin name, issue, street, or 36.86, 42.99..."
             setSingleLine(true)
         }
         root.addView(etQuery)
@@ -963,24 +1077,22 @@ class MainActivity : AppCompatActivity() {
             resultsBox.removeAllViews()
             val trimmed = q.trim()
 
-            // Direct coordinate match: "lat, lng"
             val coordParts = trimmed.split(",").map { it.trim().toDoubleOrNull() }
             if (coordParts.size == 2 && coordParts[0] != null && coordParts[1] != null) {
                 val lat = coordParts[0]!!
                 val lng = coordParts[1]!!
                 if (lat in -90.0..90.0 && lng in -180.0..180.0) {
-                    val row = TextView(this).apply {
-                        text = "📍 Jump to coordinates: $lat, $lng"
+                    resultsBox.addView(TextView(this).apply {
+                        text = "📍 Go to coordinates: $lat, $lng"
                         textSize = 14f
                         setTypeface(null, Typeface.BOLD)
                         setTextColor(Color.parseColor("#2563EB"))
                         setPadding(dp(4), dp(10), dp(4), dp(10))
                         setOnClickListener {
                             dialog.dismiss()
-                            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), 16.5))
+                            showPlaceActionDialog("Coordinates", "$lat, $lng", lat, lng)
                         }
-                    }
-                    resultsBox.addView(row)
+                    })
                 }
             }
 
@@ -990,6 +1102,7 @@ class MainActivity : AppCompatActivity() {
                 pins.filter {
                     it.name.contains(trimmed, ignoreCase = true) ||
                         it.description.contains(trimmed, ignoreCase = true) ||
+                        it.issueReason.contains(trimmed, ignoreCase = true) ||
                         statusLabel(it.status).contains(trimmed, ignoreCase = true)
                 }
             }
@@ -1037,13 +1150,17 @@ class MainActivity : AppCompatActivity() {
             RoutingEngine.searchPlaces(q) { places ->
                 runOnUiThread {
                     btnWebSearch.text = "Search OpenStreetMap Places"
-                    places.forEach { place ->
+                    if (places.isEmpty()) {
+                        Toast.makeText(this, "No places found", Toast.LENGTH_SHORT).show()
+                        return@runOnUiThread
+                    }
+                    places.reversed().forEach { place ->
                         val row = LinearLayout(this).apply {
                             orientation = LinearLayout.VERTICAL
                             setPadding(dp(4), dp(10), dp(4), dp(10))
                             setOnClickListener {
                                 dialog.dismiss()
-                                map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(place.lat, place.lng), 16.0))
+                                showPlaceActionDialog(place.title, place.subtitle, place.lat, place.lng)
                             }
                         }
                         row.addView(TextView(this).apply {
@@ -1069,51 +1186,114 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    // --- Tab 2: Layers Page -> Layer Pins Subpage ---
+    private fun showPlaceActionDialog(title: String, subtitle: String, lat: Double, lng: Double) {
+        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lng), 16.0))
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(if (subtitle.isNotBlank()) "$subtitle\n${"%.6f".format(lat)}, ${"%.6f".format(lng)}" else "${"%.6f".format(lat)}, ${"%.6f".format(lng)}")
+            .setPositiveButton("Drive Here") { _, _ ->
+                startInAppNavigation(lat, lng, title)
+            }
+            .setNeutralButton("Save Pin") { _, _ ->
+                val stamp = DevicePrefs.getDeviceStamp(this)
+                val devId = DevicePrefs.getDeviceId(this)
+                val layerId = repo.addManualPin(title, subtitle, lat, lng, stamp, devId)
+                DevicePrefs.addJoinedLayerId(this, layerId)
+                refreshJoinedSync()
+                Toast.makeText(this, "Saved \"$title\"", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
 
-    private fun showLayersSheet() {
+    // --- Tab 2: Combined Layers & Bookmarks Tab ---
+
+    private fun showLayersAndBookmarksSheet(startOnBookmarks: Boolean = false) {
         val dialog = BottomSheetDialog(this)
-        val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(24))
         }
 
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(10))
-        }
-        headerRow.addView(TextView(this).apply {
-            text = "My Layers (${layers.size})"
-            textSize = 18f
-            setTypeface(null, Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        headerRow.addView(MaterialButton(this).apply {
-            text = "+ Join Code"
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#0F766E"))
-            cornerRadius = dp(12)
-            setOnClickListener {
-                dialog.dismiss()
-                showJoinCodeDialog()
-            }
-        })
-        root.addView(headerRow)
+        val bookmarkedIds = DevicePrefs.getBookmarks(this)
+        val bookmarkedPins = pins.filter { it.id in bookmarkedIds }
 
-        if (layers.isEmpty()) {
-            root.addView(TextView(this).apply {
-                text = "No private layers yet. Import a KML/KMZ file or tap + Join Code to unlock a shared layer."
-                textSize = 13f
+        // Segmented Toggle: Layers | Bookmarks
+        val toggleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        val btnSegLayers = MaterialButton(this).apply {
+            text = "Layers (${layers.size})"
+            textSize = 13f
+            cornerRadius = dp(12)
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(6) }
+        }
+        val btnSegBookmarks = MaterialButton(this).apply {
+            text = "Bookmarks (${bookmarkedPins.size})"
+            textSize = 13f
+            cornerRadius = dp(12)
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f)
+        }
+        toggleRow.addView(btnSegLayers)
+        toggleRow.addView(btnSegBookmarks)
+        root.addView(toggleRow)
+
+        val contentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply { addView(contentBox) }
+        root.addView(scroll)
+
+        fun styleSegment(showBookmarks: Boolean) {
+            btnSegLayers.setBackgroundColor(Color.parseColor(if (!showBookmarks) "#2563EB" else "#E2E8F0"))
+            btnSegLayers.setTextColor(if (!showBookmarks) Color.WHITE else Color.parseColor("#334155"))
+            btnSegBookmarks.setBackgroundColor(Color.parseColor(if (showBookmarks) "#2563EB" else "#E2E8F0"))
+            btnSegBookmarks.setTextColor(if (showBookmarks) Color.WHITE else Color.parseColor("#334155"))
+        }
+
+        fun renderLayersView() {
+            styleSegment(false)
+            contentBox.removeAllViews()
+
+            val actionRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(8))
+            }
+            actionRow.addView(TextView(this).apply {
+                text = "Private & Shared Layers"
+                textSize = 14f
+                setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.parseColor("#64748B"))
-                setPadding(0, dp(6), 0, dp(12))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
-        } else {
+            actionRow.addView(MaterialButton(this).apply {
+                text = "+ Join Code"
+                textSize = 12f
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#0F766E"))
+                cornerRadius = dp(10)
+                setOnClickListener {
+                    dialog.dismiss()
+                    showJoinCodeDialog()
+                }
+            })
+            contentBox.addView(actionRow)
+
+            if (layers.isEmpty()) {
+                contentBox.addView(TextView(this).apply {
+                    text = "No private layers yet. Import a KML/KMZ file or tap + Join Code to unlock a shared layer."
+                    textSize = 13f
+                    setTextColor(Color.parseColor("#64748B"))
+                    setPadding(0, dp(6), 0, dp(12))
+                })
+                return
+            }
+
+            val myDevId = DevicePrefs.getDeviceId(this)
             layers.forEach { layer ->
                 val layerPins = pins.filter { it.layerId == layer.id }
                 val layerTracks = tracks.filter { it.layerId == layer.id }
+                val isCreator = layer.creatorDeviceId.isBlank() || layer.creatorDeviceId.equals(myDevId, ignoreCase = true)
 
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -1121,9 +1301,10 @@ class MainActivity : AppCompatActivity() {
                     setPadding(0, dp(6), 0, dp(6))
                 }
                 row.addView(CheckBox(this).apply {
-                    isChecked = layer.visible
+                    isChecked = DevicePrefs.isLayerVisible(this@MainActivity, layer.id)
                     setOnCheckedChangeListener { _, checked ->
-                        repo.toggleLayerVisibility(layer.id, checked)
+                        DevicePrefs.setLayerVisible(this@MainActivity, layer.id, checked)
+                        renderMapData()
                     }
                 })
 
@@ -1157,13 +1338,11 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(8), 0, dp(8), 0)
                     setTextColor(Color.parseColor("#2563EB"))
                     setBackgroundColor(Color.TRANSPARENT)
-                    setOnClickListener {
-                        shareLayerLink(layer)
-                    }
+                    setOnClickListener { shareLayerLink(layer) }
                 })
 
                 row.addView(MaterialButton(this).apply {
-                    text = "Del"
+                    text = if (isCreator) "Del" else "Leave"
                     textSize = 11f
                     minWidth = 0
                     minimumWidth = 0
@@ -1171,30 +1350,105 @@ class MainActivity : AppCompatActivity() {
                     setTextColor(Color.parseColor("#EF4444"))
                     setBackgroundColor(Color.TRANSPARENT)
                     setOnClickListener {
-                        AlertDialog.Builder(this@MainActivity)
+                        val b = AlertDialog.Builder(this@MainActivity)
                             .setTitle("Remove ${layer.name}?")
-                            .setMessage("Choose whether to remove from this phone only or delete from cloud.")
-                            .setPositiveButton("Delete Cloud") { _, _ ->
-                                DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
-                                repo.deleteLayer(layer.id, layerPins.map { it.id }, layerTracks.map { it.id })
-                                refreshJoinedSync()
-                                dialog.dismiss()
-                            }
                             .setNeutralButton("Leave Layer") { _, _ ->
                                 DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
                                 refreshJoinedSync()
                                 dialog.dismiss()
                             }
                             .setNegativeButton("Cancel", null)
-                            .show()
+
+                        if (isCreator) {
+                            b.setMessage("Leave removes it from this phone only. Delete Cloud deletes it for everyone.")
+                            b.setPositiveButton("Delete Cloud") { _, _ ->
+                                DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
+                                repo.deleteLayer(layer.id, layerPins.map { it.id }, layerTracks.map { it.id })
+                                refreshJoinedSync()
+                                dialog.dismiss()
+                            }
+                        } else {
+                            b.setMessage("Removes this shared layer from your phone.")
+                        }
+                        b.show()
                     }
                 })
-                root.addView(row)
+                contentBox.addView(row)
             }
         }
 
-        scroll.addView(root)
-        dialog.setContentView(scroll)
+        fun renderBookmarksView() {
+            styleSegment(true)
+            contentBox.removeAllViews()
+
+            val currentBookmarked = pins.filter { it.id in DevicePrefs.getBookmarks(this) }
+            if (currentBookmarked.isEmpty()) {
+                contentBox.addView(TextView(this).apply {
+                    text = "No bookmarked pins yet. Tap a pin on the map and press ☆ to save it here."
+                    textSize = 13f
+                    setTextColor(Color.parseColor("#64748B"))
+                    setPadding(0, dp(8), 0, dp(12))
+                })
+                return
+            }
+
+            currentBookmarked.forEach { pin ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(4), dp(10), dp(4), dp(10))
+                    setOnClickListener {
+                        dialog.dismiss()
+                        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(pin.lat, pin.lng), 17.0))
+                        showPinSheet(pin)
+                    }
+                }
+                row.addView(View(this).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(Color.parseColor(statusColorHex(pin.status)))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dp(11), dp(11)).apply { marginEnd = dp(10) }
+                })
+                val col = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                col.addView(TextView(this).apply {
+                    text = pin.name
+                    textSize = 15f
+                    setTypeface(null, Typeface.BOLD)
+                })
+                if (pin.status.equals("issue", ignoreCase = true) && pin.issueReason.isNotBlank()) {
+                    col.addView(TextView(this).apply {
+                        text = "⚠ ${pin.issueReason}"
+                        textSize = 11f
+                        setTextColor(Color.parseColor("#DC2626"))
+                    })
+                }
+                row.addView(col)
+                row.addView(MaterialButton(this).apply {
+                    text = "Drive"
+                    textSize = 12f
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.parseColor("#2563EB"))
+                    cornerRadius = dp(10)
+                    setOnClickListener {
+                        dialog.dismiss()
+                        startInAppNavigation(pin.lat, pin.lng, pin.name)
+                    }
+                })
+                contentBox.addView(row)
+            }
+        }
+
+        btnSegLayers.setOnClickListener { renderLayersView() }
+        btnSegBookmarks.setOnClickListener { renderBookmarksView() }
+
+        if (startOnBookmarks) renderBookmarksView() else renderLayersView()
+
+        dialog.setContentView(root)
+        dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
         dialog.show()
     }
 
@@ -1221,7 +1475,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener {
                 dialog.dismiss()
-                showLayersSheet()
+                showLayersAndBookmarksSheet(startOnBookmarks = false)
             }
         })
         topRow.addView(TextView(this).apply {
@@ -1279,6 +1533,13 @@ class MainActivity : AppCompatActivity() {
                 text = "${pin.name}  (${statusLabel(pin.status)})"
                 textSize = 14f
             })
+            if (pin.status.equals("issue", ignoreCase = true) && pin.issueReason.isNotBlank()) {
+                labelCol.addView(TextView(this).apply {
+                    text = "⚠ ${pin.issueReason}"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#DC2626"))
+                })
+            }
             if (pin.isEdited && pin.editedBy.isNotBlank()) {
                 labelCol.addView(TextView(this).apply {
                     text = "Edited by ${pin.editedBy}"
@@ -1297,7 +1558,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun shareLayerLink(layer: LayerItem) {
         val code = layer.shareCode
-        val link = "https://thamirakkurd.github.io/TerraSync/join?code=$code"
+        val link = "https://thamirakkurd.github.io/TerraSync/join/?code=$code"
         val msg = "TerraSync Layer: ${layer.name}\nShare Code: $code\nOpen link: $link"
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
@@ -1318,78 +1579,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- Tab 3: Bookmarks Page ---
-
-    private fun showBookmarksSheet() {
-        val dialog = BottomSheetDialog(this)
-        val scroll = ScrollView(this)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(16), dp(18), dp(24))
-        }
-
-        val bookmarkedIds = DevicePrefs.getBookmarks(this)
-        val bookmarkedPins = pins.filter { it.id in bookmarkedIds }
-
-        root.addView(TextView(this).apply {
-            text = "Bookmarks (${bookmarkedPins.size})"
-            textSize = 18f
-            setTypeface(null, Typeface.BOLD)
-            setPadding(0, 0, 0, dp(10))
-        })
-
-        if (bookmarkedPins.isEmpty()) {
-            root.addView(TextView(this).apply {
-                text = "No bookmarked pins yet. Tap a pin on the map and press ☆ to save it here."
-                textSize = 13f
-                setTextColor(Color.parseColor("#64748B"))
-            })
-        } else {
-            bookmarkedPins.forEach { pin ->
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(4), dp(10), dp(4), dp(10))
-                    setOnClickListener {
-                        dialog.dismiss()
-                        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(pin.lat, pin.lng), 17.0))
-                        showPinSheet(pin)
-                    }
-                }
-                row.addView(View(this).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.parseColor(statusColorHex(pin.status)))
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(11), dp(11)).apply { marginEnd = dp(10) }
-                })
-                row.addView(TextView(this).apply {
-                    text = pin.name
-                    textSize = 15f
-                    setTypeface(null, Typeface.BOLD)
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                })
-                row.addView(MaterialButton(this).apply {
-                    text = "Drive"
-                    textSize = 12f
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(Color.parseColor("#2563EB"))
-                    cornerRadius = dp(10)
-                    setOnClickListener {
-                        dialog.dismiss()
-                        startInAppNavigation(pin.lat, pin.lng, pin.name)
-                    }
-                })
-                root.addView(row)
-            }
-        }
-
-        scroll.addView(root)
-        dialog.setContentView(scroll)
-        dialog.show()
-    }
-
-    // --- Tab 4: Settings Page (Settings First, Offline Regional Packs, App Info / About Below) ---
+    // --- Tab 3: Settings Page (Settings + Native Offline Vector Street Maps Only) ---
 
     private fun showSettingsSheet() {
         val dialog = BottomSheetDialog(this)
@@ -1413,12 +1603,13 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#2563EB"))
         })
-        root.addView(TextView(this).apply {
+        val tvCurrentStamp = TextView(this).apply {
             text = "Current stamp: ${DevicePrefs.getDeviceStamp(this@MainActivity)}"
             textSize = 12f
             setTextColor(Color.parseColor("#64748B"))
             setPadding(0, dp(2), 0, dp(6))
-        })
+        }
+        root.addView(tvCurrentStamp)
 
         val nameRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1439,7 +1630,9 @@ class MainActivity : AppCompatActivity() {
             cornerRadius = dp(10)
             setOnClickListener {
                 DevicePrefs.setCustomName(this@MainActivity, etDeviceName.text.toString())
-                Toast.makeText(this@MainActivity, "Updated: ${DevicePrefs.getDeviceStamp(this@MainActivity)}", Toast.LENGTH_SHORT).show()
+                val updated = DevicePrefs.getDeviceStamp(this@MainActivity)
+                tvCurrentStamp.text = "Current stamp: $updated"
+                Toast.makeText(this@MainActivity, "Updated: $updated", Toast.LENGTH_SHORT).show()
             }
         })
         root.addView(nameRow)
@@ -1449,14 +1642,14 @@ class MainActivity : AppCompatActivity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(6), 0, dp(6))
+                setPadding(0, dp(4), 0, dp(4))
             }
             row.addView(TextView(this).apply {
                 text = title
                 textSize = 14f
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
-            row.addView(Switch(this).apply {
+            row.addView(MaterialSwitch(this).apply {
                 isChecked = checked
                 setOnCheckedChangeListener { _, isChecked -> onChange(isChecked) }
             })
@@ -1477,7 +1670,7 @@ class MainActivity : AppCompatActivity() {
             DevicePrefs.setVoiceNav(this, it)
         }
 
-        // 3. Optional Offline Street Maps (Separate Northern Kurdistan vs Central & Southern Iraq)
+        // 3. Optional Offline Vector Street Maps (Native MapLibre OfflineManager)
         root.addView(TextView(this).apply {
             text = "Offline Street Maps (Optional)"
             textSize = 15f
@@ -1486,13 +1679,21 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(16), 0, dp(2))
         })
         root.addView(TextView(this).apply {
-            text = "Online by default. Download a regional street pack below to use the regular map with zero signal."
+            text = "Online by default. Download a regional vector street pack to use the regular map completely offline."
             textSize = 12f
             setTextColor(Color.parseColor("#64748B"))
-            setPadding(0, 0, 0, dp(8))
+            setPadding(0, 0, 0, dp(10))
         })
 
-        OfflineTileServer.REGIONS.forEach { region ->
+        val packUpdaters = mutableListOf<() -> Unit>()
+        val pixelRatio = resources.displayMetrics.density
+
+        fun addOfflineCard(
+            packId: String,
+            title: String,
+            subtitle: String,
+            onDownload: () -> Unit
+        ) {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1504,31 +1705,26 @@ class MainActivity : AppCompatActivity() {
                     bottomMargin = dp(10)
                 }
             }
-
             card.addView(TextView(this).apply {
-                text = region.title
+                text = title
                 textSize = 14f
                 setTypeface(null, Typeface.BOLD)
             })
             card.addView(TextView(this).apply {
-                text = region.subtitle
+                text = subtitle
                 textSize = 12f
                 setTextColor(Color.parseColor("#64748B"))
                 setPadding(0, dp(2), 0, dp(6))
             })
-
             val tvStatus = TextView(this).apply {
-                val (cnt, bytes) = tileServer.getRegionStats(region.id)
-                val mb = bytes / (1024.0 * 1024.0)
-                text = if (cnt > 0) "Downloaded: $cnt tiles (${"%.1f".format(mb)} MB)" else "Not downloaded (online only)"
                 textSize = 12f
                 setTextColor(Color.parseColor("#0F766E"))
             }
             card.addView(tvStatus)
 
             val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-                visibility = View.GONE
                 max = 100
+                visibility = View.GONE
             }
             card.addView(progressBar)
 
@@ -1537,7 +1733,6 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, dp(6), 0, 0)
             }
             val btnDl = MaterialButton(this).apply {
-                text = "Download"
                 textSize = 12f
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#0F766E"))
@@ -1551,94 +1746,173 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.TRANSPARENT)
             }
 
-            btnDl.setOnClickListener {
-                if (tileServer.activeDownloadRegionId != null) {
-                    tileServer.cancelActiveDownload()
-                    btnDl.text = "Download"
-                    return@setOnClickListener
+            fun refreshCard() {
+                val st = offlineMaps.getState(packId)
+                tvStatus.text = st.statusText
+                progressBar.visibility = if (st.isDownloading) View.VISIBLE else View.GONE
+                progressBar.progress = st.progressPercent
+                btnDl.text = when {
+                    st.isDownloading -> "Pause"
+                    st.isDownloaded -> "Downloaded"
+                    else -> "Download"
                 }
-                btnDl.text = "Cancel"
-                progressBar.visibility = View.VISIBLE
-                progressBar.progress = 0
-                tileServer.downloadRegion(region) { done, total, finished, err ->
-                    runOnUiThread {
-                        val pct = if (total > 0) (done * 100 / total) else 0
-                        progressBar.progress = pct
-                        tvStatus.text = if (err != null) err else "Downloading: $pct% ($done / $total tiles)"
-                        if (finished) {
-                            btnDl.text = "Download"
-                            progressBar.visibility = View.GONE
-                            val (cnt, bytes) = tileServer.getRegionStats(region.id)
-                            val mb = bytes / (1024.0 * 1024.0)
-                            tvStatus.text = if (cnt > 0) "Downloaded: $cnt tiles (${"%.1f".format(mb)} MB)" else "Not downloaded"
-                            loadMapStyle()
-                        }
-                    }
+                btnDl.isEnabled = !st.isDownloaded || st.isDownloading
+                btnDl.alpha = if (btnDl.isEnabled) 1f else 0.55f
+            }
+
+            btnDl.setOnClickListener {
+                val st = offlineMaps.getState(packId)
+                if (st.isDownloading) {
+                    offlineMaps.pauseDownload(packId)
+                } else {
+                    onDownload()
                 }
             }
 
             btnDel.setOnClickListener {
-                tileServer.deleteRegion(region.id)
-                tvStatus.text = "Deleted (online only)"
-                Toast.makeText(this@MainActivity, "Removed ${region.title} offline pack", Toast.LENGTH_SHORT).show()
+                offlineMaps.deletePack(packId) { msg ->
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
 
             btnRow.addView(btnDl)
             btnRow.addView(btnDel)
             card.addView(btnRow)
             root.addView(card)
+
+            refreshCard()
+            packUpdaters += ::refreshCard
         }
 
-        // 4. App Info / About Section (Below Settings)
-        root.addView(View(this).apply {
-            setBackgroundColor(Color.parseColor("#3364748B"))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(12)
-                bottomMargin = dp(14)
+        OfflineMapManager.REGIONAL_PACKS.forEach { pack ->
+            addOfflineCard(pack.id, pack.title, pack.subtitle) {
+                offlineMaps.downloadPack(pack, pixelRatio)
+            }
+        }
+
+        addOfflineCard(
+            OfflineMapManager.CUSTOM_VIEW_ID,
+            "Current Map View (Full Street Detail)",
+            "Saves every street & alley visible on your current screen (zoom 10–14)"
+        ) {
+            val bounds = map?.projection?.visibleRegion?.latLngBounds
+            if (bounds == null) {
+                Toast.makeText(this, "Move map to desired city first", Toast.LENGTH_SHORT).show()
+            } else {
+                offlineMaps.downloadCustomBounds(bounds, pixelRatio)
+            }
+        }
+
+        root.addView(MaterialButton(this).apply {
+            text = "Clear Temporary Map Cache"
+            textSize = 12f
+            setTextColor(Color.parseColor("#334155"))
+            setBackgroundColor(Color.parseColor("#E2E8F0"))
+            cornerRadius = dp(10)
+            setOnClickListener {
+                offlineMaps.clearAmbientCache { msg ->
+                    runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                }
             }
         })
 
+        offlineMaps.setStateListener {
+            runOnUiThread { packUpdaters.forEach { it() } }
+        }
+        offlineMaps.refreshAll()
+
+        dialog.setOnDismissListener {
+            offlineMaps.setStateListener(null)
+        }
+
+        scroll.addView(root)
+        dialog.setContentView(scroll)
+        dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
+        dialog.show()
+    }
+
+    // --- Tab 4: Dedicated About Page ---
+
+    private fun showAboutSheet() {
+        val dialog = BottomSheetDialog(this)
+        val scroll = ScrollView(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(22), dp(22), dp(28))
+        }
+
         root.addView(TextView(this).apply {
-            text = "About TerraSync"
-            textSize = 17f
+            text = "TerraSync"
+            textSize = 24f
             setTypeface(null, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "Version 2.2.0 • Field KML/KMZ Mapping, Live Team Sync & Turn-by-Turn Navigation.\nBuilt by Thamir (@Thamirakkurd) for field supervision, feeder mapping, and offline site navigation."
+            text = "Version 2.2.1  •  Native Kotlin + MapLibre GL + Firestore"
             textSize = 13f
-            setTextColor(Color.parseColor("#64748B"))
-            setPadding(0, dp(4), 0, dp(10))
+            setTextColor(Color.parseColor("#0F766E"))
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, dp(4), 0, dp(12))
         })
 
-        val linkRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(TextView(this).apply {
+            text = "Field mapping, KML/KMZ layer sharing, live team pin collaboration, issue tracking, offline regional vector maps, and turn-by-turn driving navigation."
+            textSize = 14f
+            setPadding(0, 0, 0, dp(14))
+        })
+
+        val devCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#1464748B"))
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(14)
+            }
+        }
+        devCard.addView(TextView(this).apply {
+            text = "Developer"
+            textSize = 12f
+            setTextColor(Color.parseColor("#64748B"))
+        })
+        devCard.addView(TextView(this).apply {
+            text = "Thamir (@Thamirakkurd)"
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, dp(2), 0, dp(4))
+        })
+        devCard.addView(TextView(this).apply {
+            text = "Device Stamp: ${DevicePrefs.getDeviceStamp(this@MainActivity)}"
+            textSize = 12f
+            setTextColor(Color.parseColor("#64748B"))
+        })
+        root.addView(devCard)
+
         listOf(
-            "GitHub Profile" to "https://github.com/Thamirakkurd",
-            "Repository" to "https://github.com/Thamirakkurd/TerraSync",
-            "Releases" to "https://github.com/Thamirakkurd/TerraSync/releases"
-        ).forEachIndexed { idx, (label, url) ->
-            linkRow.addView(MaterialButton(this).apply {
+            Triple("GitHub Profile (@Thamirakkurd)", "https://github.com/Thamirakkurd", "#1E293B"),
+            Triple("TerraSync Repository", "https://github.com/Thamirakkurd/TerraSync", "#2563EB"),
+            Triple("Check Releases / Updates", "https://github.com/Thamirakkurd/TerraSync/releases", "#0F766E")
+        ).forEach { (label, url, colorHex) ->
+            root.addView(MaterialButton(this).apply {
                 text = label
-                textSize = 11f
-                maxLines = 1
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(6), 0, dp(6), 0)
+                textSize = 13f
                 setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#1E293B"))
-                cornerRadius = dp(10)
-                layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
-                    if (idx < 2) marginEnd = dp(6)
+                setBackgroundColor(Color.parseColor(colorHex))
+                cornerRadius = dp(12)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply {
+                    bottomMargin = dp(8)
                 }
                 setOnClickListener {
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                 }
             })
         }
-        root.addView(linkRow)
 
         scroll.addView(root)
         dialog.setContentView(scroll)
-        dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
         dialog.show()
     }
 
@@ -1660,12 +1934,14 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val stamp = DevicePrefs.getDeviceStamp(this)
+                val devId = DevicePrefs.getDeviceId(this)
                 val layerId = repo.addManualPin(
                     etName.text.toString().trim(),
                     etDesc.text.toString().trim(),
                     latLng.latitude,
                     latLng.longitude,
-                    stamp
+                    stamp,
+                    devId
                 )
                 DevicePrefs.addJoinedLayerId(this, layerId)
                 refreshJoinedSync()
@@ -1714,20 +1990,23 @@ class MainActivity : AppCompatActivity() {
         return uri.lastPathSegment ?: "Layer"
     }
 
-    private fun styleCircle(v: View, hex: String, radiusDp: Int) {
+    private fun stylePill(v: View, hex: String, radiusDp: Int) {
         v.background = GradientDrawable().apply {
             setColor(Color.parseColor(hex))
             cornerRadius = dp(radiusDp).toFloat()
         }
     }
 
-    private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val r = 6371000.0
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = sin(dLat / 2) * sin(dLat / 2) +
-            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2) * sin(dLon / 2)
-        return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+    private fun styleRipplePill(v: View, hex: String, radiusDp: Int) {
+        val bg = GradientDrawable().apply {
+            setColor(Color.parseColor(hex))
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+        val mask = GradientDrawable().apply {
+            setColor(Color.WHITE)
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+        v.background = RippleDrawable(ColorStateList.valueOf(Color.parseColor("#55FFFFFF")), bg, mask)
     }
 
     private fun formatDistance(meters: Double): String {
@@ -1737,18 +2016,23 @@ class MainActivity : AppCompatActivity() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     override fun onStart() { super.onStart(); mapView.onStart() }
-    override fun onResume() { super.onResume(); mapView.onResume() }
-    override fun onPause() { super.onPause(); mapView.onPause() }
+    override fun onResume() {
+        super.onResume()
+        mapView.onResume()
+        if (hasLocationPermission()) startLiveGpsUpdates()
+    }
+    override fun onPause() {
+        if (activeNavRoute == null) stopLiveGpsUpdates()
+        mapView.onPause()
+        super.onPause()
+    }
     override fun onStop() { super.onStop(); mapView.onStop() }
     override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
     override fun onDestroy() {
-        runCatching {
-            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            lm.removeUpdates(gpsListener)
-        }
+        stopLiveGpsUpdates()
+        offlineMaps.setStateListener(null)
         tts?.shutdown()
         repo.stopListening()
-        tileServer.stop()
         mapView.onDestroy()
         super.onDestroy()
     }

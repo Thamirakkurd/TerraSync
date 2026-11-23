@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Join TerraSync Layer</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; text-align: center; }
+    .card { background: #1e293b; border-radius: 16px; padding: 24px; max-width: 360px; width: 100%; }
+    .code { font-size: 28px; font-weight: 700; letter-spacing: 3px; color: #38bdf8; margin: 12px 0 20px; }
+    a.btn { display: block; background: #2563eb; color: #fff; text-decoration: none; padding: 14px; border-radius: 12px; font-weight: 600; margin-bottom: 12px; }
+    a.sub { color: #94a3b8; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>TerraSync Shared Layer</h2>
+    <p>Share Code:</p>
+    <div id="code" class="code">---</div>
+    <a id="openBtn" class="btn" href="#">Open in TerraSync</a>
+    <a class="sub" href="https://github.com/Thamirakkurd/TerraSync/releases">Download TerraSync APK</a>
+  </div>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const code = (params.get('code') || '').trim().toUpperCase();
+    document.getElementById('code').textContent = code || 'INVALID';
+    if (code) {
+      const deep = 'terrasync://join?code=' + encodeURIComponent(code);
+      document.getElementById('openBtn').href = deep;
+      window.location.href = deep;
+    }
+  </script>
+</body>
+</html>

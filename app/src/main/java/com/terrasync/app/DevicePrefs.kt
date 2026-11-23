@@ -9,6 +9,7 @@ object DevicePrefs {
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_CUSTOM_NAME = "custom_device_name"
     private const val KEY_JOINED_LAYERS = "joined_layer_ids"
+    private const val KEY_HIDDEN_LAYERS = "hidden_layer_ids"
     private const val KEY_BOOKMARKS = "bookmarked_pin_ids"
     private const val KEY_DEFAULT_SAT = "default_satellite"
     private const val KEY_AUTO_FOLLOW = "auto_follow_gps"
@@ -35,9 +36,11 @@ object DevicePrefs {
 
     fun getDeviceStamp(ctx: Context): String {
         val id = getDeviceId(ctx)
-        val model = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }}${Build.MODEL}".trim()
+        val mfg = Build.MANUFACTURER.trim().replaceFirstChar { it.uppercase() }
+        val mdl = Build.MODEL.trim()
+        val deviceModel = if (mdl.startsWith(mfg, ignoreCase = true)) mdl else "$mfg$mdl".trim()
         val custom = getCustomName(ctx)
-        return if (custom.isNotBlank()) "$custom ($model • #$id)" else "$model • #$id"
+        return if (custom.isNotBlank()) "$custom ($deviceModel • #$id)" else "$deviceModel • #$id"
     }
 
     fun getJoinedLayerIds(ctx: Context): Set<String> {
@@ -52,6 +55,18 @@ object DevicePrefs {
     fun removeJoinedLayerId(ctx: Context, layerId: String) {
         val next = getJoinedLayerIds(ctx).toMutableSet().apply { remove(layerId) }
         prefs(ctx).edit().putStringSet(KEY_JOINED_LAYERS, next).apply()
+    }
+
+    fun getHiddenLayerIds(ctx: Context): Set<String> {
+        return prefs(ctx).getStringSet(KEY_HIDDEN_LAYERS, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun isLayerVisible(ctx: Context, layerId: String): Boolean = !getHiddenLayerIds(ctx).contains(layerId)
+
+    fun setLayerVisible(ctx: Context, layerId: String, visible: Boolean) {
+        val next = getHiddenLayerIds(ctx).toMutableSet()
+        if (visible) next.remove(layerId) else next.add(layerId)
+        prefs(ctx).edit().putStringSet(KEY_HIDDEN_LAYERS, next).apply()
     }
 
     fun getBookmarks(ctx: Context): Set<String> {

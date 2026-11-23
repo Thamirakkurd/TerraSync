@@ -5,7 +5,7 @@ data class LayerItem(
     val name: String = "",
     val shareCode: String = "",
     val createdBy: String = "",
-    val visible: Boolean = true,
+    val creatorDeviceId: String = "",
     val updatedAt: Long = 0L
 )
 
@@ -17,6 +17,7 @@ data class PinItem(
     val lat: Double = 0.0,
     val lng: Double = 0.0,
     val status: String = "pending",
+    val issueReason: String = "",
     val updatedAt: Long = 0L,
     val isEdited: Boolean = false,
     val editedBy: String = "",

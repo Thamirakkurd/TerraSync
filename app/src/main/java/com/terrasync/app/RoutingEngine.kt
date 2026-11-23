@@ -5,6 +5,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 data class PlaceResult(
     val title: String,
@@ -28,7 +33,7 @@ object RoutingEngine {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 10000
                     readTimeout = 10000
-                    setRequestProperty("User-Agent", "TerraSync/2.2.0")
+                    setRequestProperty("User-Agent", "TerraSync/2.2.1")
                 }
                 if (conn.responseCode != 200) {
                     onResult(null, "Routing server error (${conn.responseCode})")
@@ -106,7 +111,7 @@ object RoutingEngine {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
-                    setRequestProperty("User-Agent", "TerraSync/2.2.0 (https://github.com/Thamirakkurd/TerraSync)")
+                    setRequestProperty("User-Agent", "TerraSync/2.2.1 (https://github.com/Thamirakkurd/TerraSync)")
                 }
                 if (conn.responseCode == 200) {
                     val arr = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
@@ -126,5 +131,62 @@ object RoutingEngine {
             }
             onResult(out)
         }.start()
+    }
+
+    fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2) * sin(dLat / 2) +
+            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2) * sin(dLon / 2)
+        return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+    }
+
+    /** Returns Pair(offRouteMeters, remainingRoadMetersAlongPolyline) */
+    fun measureAlongRoute(lat: Double, lng: Double, geom: List<Pair<Double, Double>>): Pair<Double, Double> {
+        if (geom.size < 2) return 0.0 to 0.0
+        val cosLat = cos(Math.toRadians(lat))
+        val mPerDegLat = 111132.0
+        val mPerDegLng = 111320.0 * cosLat
+
+        var bestSegIdx = 0
+        var bestDist = Double.MAX_VALUE
+        var bestT = 0.0
+
+        for (i in 0 until geom.size - 1) {
+            val aLng = geom[i].first
+            val aLat = geom[i].second
+            val bLng = geom[i + 1].first
+            val bLat = geom[i + 1].second
+
+            val ax = (aLng - lng) * mPerDegLng
+            val ay = (aLat - lat) * mPerDegLat
+            val bx = (bLng - lng) * mPerDegLng
+            val by = (bLat - lat) * mPerDegLat
+
+            val dx = bx - ax
+            val dy = by - ay
+            val lenSq = dx * dx + dy * dy
+            val t = if (lenSq > 1e-6) (-(ax * dx + ay * dy) / lenSq).coerceIn(0.0, 1.0) else 0.0
+            val px = ax + t * dx
+            val py = ay + t * dy
+            val d = hypot(px, py)
+            if (d < bestDist) {
+                bestDist = d
+                bestSegIdx = i
+                bestT = t
+            }
+        }
+
+        val segStart = geom[bestSegIdx]
+        val segEnd = geom[bestSegIdx + 1]
+        val projLng = segStart.first + bestT * (segEnd.first - segStart.first)
+        val projLat = segStart.second + bestT * (segEnd.second - segStart.second)
+
+        var remaining = haversineMeters(projLat, projLng, segEnd.second, segEnd.first)
+        for (i in bestSegIdx + 1 until geom.size - 1) {
+            remaining += haversineMeters(geom[i].second, geom[i].first, geom[i + 1].second, geom[i + 1].first)
+        }
+        return bestDist to remaining
     }
 }
