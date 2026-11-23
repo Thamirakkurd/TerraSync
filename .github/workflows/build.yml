@@ -2,7 +2,6 @@ name: Build & Release TerraSync APK
 
 on:
   push:
-    branches: [ "main" ]
     tags: [ "v*" ]
   workflow_dispatch:
 
@@ -27,8 +26,7 @@ jobs:
 
       - name: Rename APK
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then VERSION="main"; fi
+          VERSION="${GITHUB_REF_NAME:-manual}"
           cp app/build/outputs/apk/release/app-release.apk "TerraSync-${VERSION}.apk"
 
       - name: Upload Artifact
