@@ -1,5 +1,11 @@
 package com.terrasync.app
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Handler
+import android.os.Looper
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
@@ -8,6 +14,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class SyncRepo {
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance().apply {
@@ -22,12 +31,79 @@ class SyncRepo {
         }
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val layerRegs = mutableMapOf<String, List<ListenerRegistration>>()
     private val layerMap = mutableMapOf<String, LayerItem>()
     private val pinsByLayer = mutableMapOf<String, List<PinItem>>()
     private val tracksByLayer = mutableMapOf<String, List<TrackItem>>()
     private var connected: Boolean = false
     private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
+
+    private fun isOnline(): Boolean {
+        val ctx = RoutingEngine.appContext ?: return true
+        return runCatching {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }.getOrDefault(true)
+    }
+
+    private fun commitOpsInBatches(
+        ops: List<Pair<DocumentReference, Map<String, Any>>>,
+        successMsg: String,
+        shareCode: String,
+        onDone: (Boolean, String, String) -> Unit
+    ) {
+        val chunks = ops.chunked(400)
+        if (chunks.isEmpty()) {
+            onDone(true, successMsg, shareCode)
+            return
+        }
+
+        val online = isOnline()
+        val remaining = AtomicInteger(chunks.size)
+        val firstError = AtomicReference<String?>(null)
+        val finished = AtomicBoolean(false)
+
+        val timeoutRunnable = Runnable {
+            if (finished.compareAndSet(false, true)) {
+                val err = firstError.get()
+                if (err != null) {
+                    onDone(false, "Sync error: $err", shareCode)
+                } else {
+                    onDone(true, "$successMsg (saved locally — syncing)", shareCode)
+                }
+            }
+        }
+        if (online) {
+            mainHandler.postDelayed(timeoutRunnable, 12_000L)
+        }
+
+        chunks.forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { (ref, data) -> batch.set(ref, data) }
+            batch.commit()
+                .addOnFailureListener { e ->
+                    firstError.compareAndSet(null, e.message ?: "Batch write failed")
+                }
+                .addOnCompleteListener {
+                    if (remaining.decrementAndGet() == 0 && finished.compareAndSet(false, true)) {
+                        mainHandler.removeCallbacks(timeoutRunnable)
+                        val err = firstError.get()
+                        if (err != null) {
+                            onDone(false, "Sync error: $err", shareCode)
+                        } else {
+                            onDone(true, successMsg, shareCode)
+                        }
+                    }
+                }
+        }
+
+        if (!online && finished.compareAndSet(false, true)) {
+            onDone(true, "$successMsg (offline — will sync when online)", shareCode)
+        }
+    }
 
     fun syncJoinedLayers(
         joinedLayerIds: Set<String>,
@@ -149,7 +225,7 @@ class SyncRepo {
     ) {
         val now = System.currentTimeMillis()
         val shareCode = generateShareCode()
-        val ops = mutableListOf<Pair<com.google.firebase.firestore.DocumentReference, Map<String, Any>>>()
+        val ops = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
 
         ops += db.collection("layers").document(layerId) to mapOf(
             "id" to layerId,
@@ -188,12 +264,61 @@ class SyncRepo {
             )
         }
 
-        ops.chunked(400).forEach { chunk ->
-            val batch = db.batch()
-            chunk.forEach { (ref, data) -> batch.set(ref, data) }
-            batch.commit()
+        commitOpsInBatches(
+            ops,
+            "Imported ${parsed.pins.size} pins into \"$layerName\" (Code: $shareCode)",
+            shareCode,
+            onDone
+        )
+    }
+
+    fun appendToCloudLayer(
+        layerId: String,
+        layerName: String,
+        newPins: List<PinItem>,
+        newTracks: List<TrackItem>,
+        onDone: (Boolean, String, String) -> Unit
+    ) {
+        val now = System.currentTimeMillis()
+        val ops = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
+
+        newPins.forEach { p ->
+            val newId = UUID.randomUUID().toString()
+            ops += db.collection("pins").document(newId) to mapOf(
+                "id" to newId,
+                "layerId" to layerId,
+                "name" to p.name,
+                "description" to p.description,
+                "lat" to p.lat,
+                "lng" to p.lng,
+                "status" to p.status,
+                "issueReason" to p.issueReason,
+                "updatedAt" to now,
+                "isEdited" to p.isEdited,
+                "editedBy" to p.editedBy,
+                "editedAt" to p.editedAt,
+                "editHistory" to p.editHistory
+            )
         }
-        onDone(true, "Imported ${parsed.pins.size} pins into \"$layerName\" (Code: $shareCode)", shareCode)
+
+        newTracks.forEach { t ->
+            val newId = UUID.randomUUID().toString()
+            ops += db.collection("tracks").document(newId) to mapOf(
+                "id" to newId,
+                "layerId" to layerId,
+                "name" to t.name,
+                "coords" to t.coords,
+                "updatedAt" to now
+            )
+        }
+
+        db.collection("layers").document(layerId).update("updatedAt", now)
+        commitOpsInBatches(
+            ops,
+            "Merged ${newPins.size} pins into \"$layerName\"",
+            "",
+            onDone
+        )
     }
 
     fun combineLayers(
@@ -207,7 +332,7 @@ class SyncRepo {
     ) {
         val now = System.currentTimeMillis()
         val shareCode = generateShareCode()
-        val ops = mutableListOf<Pair<com.google.firebase.firestore.DocumentReference, Map<String, Any>>>()
+        val ops = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
 
         ops += db.collection("layers").document(newLayerId) to mapOf(
             "id" to newLayerId,
@@ -248,12 +373,12 @@ class SyncRepo {
             )
         }
 
-        ops.chunked(400).forEach { chunk ->
-            val batch = db.batch()
-            chunk.forEach { (ref, data) -> batch.set(ref, data) }
-            batch.commit()
-        }
-        onDone(true, "Combined ${sourcePins.size} pins into \"$layerName\" (Code: $shareCode)", shareCode)
+        commitOpsInBatches(
+            ops,
+            "Combined ${sourcePins.size} pins into \"$layerName\" (Code: $shareCode)",
+            shareCode,
+            onDone
+        )
     }
 
     fun joinLayerByCode(rawCode: String, onDone: (Boolean, String, String?) -> Unit) {

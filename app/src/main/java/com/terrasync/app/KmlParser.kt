@@ -42,10 +42,17 @@ object KmlParser {
         val clean = raw.trim().lowercase()
         if (clean.isBlank()) return null
         return when {
-            clean == "done" || clean.startsWith("done") || clean == "completed" || clean == "complete" || clean == "finished" -> "done"
-            clean == "issue" || clean.startsWith("issue") || clean == "problem" || clean == "error" ||
-                clean == "inaccessible" || clean == "no bill" || clean == "need electricity" -> "issue"
-            clean == "pending" || clean.startsWith("pending") || clean == "todo" || clean == "open" -> "pending"
+            clean == "done" || clean.startsWith("done:") || clean.startsWith("done ") ||
+                clean == "completed" || clean == "complete" || clean == "finished" -> "done"
+            clean == "issue" || clean.startsWith("issue:") || clean.startsWith("issue ") ||
+                clean == "problem" || clean == "error" ||
+                clean == "need electricity" ||
+                clean == "customer refused / no access" ||
+                clean == "wrong location / coordinates" ||
+                clean == "closed / nobody home" ||
+                clean == "safety hazard / network fault" -> "issue"
+            clean == "pending" || clean.startsWith("pending:") || clean.startsWith("pending ") ||
+                clean == "todo" || clean == "open" -> "pending"
             else -> null
         }
     }
@@ -54,9 +61,12 @@ object KmlParser {
         val low = styleUrl.trim().lowercase()
         if (low.isBlank()) return null
         return when {
-            low.contains("green") || low.contains("grn") || low.contains("done") -> "done"
-            low.contains("red") || low.contains("issue") -> "issue"
-            low.contains("orange") || low.contains("yellow") || low.contains("ylw") || low.contains("amber") || low.contains("pending") -> "pending"
+            low.contains("green") || low.contains("grn") || low.contains("done") ||
+                low.contains("0f9d58") || low.contains("22c55e") -> "done"
+            low.contains("red") || low.contains("issue") ||
+                low.contains("db4436") || low.contains("ef4444") -> "issue"
+            low.contains("orange") || low.contains("yellow") || low.contains("ylw") ||
+                low.contains("amber") || low.contains("pending") -> "pending"
             else -> null
         }
     }
@@ -175,14 +185,18 @@ object KmlParser {
                             "styleurl" -> if (!inExtendedData && pmStyleUrl.isBlank()) pmStyleUrl = textBuf.toString().trim()
                             "value", "simpledata" -> {
                                 val v = textBuf.toString().trim()
-                                if (currentDataKey.isNotBlank() && v.isNotBlank()) {
+                                if (currentDataKey.isNotBlank()) {
                                     val keyLow = currentDataKey.lowercase().replace(" ", "_")
-                                    when {
-                                        keyLow.startsWith("ts_") -> pmMeta[keyLow] = v
-                                        keyLow in setOf("status", "pin_status", "issue", "issue_reason", "done_note", "status_note", "edited_by", "edited_at", "edit_history") -> {
-                                            pmGeneric[keyLow] = v
+                                    if (keyLow == "ts_raw_description") {
+                                        pmMeta[keyLow] = v
+                                    } else if (v.isNotBlank()) {
+                                        when {
+                                            keyLow.startsWith("ts_") -> pmMeta[keyLow] = v
+                                            keyLow in setOf("status", "pin_status", "issue", "issue_reason", "done_note", "status_note", "edited_by", "edited_at", "edit_history") -> {
+                                                pmGeneric[keyLow] = v
+                                            }
+                                            else -> pmExtra.add("$currentDataKey: $v")
                                         }
-                                        else -> pmExtra.add("$currentDataKey: $v")
                                     }
                                 }
                                 if (tag == "simpledata") currentDataKey = ""
@@ -203,12 +217,22 @@ object KmlParser {
                                 var restoredStatus = pmMeta["ts_status"]?.let { normalizeStatus(it) }
                                     ?: pmGeneric["status"]?.let { normalizeStatus(it) }
                                     ?: pmGeneric["pin_status"]?.let { normalizeStatus(it) }
+
                                 var restoredReason = pmMeta["ts_issue_reason"]
-                                    ?: pmGeneric["issue_reason"]
                                     ?: pmGeneric["done_note"]
+                                    ?: pmGeneric["issue_reason"]
                                     ?: pmGeneric["status_note"]
                                     ?: pmGeneric["issue"]
                                     ?: ""
+
+                                if (restoredStatus == null) {
+                                    restoredStatus = when {
+                                        !pmGeneric["done_note"].isNullOrBlank() -> "done"
+                                        !pmGeneric["issue_reason"].isNullOrBlank() || !pmGeneric["issue"].isNullOrBlank() -> "issue"
+                                        else -> null
+                                    }
+                                }
+
                                 var restoredEditedBy = pmMeta["ts_edited_by"] ?: pmGeneric["edited_by"] ?: ""
                                 val restoredEditedAt = pmMeta["ts_edited_at"]?.toLongOrNull()
                                     ?: pmGeneric["edited_at"]?.toLongOrNull()
@@ -230,9 +254,22 @@ object KmlParser {
                                                     restoredStatus = normalizeStatus(trimmed.substringAfter(":"))
                                                 }
                                             }
-                                            low.startsWith("done note:") || low.startsWith("issue:") || low.startsWith("issue reason:") -> {
-                                                if (restoredReason.isBlank()) {
-                                                    restoredReason = trimmed.substringAfter(":").trim()
+                                            low.startsWith("done note:") -> {
+                                                val noteVal = trimmed.substringAfter(":").trim()
+                                                if (restoredReason.isBlank() && noteVal.isNotBlank()) {
+                                                    restoredReason = noteVal
+                                                }
+                                                if (restoredStatus == null) {
+                                                    restoredStatus = "done"
+                                                }
+                                            }
+                                            low.startsWith("issue reason:") || low.startsWith("issue:") -> {
+                                                val issueVal = trimmed.substringAfter(":").trim()
+                                                if (restoredReason.isBlank() && issueVal.isNotBlank()) {
+                                                    restoredReason = issueVal
+                                                }
+                                                if (restoredStatus == null) {
+                                                    restoredStatus = "issue"
                                                 }
                                             }
                                             low.startsWith("edited by:") -> {
@@ -241,7 +278,9 @@ object KmlParser {
                                                     restoredIsEdited = true
                                                 }
                                             }
-                                            else -> cleanedDescLines.add(line)
+                                            else -> {
+                                                if (trimmed.isNotBlank()) cleanedDescLines.add(line)
+                                            }
                                         }
                                     }
                                 }
@@ -251,8 +290,10 @@ object KmlParser {
                                 }
 
                                 val finalStatus = restoredStatus ?: "pending"
-                                if (finalStatus != "pending" || restoredEditedBy.isNotBlank() || restoredHistory.isNotBlank()) {
-                                    restoredIsEdited = restoredIsEdited || restoredEditedBy.isNotBlank() || restoredHistory.isNotBlank()
+                                if (finalStatus != "pending" || restoredReason.isNotBlank() ||
+                                    restoredEditedBy.isNotBlank() || restoredHistory.isNotBlank()
+                                ) {
+                                    restoredIsEdited = true
                                 }
 
                                 val fullDesc = buildString {

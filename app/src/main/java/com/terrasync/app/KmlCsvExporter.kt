@@ -65,6 +65,12 @@ object KmlCsvExporter {
 
         pins.forEach { p ->
             val normStatus = p.status.trim().lowercase().ifBlank { "pending" }
+            val hasMeaningfulEdit = normStatus != "pending" ||
+                p.issueReason.isNotBlank() ||
+                p.isEdited ||
+                p.editedBy.isNotBlank() ||
+                p.editHistory.isNotBlank()
+
             val descParts = mutableListOf<String>()
             descParts += "Status: ${statusLabel(normStatus)}"
             if (p.issueReason.isNotBlank()) {
@@ -83,10 +89,8 @@ object KmlCsvExporter {
             if (p.issueReason.isNotBlank()) {
                 sb.append("      <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
             }
-            if (p.description.isNotBlank()) {
-                sb.append("      <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
-            }
-            if (p.isEdited) {
+            sb.append("      <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
+            if (hasMeaningfulEdit) {
                 sb.append("      <Data name=\"ts_is_edited\"><value>true</value></Data>\n")
             }
             if (p.editedBy.isNotBlank()) {

@@ -261,23 +261,32 @@ object OfflineRoutingEngine {
                 val eLng = maxOf(minLng, maxLng)
                 val maxSpan = maxOf(nLat - sLat, eLng - wLng)
 
-                // Full street & alley graph for city/district packs; arterial network for huge regional packs
-                val highwayRegex = when {
-                    maxSpan <= 1.4 ->
-                        "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|path|footway|cycleway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|road)$"
-                    maxSpan <= 4.5 ->
-                        "^(motorway|trunk|primary|secondary|tertiary|unclassified|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
-                    else ->
-                        "^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
-                }
+                val fullStreetRegex =
+                    "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|path|footway|cycleway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|road)$"
+                val arterialRegex =
+                    "^(motorway|trunk|primary|secondary|tertiary|unclassified|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
+                val highwayOnlyRegex =
+                    "^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
 
-                val query = """
+                fun buildQuery(regex: String, aLat: Double, aLng: Double, bLat: Double, bLng: Double): String = """
                     [out:json][timeout:60];
-                    way["highway"~"$highwayRegex"]($sLat,$wLng,$nLat,$eLng);
+                    way["highway"~"$regex"]($aLat,$aLng,$bLat,$bLng);
                     out body;
                     >;
                     out skel qt;
                 """.trimIndent()
+
+                val chunks: List<Pair<String, String>> = if (packId == OfflineMapManager.PACK_KURDISTAN_ID) {
+                    listOf(
+                        "Kurdistan highways" to buildQuery(arterialRegex, sLat, wLng, nLat, eLng),
+                        "Duhok, Akre & Zakho streets" to buildQuery(fullStreetRegex, 36.65, 42.55, 37.22, 44.08),
+                        "Erbil streets" to buildQuery(fullStreetRegex, 36.05, 43.88, 36.32, 44.18),
+                        "Sulaymaniyah streets" to buildQuery(fullStreetRegex, 35.48, 45.32, 35.65, 45.55)
+                    )
+                } else {
+                    val reg = if (maxSpan <= 1.4) fullStreetRegex else highwayOnlyRegex
+                    listOf("$regionName roads" to buildQuery(reg, sLat, wLng, nLat, eLng))
+                }
 
                 val endpoints = listOf(
                     "https://overpass-api.de/api/interpreter",
@@ -285,37 +294,69 @@ object OfflineRoutingEngine {
                     "https://lz4.overpass-api.de/api/interpreter"
                 )
 
-                var jsonText: String? = null
+                val osmNodes = HashMap<Long, Pair<Float, Float>>(65536)
+                val ways = ArrayList<JSONObject>(16384)
+                val seenWayIds = HashSet<Long>(16384)
+                var fetchedAny = false
                 var lastErr = "Could not download road data"
-                for ((idx, ep) in endpoints.withIndex()) {
+
+                for ((cIdx, pair) in chunks.withIndex()) {
+                    val (chunkLabel, query) = pair
                     if (cancelFlag.get()) {
                         onDone(null, "Cancelled")
                         return@Thread
                     }
-                    onProgress("Downloading roads (${idx + 1}/${endpoints.size})...")
-                    var conn: HttpURLConnection? = null
-                    try {
-                        conn = (URL(ep).openConnection() as HttpURLConnection).apply {
-                            requestMethod = "POST"
-                            doOutput = true
-                            connectTimeout = 20000
-                            readTimeout = 70000
-                            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                            setRequestProperty("User-Agent", RoutingEngine.userAgent)
+                    var chunkJson: String? = null
+                    for (ep in endpoints) {
+                        if (cancelFlag.get()) {
+                            onDone(null, "Cancelled")
+                            return@Thread
                         }
-                        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
-                            w.write("data=" + URLEncoder.encode(query, "UTF-8"))
+                        onProgress("Downloading roads (${cIdx + 1}/${chunks.size}: $chunkLabel)...")
+                        var conn: HttpURLConnection? = null
+                        try {
+                            conn = (URL(ep).openConnection() as HttpURLConnection).apply {
+                                requestMethod = "POST"
+                                doOutput = true
+                                connectTimeout = 20000
+                                readTimeout = 70000
+                                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                                setRequestProperty("User-Agent", RoutingEngine.userAgent)
+                            }
+                            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
+                                w.write("data=" + URLEncoder.encode(query, "UTF-8"))
+                            }
+                            if (conn.responseCode == 200) {
+                                chunkJson = conn.inputStream.bufferedReader().use { it.readText() }
+                                break
+                            } else {
+                                lastErr = "Overpass server HTTP ${conn.responseCode}"
+                            }
+                        } catch (e: Exception) {
+                            lastErr = e.message ?: "Network error"
+                        } finally {
+                            conn?.disconnect()
                         }
-                        if (conn.responseCode == 200) {
-                            jsonText = conn.inputStream.bufferedReader().use { it.readText() }
-                            break
-                        } else {
-                            lastErr = "Overpass server HTTP ${conn.responseCode}"
+                    }
+
+                    if (!chunkJson.isNullOrBlank()) {
+                        val elems = JSONObject(chunkJson).optJSONArray("elements")
+                        if (elems != null) {
+                            fetchedAny = true
+                            for (i in 0 until elems.length()) {
+                                val el = elems.getJSONObject(i)
+                                when (el.optString("type")) {
+                                    "node" -> {
+                                        val id = el.optLong("id")
+                                        osmNodes[id] = el.optDouble("lat").toFloat() to el.optDouble("lon").toFloat()
+                                    }
+                                    "way" -> {
+                                        val wid = el.optLong("id")
+                                        if (seenWayIds.add(wid)) ways.add(el)
+                                    }
+                                }
+                            }
                         }
-                    } catch (e: Exception) {
-                        lastErr = e.message ?: "Network error"
-                    } finally {
-                        conn?.disconnect()
                     }
                 }
 
@@ -323,32 +364,12 @@ object OfflineRoutingEngine {
                     onDone(null, "Cancelled")
                     return@Thread
                 }
-                if (jsonText.isNullOrBlank()) {
+                if (!fetchedAny || ways.isEmpty()) {
                     onDone(null, lastErr)
                     return@Thread
                 }
 
                 onProgress("Building offline road graph...")
-                val root = JSONObject(jsonText)
-                val elems = root.optJSONArray("elements") ?: run {
-                    onDone(null, "Empty road dataset")
-                    return@Thread
-                }
-
-                val osmNodes = HashMap<Long, Pair<Float, Float>>(elems.length() / 2)
-                val ways = ArrayList<JSONObject>()
-                for (i in 0 until elems.length()) {
-                    val el = elems.getJSONObject(i)
-                    when (el.optString("type")) {
-                        "node" -> {
-                            val id = el.optLong("id")
-                            val lat = el.optDouble("lat").toFloat()
-                            val lon = el.optDouble("lon").toFloat()
-                            osmNodes[id] = lat to lon
-                        }
-                        "way" -> ways.add(el)
-                    }
-                }
 
                 if (cancelFlag.get()) {
                     onDone(null, "Cancelled")

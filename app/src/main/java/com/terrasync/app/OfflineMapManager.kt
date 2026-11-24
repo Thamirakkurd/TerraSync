@@ -40,34 +40,24 @@ class OfflineMapManager(private val context: Context) {
 
     companion object {
         const val STYLE_STREET_URL = "https://tiles.openfreemap.org/styles/liberty"
-        const val CUSTOM_VIEW_ID = "custom_area_hd"
+        const val PACK_KURDISTAN_ID = "kurdistan_north"
+        const val PACK_SOUTHERN_IRAQ_ID = "iraq_south"
 
         val REGIONAL_PACKS = listOf(
             OfflinePackSpec(
-                id = "duhok_akre_hd",
-                title = "Duhok & Akre HD (Map + Offline Routing)",
-                subtitle = "Full street map, mosques & turn-by-turn road network for Duhok, Akre & feeders",
-                minLat = 36.65,
-                maxLat = 37.02,
-                minLng = 42.82,
-                maxLng = 44.02,
-                minZoom = 10.0,
-                maxZoom = 14.0
-            ),
-            OfflinePackSpec(
-                id = "kurdistan_north",
-                title = "Northern Iraq (Kurdistan Region)",
-                subtitle = "Duhok, Zakho, Akre, Erbil, Sulaymaniyah, Halabja, Kirkuk & highways",
+                id = PACK_KURDISTAN_ID,
+                title = "Kurdistan",
+                subtitle = "Duhok, Akre, Zakho, Erbil, Sulaymaniyah, Halabja & Kirkuk (highways + embedded HD streets)",
                 minLat = 34.45,
                 maxLat = 37.38,
                 minLng = 42.35,
                 maxLng = 46.35,
                 minZoom = 6.0,
-                maxZoom = 12.0
+                maxZoom = 13.0
             ),
             OfflinePackSpec(
-                id = "iraq_south",
-                title = "Central & Southern Iraq",
+                id = PACK_SOUTHERN_IRAQ_ID,
+                title = "Southern Iraq",
                 subtitle = "Baghdad, Anbar, Diyala, Karbala, Najaf, Wasit, Dhi Qar, Basra & highways",
                 minLat = 29.05,
                 maxLat = 34.45,
@@ -81,7 +71,7 @@ class OfflineMapManager(private val context: Context) {
 
     private val appCtx: Context = context.applicationContext
     private val manager: OfflineManager = OfflineManager.getInstance(appCtx).apply {
-        setOfflineMapboxTileCountLimit(50000L)
+        setOfflineMapboxTileCountLimit(80000L)
     }
 
     private val regionHandles = mutableMapOf<String, OfflineRegion>()
@@ -95,11 +85,6 @@ class OfflineMapManager(private val context: Context) {
 
     fun getState(packId: String): OfflinePackState {
         return states[packId] ?: buildIdleState(packId)
-    }
-
-    fun getSavedBounds(packId: String): LatLngBounds? {
-        val reg = regionHandles[packId] ?: return null
-        return (reg.definition as? OfflineTilePyramidRegionDefinition)?.bounds
     }
 
     private fun buildIdleState(packId: String): OfflinePackState {
@@ -128,25 +113,23 @@ class OfflineMapManager(private val context: Context) {
         manager.listOfflineRegions(object : OfflineManager.ListOfflineRegionsCallback {
             override fun onList(offlineRegions: Array<OfflineRegion>?) {
                 val foundIds = mutableSetOf<String>()
+                val validIds = REGIONAL_PACKS.map { it.id }.toSet()
                 offlineRegions?.forEach { reg ->
                     val id = decodePackId(reg.metadata) ?: return@forEach
+                    if (id !in validIds) return@forEach
                     foundIds.add(id)
                     regionHandles[id] = reg
                     reg.getStatus(object : OfflineRegion.OfflineRegionStatusCallback {
                         override fun onStatus(status: OfflineRegionStatus?) {
-                            if (status != null) {
-                                updateStateFromStatus(id, status)
-                            }
+                            if (status != null) updateStateFromStatus(id, status)
                             onReady?.invoke()
                         }
-
                         override fun onError(error: String?) {
                             onReady?.invoke()
                         }
                     })
                 }
-                val known = REGIONAL_PACKS.map { it.id } + CUSTOM_VIEW_ID
-                known.forEach { id ->
+                validIds.forEach { id ->
                     if (id !in foundIds) {
                         regionHandles.remove(id)
                         states[id] = buildIdleState(id)
@@ -173,57 +156,14 @@ class OfflineMapManager(private val context: Context) {
                 .build()
             createAndStart(pack.id, bounds, pack.minZoom, pack.maxZoom, pixelRatio)
         }
-        // Automatically bundle offline routing road graph with the map pack
         if (OfflineRoutingEngine.getPackRegion(appCtx, pack.id) == null && !OfflineRoutingEngine.isDownloading(pack.id)) {
-            startEmbeddedRoadDownload(pack.id, pack.title.substringBefore(" ("), pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
+            startEmbeddedRoadDownload(pack.id, pack.title, pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
         }
     }
 
     fun downloadRoadGraphOnly(pack: OfflinePackSpec) {
         if (OfflineRoutingEngine.isDownloading(pack.id)) return
-        startEmbeddedRoadDownload(pack.id, pack.title.substringBefore(" ("), pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
-    }
-
-    fun downloadCustomRoadGraphOnly(bounds: LatLngBounds) {
-        if (OfflineRoutingEngine.isDownloading(CUSTOM_VIEW_ID)) return
-        startEmbeddedRoadDownload(
-            CUSTOM_VIEW_ID,
-            "Custom View",
-            bounds.latitudeSouth,
-            bounds.longitudeWest,
-            bounds.latitudeNorth,
-            bounds.longitudeEast
-        )
-    }
-
-    fun downloadCustomBounds(bounds: LatLngBounds, pixelRatio: Float) {
-        val existing = regionHandles[CUSTOM_VIEW_ID]
-        if (existing != null) {
-            existing.setDownloadState(OfflineRegion.STATE_INACTIVE)
-            existing.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
-                override fun onDelete() {
-                    regionHandles.remove(CUSTOM_VIEW_ID)
-                    createAndStart(CUSTOM_VIEW_ID, bounds, 10.0, 14.0, pixelRatio)
-                }
-
-                override fun onError(error: String) {
-                    states[CUSTOM_VIEW_ID] = getState(CUSTOM_VIEW_ID).copy(statusText = "Error: $error")
-                    uiListener?.invoke()
-                }
-            })
-        } else {
-            createAndStart(CUSTOM_VIEW_ID, bounds, 10.0, 14.0, pixelRatio)
-        }
-        // Re-download matching road graph for the new custom view bounds
-        OfflineRoutingEngine.deletePackRegion(appCtx, CUSTOM_VIEW_ID)
-        startEmbeddedRoadDownload(
-            CUSTOM_VIEW_ID,
-            "Custom View",
-            bounds.latitudeSouth,
-            bounds.longitudeWest,
-            bounds.latitudeNorth,
-            bounds.longitudeEast
-        )
+        startEmbeddedRoadDownload(pack.id, pack.title, pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
     }
 
     private fun startEmbeddedRoadDownload(
@@ -346,9 +286,7 @@ class OfflineMapManager(private val context: Context) {
         OfflineRoutingEngine.cancelDownload(packId)
         roadProgressNotes.remove(packId)
         val reg = regionHandles[packId]
-        if (reg != null) {
-            reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
-        }
+        if (reg != null) reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
         val cur = getState(packId)
         states[packId] = cur.copy(
             isDownloading = false,

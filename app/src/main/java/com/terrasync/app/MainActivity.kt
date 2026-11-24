@@ -225,6 +225,9 @@ class MainActivity : AppCompatActivity() {
     private var layers: List<LayerItem> = emptyList()
     private var pins: List<PinItem> = emptyList()
     private var tracks: List<TrackItem> = emptyList()
+    private var cloudLayers: List<LayerItem> = emptyList()
+    private var cloudPins: List<PinItem> = emptyList()
+    private var cloudTracks: List<TrackItem> = emptyList()
     private var visibleStatuses: MutableSet<String> = mutableSetOf("pending", "done", "issue")
     private var isLiveConnected = false
     private var mapStyleMode: MapStyleMode = MapStyleMode.VECTOR
@@ -1041,12 +1044,16 @@ class MainActivity : AppCompatActivity() {
                     Expression.neq(Expression.get("subclass"), Expression.literal("temple"))
                 )
             )
-            // Suppress duplicate mosque icons on base style POI layers
+            // Suppress duplicate mosque icons on base style POI layers safely per layer
+            val notMosque = Expression.not(isMosqueExpr)
             for (layer in style.layers) {
-                if (layer is SymbolLayer && layer.sourceLayer == "poi" && layer.id != mosqueLayerId) {
-                    val existing = layer.filter
-                    val notMosque = Expression.not(isMosqueExpr)
-                    layer.setFilter(if (existing != null) Expression.all(existing, notMosque) else notMosque)
+                if (layer is SymbolLayer && layer.id != mosqueLayerId &&
+                    (layer.sourceLayer == "poi" || layer.id.lowercase().contains("poi"))
+                ) {
+                    runCatching {
+                        val existing = layer.filter
+                        layer.setFilter(if (existing != null) Expression.all(existing, notMosque) else notMosque)
+                    }
                 }
             }
             if (style.getLayer(mosqueLayerId) == null) {
@@ -1057,9 +1064,9 @@ class MainActivity : AppCompatActivity() {
                     setProperties(
                         PropertyFactory.iconImage("mosque-icon"),
                         PropertyFactory.iconSize(0.92f),
-                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconAllowOverlap(false),
                         PropertyFactory.iconIgnorePlacement(false),
-                        PropertyFactory.iconPadding(2f),
+                        PropertyFactory.iconPadding(14f),
                         PropertyFactory.textField(Expression.get("name")),
                         PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
                         PropertyFactory.textSize(10.5f),
@@ -2083,7 +2090,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (key == "done") {
                         showDoneReasonDialog(pin)
                     } else {
-                        repo.updatePinStatus(pin, key, stamp)
+                        savePinStatusUnified(pin, key, stamp)
                         fireStatusPulse(pin.lat, pin.lng, hex)
                         selectedMarkerIcon = statusIconId(key)
                         renderMapData()
@@ -2305,7 +2312,8 @@ class MainActivity : AppCompatActivity() {
         // 8. Owner Check (Selective Edit Deletion & Pin Deletion)
         val myDevId = DevicePrefs.getDeviceId(this)
         val isOwner = layer != null && (
-            (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
+            LocalFolderStore.isLocalLayerId(layer.id) ||
+                (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
                 (layer.creatorDeviceId.isBlank() && layer.createdBy.contains("#$myDevId", ignoreCase = true))
             )
 
@@ -2352,7 +2360,7 @@ class MainActivity : AppCompatActivity() {
                                 .setTitle("Delete this edit?")
                                 .setMessage("$line\n\nOnly this edit will be removed. The pin stays on the map and its status recalculates from the remaining edits.")
                                 .setPositiveButton("Delete Edit") { _, _ ->
-                                    val updated = repo.deletePinHistoryEntry(pin, idx)
+                                    val updated = deletePinHistoryEntryUnified(pin, idx)
                                     selectedMarkerIcon = statusIconId(updated.status)
                                     renderMapData()
                                     fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
@@ -2393,7 +2401,7 @@ class MainActivity : AppCompatActivity() {
                         .setTitle("Reset status to Pending?")
                         .setMessage("Clears the current status and note while keeping \"${pin.name}\" on the map.")
                         .setPositiveButton("Reset") { _, _ ->
-                            val updated = repo.resetPinStatusToPending(pin)
+                            val updated = resetPinStatusUnified(pin)
                             selectedMarkerIcon = statusIconId(updated.status)
                             renderMapData()
                             fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
@@ -2416,11 +2424,16 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.TRANSPARENT)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42))
                 setOnClickListener {
+                    val delMsg = if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+                        "This removes the pin from this phone."
+                    } else {
+                        "This removes the pin for everyone in this folder."
+                    }
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("Delete \"${pin.name}\"?")
-                        .setMessage("This removes the pin for everyone in this folder.")
+                        .setMessage(delMsg)
                         .setPositiveButton("Delete") { _, _ ->
-                            repo.deletePin(pin.id)
+                            deletePinUnified(pin)
                             hideInScreenSheet()
                         }
                         .setNegativeButton("Cancel", null)
@@ -3711,7 +3724,9 @@ class MainActivity : AppCompatActivity() {
                 val layerTracks = tracks.filter { it.layerId == layer.id }
                 val visible = DevicePrefs.isLayerVisible(this, layer.id)
                 val isPinned = DevicePrefs.isLayerPinned(this, layer.id)
-                val isCreator = (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
+                val isLocal = LocalFolderStore.isLocalLayerId(layer.id)
+                val isCreator = isLocal ||
+                    (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
                     (layer.creatorDeviceId.isBlank() && layer.createdBy.contains("#$myDevId", ignoreCase = true))
 
                 val doneCnt = layerPins.count { it.status.equals("done", true) }
@@ -3766,6 +3781,23 @@ class MainActivity : AppCompatActivity() {
                     ellipsize = TextUtils.TruncateAt.MIDDLE
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
+                if (isLocal) {
+                    titleRow.addView(TextView(this).apply {
+                        text = "LOCAL"
+                        textSize = 10f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(Color.parseColor("#0F766E"))
+                        setPadding(dp(6), dp(2), dp(6), dp(2))
+                        background = GradientDrawable().apply {
+                            setColor(Color.parseColor("#CCFBF1"))
+                            cornerRadius = dp(6).toFloat()
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { marginStart = dp(6) }
+                    })
+                }
                 if (isPinned) {
                     titleRow.addView(TextView(this).apply {
                         text = "📌 PINNED"
@@ -3826,15 +3858,23 @@ class MainActivity : AppCompatActivity() {
                     UiAnimations.applyRowRipple(this@MainActivity, this, night)
                     setOnClickListener { anchor ->
                         val menu = PopupMenu(this@MainActivity, anchor)
-                        menu.menu.add(0, 1, 1, "Share Link & Code (${layer.shareCode})")
+                        if (isLocal) {
+                            menu.menu.add(0, 10, 1, "Upload to Cloud (Shareable)")
+                        } else {
+                            menu.menu.add(0, 1, 1, "Share Link & Code (${layer.shareCode})")
+                        }
                         menu.menu.add(0, 2, 2, "Zoom to Folder")
                         menu.menu.add(0, 3, 3, if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder")
                         menu.menu.add(0, 4, 4, "Daily Team Report (WhatsApp)")
                         menu.menu.add(0, 5, 5, "Export as KML...")
                         menu.menu.add(0, 6, 6, "Export as CSV")
                         if (isCreator) menu.menu.add(0, 7, 7, "Rename Folder")
-                        menu.menu.add(0, 8, 8, if (isPinned) "🔒 Leave Folder (Pinned)" else "Leave Folder (This Phone)")
-                        if (isCreator) menu.menu.add(0, 9, 9, if (isPinned) "🔒 Delete from Cloud (Pinned)" else "Delete from Cloud (All Users)")
+                        if (isLocal) {
+                            menu.menu.add(0, 11, 8, if (isPinned) "🔒 Delete Local Folder (Pinned)" else "Delete Local Folder")
+                        } else {
+                            menu.menu.add(0, 8, 8, if (isPinned) "🔒 Leave Folder (Pinned)" else "Leave Folder (This Phone)")
+                            if (isCreator) menu.menu.add(0, 9, 9, if (isPinned) "🔒 Delete from Cloud (Pinned)" else "Delete from Cloud (All Users)")
+                        }
                         menu.setOnMenuItemClickListener { item ->
                             when (item.itemId) {
                                 1 -> shareLayerLink(layer)
@@ -3866,6 +3906,14 @@ class MainActivity : AppCompatActivity() {
                                         Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
                                     } else {
                                         showDeleteCloudDialog(layer, layerPins, layerTracks)
+                                    }
+                                }
+                                10 -> confirmUploadLocalToCloud(layer, layerPins, layerTracks)
+                                11 -> {
+                                    if (isPinned) {
+                                        Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        showDeleteLocalDialog(layer, layerPins.size)
                                     }
                                 }
                             }
@@ -3985,7 +4033,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDailyWhatsAppReportDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
-        val report = DailyReportGenerator.buildReport(layer.name, layerPins)
+        val report = DailyReportGenerator.buildReport(layer.name, layerPins, !LocalFolderStore.isLocalLayerId(layer.id))
         val scroll = android.widget.ScrollView(this).apply {
             setPadding(dp(20), dp(12), dp(20), dp(8))
         }
@@ -4035,7 +4083,12 @@ class MainActivity : AppCompatActivity() {
                 if (next.isBlank()) {
                     Toast.makeText(this, "Folder name cannot be empty", Toast.LENGTH_SHORT).show()
                 } else {
-                    repo.renameLayer(layer.id, next)
+                    if (LocalFolderStore.isLocalLayerId(layer.id)) {
+                        LocalFolderStore.renameLayer(this, layer.id, next)
+                        applyMergedFoldersAndRender()
+                    } else {
+                        repo.renameLayer(layer.id, next)
+                    }
                     Toast.makeText(this, "Renamed to \"$next\"", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -4567,9 +4620,15 @@ class MainActivity : AppCompatActivity() {
             text = "Save"
             textSize = 12.5f
             isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#2563EB"))
             cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(40)
+            ).apply { marginStart = dp(8) }
             UiAnimations.attachSpringTouch(this)
             setOnClickListener {
                 DevicePrefs.setCustomName(this@MainActivity, etDeviceName.text.toString())
@@ -4801,6 +4860,12 @@ class MainActivity : AppCompatActivity() {
             val btnDl = MaterialButton(this).apply {
                 textSize = 12.5f
                 isAllCaps = false
+                maxLines = 1
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(10), 0, dp(10), 0)
                 setTextColor(Color.WHITE)
                 setBackgroundColor(Color.parseColor("#0F766E"))
                 cornerRadius = dp(10)
@@ -4811,8 +4876,14 @@ class MainActivity : AppCompatActivity() {
                 text = "Delete"
                 textSize = 12.5f
                 isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(10), 0, dp(10), 0)
                 setTextColor(Color.parseColor("#EF4444"))
                 setBackgroundColor(Color.TRANSPARENT)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
             }
 
             fun refreshCard() {
@@ -4873,36 +4944,18 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        addOfflineCard(
-            OfflineMapManager.CUSTOM_VIEW_ID,
-            "Current Map View (Map + Offline Routing)",
-            "Saves every street, alley & road graph visible on your current screen (zoom 10–14)",
-            onDownload = {
-                val bounds = map?.projection?.visibleRegion?.latLngBounds
-                if (bounds == null) {
-                    Toast.makeText(this, "Move map to desired city first", Toast.LENGTH_SHORT).show()
-                } else {
-                    offlineMaps.downloadCustomBounds(bounds, pixelRatio)
-                }
-            },
-            onDownloadRoadsOnly = {
-                val bounds = offlineMaps.getSavedBounds(OfflineMapManager.CUSTOM_VIEW_ID)
-                    ?: map?.projection?.visibleRegion?.latLngBounds
-                if (bounds == null) {
-                    Toast.makeText(this, "Move map to desired city first", Toast.LENGTH_SHORT).show()
-                } else {
-                    offlineMaps.downloadCustomRoadGraphOnly(bounds)
-                }
-            }
-        )
-
         body.addView(MaterialButton(this).apply {
             text = "Clear Temporary Map Cache"
             textSize = 12.5f
             isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
             setTextColor(txtPrimary)
             setBackgroundColor(cardBg)
             cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
+                topMargin = dp(4)
+            }
             UiAnimations.attachSpringTouch(this)
             setOnClickListener {
                 offlineMaps.clearAmbientCache { msg ->
@@ -5072,7 +5125,7 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 val stamp = DevicePrefs.getDeviceStamp(this)
-                repo.updatePinStatus(pin, "issue", stamp, reason)
+                savePinStatusUnified(pin, "issue", stamp, reason)
                 fireStatusPulse(pin.lat, pin.lng, "#EF4444")
                 selectedMarkerIcon = "pin-issue"
                 renderMapData()
@@ -5135,7 +5188,7 @@ class MainActivity : AppCompatActivity() {
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val note = etNote.text.toString().trim()
                 val stamp = DevicePrefs.getDeviceStamp(this)
-                repo.updatePinStatus(pin, "done", stamp, note)
+                savePinStatusUnified(pin, "done", stamp, note)
                 fireStatusPulse(pin.lat, pin.lng, "#22C55E")
                 selectedMarkerIcon = statusIconId("done")
                 renderMapData()
@@ -5163,7 +5216,7 @@ class MainActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val stamp = DevicePrefs.getDeviceStamp(this)
-                repo.updatePinText(pin, etName.text.toString().trim(), etDesc.text.toString().trim(), stamp)
+                savePinTextUnified(pin, etName.text.toString().trim(), etDesc.text.toString().trim(), stamp)
                 Toast.makeText(this, "Saved & stamped", Toast.LENGTH_SHORT).show()
                 hideInScreenSheet()
             }
@@ -5357,14 +5410,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleImportUri(uri: Uri) {
         val fileName = getDisplayName(uri).substringBeforeLast('.')
-        val layerId = UUID.randomUUID().toString()
-        val stamp = DevicePrefs.getDeviceStamp(this)
-        val devId = DevicePrefs.getDeviceId(this)
-        Toast.makeText(this, "Importing $fileName...", Toast.LENGTH_SHORT).show()
+        val tempId = UUID.randomUUID().toString()
+        Toast.makeText(this, "Reading $fileName...", Toast.LENGTH_SHORT).show()
 
         Thread {
             val parsed = runCatching {
-                contentResolver.openInputStream(uri)?.use { KmlParser.parse(it, layerId) }
+                contentResolver.openInputStream(uri)?.use { KmlParser.parse(it, tempId) }
             }.getOrNull()
 
             runOnUiThread {
@@ -5379,23 +5430,236 @@ class MainActivity : AppCompatActivity() {
                     fileName.isNotBlank() -> fileName.replace('_', ' ').trim()
                     else -> "Imported Folder"
                 }
-                val uniqueName = makeUniqueLayerName(preferredBase)
-                DevicePrefs.addCachedLayerName(this, uniqueName)
-                repo.importLayer(layerId, uniqueName, stamp, devId, parsed) { ok, msg, _ ->
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                        if (ok) {
-                            DevicePrefs.addJoinedLayerId(this, layerId)
-                            refreshJoinedSync()
-                            if (parsed.pins.isNotEmpty()) {
-                                zoomToPoints(parsed.pins.map { LatLng(it.lat, it.lng) })
+                showImportDestinationDialog(preferredBase, parsed)
+            }
+        }.start()
+    }
+
+    private fun showImportDestinationDialog(defaultBaseName: String, parsed: ParsedKml) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        val trackSummary = if (parsed.tracks.isNotEmpty()) " • ${parsed.tracks.size} tracks" else ""
+        box.addView(TextView(this).apply {
+            text = "${parsed.pins.size} pins$trackSummary found. Choose where to save:"
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#475569"))
+            setPadding(0, 0, 0, dp(10))
+        })
+
+        val etName = EditText(this).apply {
+            hint = "Folder name"
+            setText(makeUniqueLayerName(defaultBaseName))
+            setSingleLine(true)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F1F5F9"))
+                cornerRadius = dp(10).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12) }
+        }
+        box.addView(etName)
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Import KML / KMZ")
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        fun addChoiceBtn(title: String, hex: String, onTap: () -> Unit) {
+            box.addView(MaterialButton(this).apply {
+                text = title
+                textSize = 13.5f
+                isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor(hex))
+                cornerRadius = dp(12)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
+                    bottomMargin = dp(8)
+                }
+                UiAnimations.attachSpringTouch(this)
+                setOnClickListener {
+                    dlg.dismiss()
+                    onTap()
+                }
+            })
+        }
+
+        val stamp = DevicePrefs.getDeviceStamp(this)
+        val devId = DevicePrefs.getDeviceId(this)
+
+        addChoiceBtn("Save Locally (This Phone Only)", "#0F766E") {
+            val chosenName = makeUniqueLayerName(etName.text.toString().trim().ifBlank { defaultBaseName })
+            val localId = LocalFolderStore.newLocalLayerId()
+            LocalFolderStore.saveNewLayer(this, localId, chosenName, stamp, devId, parsed)
+            DevicePrefs.addCachedLayerName(this, chosenName)
+            applyMergedFoldersAndRender()
+            if (parsed.pins.isNotEmpty()) zoomToPoints(parsed.pins.map { LatLng(it.lat, it.lng) })
+            Toast.makeText(this, "Saved ${parsed.pins.size} pins locally in \"$chosenName\"", Toast.LENGTH_LONG).show()
+        }
+
+        addChoiceBtn("Upload to Cloud (Shared Folder)", "#2563EB") {
+            val chosenName = makeUniqueLayerName(etName.text.toString().trim().ifBlank { defaultBaseName })
+            val cloudId = UUID.randomUUID().toString()
+            DevicePrefs.addCachedLayerName(this, chosenName)
+            repo.importLayer(cloudId, chosenName, stamp, devId, parsed) { ok, msg, _ ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    if (ok) {
+                        DevicePrefs.addJoinedLayerId(this, cloudId)
+                        refreshJoinedSync()
+                        if (parsed.pins.isNotEmpty()) zoomToPoints(parsed.pins.map { LatLng(it.lat, it.lng) })
+                    }
+                }
+            }
+        }
+
+        if (layers.isNotEmpty()) {
+            addChoiceBtn("Merge into Existing Folder...", "#475569") {
+                showMergeTargetFolderDialog(parsed)
+            }
+        }
+
+        dlg.show()
+    }
+
+    private fun showMergeTargetFolderDialog(parsed: ParsedKml) {
+        if (layers.isEmpty()) {
+            Toast.makeText(this, "No existing folders to merge into", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = layers.map { l ->
+            val tag = if (LocalFolderStore.isLocalLayerId(l.id)) "Local" else "Cloud"
+            val cnt = pins.count { it.layerId == l.id }
+            "${l.name} [$tag • $cnt pins]"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Merge into Folder")
+            .setItems(labels) { _, which ->
+                val target = layers[which]
+                if (LocalFolderStore.isLocalLayerId(target.id)) {
+                    LocalFolderStore.appendToLayer(this, target.id, parsed.pins, parsed.tracks)
+                    DevicePrefs.setLayerVisible(this, target.id, true)
+                    applyMergedFoldersAndRender()
+                    if (parsed.pins.isNotEmpty()) zoomToPoints(parsed.pins.map { LatLng(it.lat, it.lng) })
+                    Toast.makeText(this, "Merged ${parsed.pins.size} pins into \"${target.name}\"", Toast.LENGTH_LONG).show()
+                } else {
+                    repo.appendToCloudLayer(target.id, target.name, parsed.pins, parsed.tracks) { ok, msg, _ ->
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                            if (ok) {
+                                DevicePrefs.setLayerVisible(this, target.id, true)
+                                refreshJoinedSync()
+                                if (parsed.pins.isNotEmpty()) zoomToPoints(parsed.pins.map { LatLng(it.lat, it.lng) })
                             }
                         }
                     }
                 }
             }
-        }.start()
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmUploadLocalToCloud(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
+        AlertDialog.Builder(this)
+            .setTitle("Upload \"${layer.name}\" to Cloud?")
+            .setMessage("Creates a live shared folder with a 6-character code for your teams and replaces the local-only copy.")
+            .setPositiveButton("Upload") { _, _ ->
+                val newCloudId = UUID.randomUUID().toString()
+                val stamp = DevicePrefs.getDeviceStamp(this)
+                val devId = DevicePrefs.getDeviceId(this)
+                val parsed = ParsedKml(
+                    pins = layerPins.map { it.copy(id = UUID.randomUUID().toString(), layerId = newCloudId) },
+                    tracks = layerTracks.map { it.copy(id = UUID.randomUUID().toString(), layerId = newCloudId) },
+                    documentName = layer.name
+                )
+                repo.importLayer(newCloudId, layer.name, stamp, devId, parsed) { ok, msg, _ ->
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        if (ok) {
+                            val wasPinned = DevicePrefs.isLayerPinned(this, layer.id)
+                            LocalFolderStore.deleteLayer(this, layer.id)
+                            DevicePrefs.removeJoinedLayerId(this, layer.id)
+                            DevicePrefs.addJoinedLayerId(this, newCloudId)
+                            if (wasPinned) DevicePrefs.toggleLayerPinned(this, newCloudId)
+                            refreshJoinedSync()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showDeleteLocalDialog(layer: LayerItem, pinCount: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete Local Folder \"${layer.name}\"?")
+            .setMessage("Removes all $pinCount pins stored locally on this phone.")
+            .setPositiveButton("Delete") { _, _ ->
+                LocalFolderStore.deleteLayer(this, layer.id)
+                DevicePrefs.removeJoinedLayerId(this, layer.id)
+                applyMergedFoldersAndRender()
+                Toast.makeText(this, "Deleted local folder \"${layer.name}\"", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun savePinStatusUnified(pin: PinItem, status: String, stamp: String, reason: String = "") {
+        if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+            LocalFolderStore.updatePinStatus(this, pin, status, stamp, reason)
+            applyMergedFoldersAndRender()
+        } else {
+            repo.updatePinStatus(pin, status, stamp, reason)
+        }
+    }
+
+    private fun savePinTextUnified(pin: PinItem, newName: String, newDesc: String, stamp: String) {
+        if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+            LocalFolderStore.updatePinText(this, pin, newName, newDesc, stamp)
+            applyMergedFoldersAndRender()
+        } else {
+            repo.updatePinText(pin, newName, newDesc, stamp)
+        }
+    }
+
+    private fun deletePinHistoryEntryUnified(pin: PinItem, idx: Int): PinItem {
+        return if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+            val updated = LocalFolderStore.deletePinHistoryEntry(this, pin, idx)
+            applyMergedFoldersAndRender()
+            updated
+        } else {
+            repo.deletePinHistoryEntry(pin, idx)
+        }
+    }
+
+    private fun resetPinStatusUnified(pin: PinItem): PinItem {
+        return if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+            val updated = LocalFolderStore.resetPinStatusToPending(this, pin)
+            applyMergedFoldersAndRender()
+            updated
+        } else {
+            repo.resetPinStatusToPending(pin)
+        }
+    }
+
+    private fun deletePinUnified(pin: PinItem) {
+        if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+            LocalFolderStore.deletePin(this, pin.id)
+            applyMergedFoldersAndRender()
+        } else {
+            repo.deletePin(pin.id)
+        }
     }
 
     private fun applyExtraMapToolsVisibility() {
@@ -5426,22 +5690,30 @@ class MainActivity : AppCompatActivity() {
         return "$stem ($n)"
     }
 
+    private fun applyMergedFoldersAndRender() {
+        val local = LocalFolderStore.loadAll(this)
+        layers = (cloudLayers + local.layers).sortedByDescending { it.updatedAt }
+        pins = cloudPins + local.pins
+        tracks = cloudTracks + local.tracks
+        if (layers.isNotEmpty()) {
+            DevicePrefs.saveCachedLayerNames(this, layers.map { it.name })
+        }
+        renderMapData()
+        liveBookmarksRefresh?.invoke()
+        livePinListRefresh?.invoke()
+        if (isLassoMode) updateLassoUi()
+    }
+
     private fun refreshJoinedSync() {
         val joined = DevicePrefs.getJoinedLayerIds(this)
         repo.syncJoinedLayers(joined) { newLayers, newPins, newTracks, connected ->
-            layers = newLayers
-            pins = newPins
-            tracks = newTracks
+            cloudLayers = newLayers
+            cloudPins = newPins
+            cloudTracks = newTracks
             isLiveConnected = connected
-            if (joined.isEmpty() || newLayers.isNotEmpty()) {
-                DevicePrefs.saveCachedLayerNames(this, newLayers.map { it.name })
-            }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                renderMapData()
-                liveBookmarksRefresh?.invoke()
-                livePinListRefresh?.invoke()
-                if (isLassoMode) updateLassoUi()
+                applyMergedFoldersAndRender()
                 val waitingId = activeSharedPinId
                 if (waitingId != null) {
                     val matched = pins.find { it.id == waitingId }
