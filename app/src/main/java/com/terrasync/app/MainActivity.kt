@@ -269,12 +269,16 @@ class MainActivity : AppCompatActivity() {
     private var displayedBearing: Float = 0f
     private var gpsAnim: ValueAnimator? = null
     private var gpsTrackingActive = false
+    private var lastLiveLocationFixMs: Long = 0L
 
     // Route Preview & Active Turn-by-Turn Navigation State
     private var previewRoute: NavRoute? = null
     private var lastRoutePillKey: String? = null
     private var pendingUpdateApkFile: java.io.File? = null
     private var activeNavRoute: NavRoute? = null
+    private var activeNavTrimmedGeom: List<Pair<Double, Double>>? = null
+    private var navLastSegIdx: Int = 0
+    private var isRerouting: Boolean = false
     private var navDestLatLng: LatLng? = null
     private var navDestName: String = ""
     private var navCurrentStepIdx: Int = 0
@@ -694,12 +698,17 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             if (!ensureLocationServiceOn()) return@setOnClickListener
-            startLiveGpsUpdates()
+            val staleStream = System.currentTimeMillis() - lastLiveLocationFixMs > 10_000L
+            startLiveGpsUpdates(forceRestart = staleStream)
             isFollowingGps = true
             updateLocationIconTint()
             val loc = currentLocation
             if (loc != null) {
-                map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5))
+                if (activeNavRoute != null) {
+                    moveCameraForNavigation(loc, 550)
+                } else {
+                    map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5))
+                }
             } else {
                 Toast.makeText(this, "Acquiring GPS fix...", Toast.LENGTH_SHORT).show()
             }
@@ -1284,8 +1293,13 @@ class MainActivity : AppCompatActivity() {
             ?.setGeoJson(FeatureCollection.fromFeatures(trackFeatures))
 
         val routeToShow = activeNavRoute ?: previewRoute
-        val routeFeatures = if (routeToShow != null && routeToShow.geometry.size >= 2) {
-            listOf(Feature.fromGeometry(LineString.fromLngLats(routeToShow.geometry.map { Point.fromLngLat(it.first, it.second) })))
+        val displayGeom = if (activeNavRoute != null && (activeNavTrimmedGeom?.size ?: 0) >= 2) {
+            activeNavTrimmedGeom!!
+        } else {
+            routeToShow?.geometry ?: emptyList()
+        }
+        val routeFeatures = if (routeToShow != null && displayGeom.size >= 2) {
+            listOf(Feature.fromGeometry(LineString.fromLngLats(displayGeom.map { Point.fromLngLat(it.first, it.second) })))
         } else emptyList()
         style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(routeFeatures))
@@ -1372,6 +1386,14 @@ class MainActivity : AppCompatActivity() {
             acc += segs[i]
         }
         return geom[geom.size / 2]
+    }
+
+    private fun updateActiveRouteLine(geom: List<Pair<Double, Double>>) {
+        val style = map?.style ?: return
+        if (!style.isFullyLoaded || geom.size < 2) return
+        val feature = Feature.fromGeometry(LineString.fromLngLats(geom.map { Point.fromLngLat(it.first, it.second) }))
+        style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
+            ?.setGeoJson(FeatureCollection.fromFeatures(listOf(feature)))
     }
 
     private fun updateGpsLayerFeature(lat: Double, lng: Double, bearing: Float) {
@@ -2252,7 +2274,10 @@ class MainActivity : AppCompatActivity() {
 
         // 8. Owner-Only Pin Deletion
         val myDevId = DevicePrefs.getDeviceId(this)
-        val isOwner = layer == null || layer.creatorDeviceId.isBlank() || layer.creatorDeviceId.equals(myDevId, ignoreCase = true)
+        val isOwner = layer != null && (
+            (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
+                (layer.creatorDeviceId.isBlank() && layer.createdBy.contains("#$myDevId", ignoreCase = true))
+            )
         if (isOwner) {
             sheetContent.addView(MaterialButton(this).apply {
                 text = "Delete Pin"
@@ -2447,6 +2472,7 @@ class MainActivity : AppCompatActivity() {
         val startLng: Double
         val startLabel: String
 
+        var startBearing: Float? = null
         if (customStart != null) {
             startLat = customStart.latitude
             startLng = customStart.longitude
@@ -2457,22 +2483,24 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             if (!ensureLocationServiceOn()) return
-            startLiveGpsUpdates()
+            val staleStream = System.currentTimeMillis() - lastLiveLocationFixMs > 10_000L
+            startLiveGpsUpdates(forceRestart = staleStream)
             val loc = currentLocation
-            if (loc == null) {
-                Toast.makeText(this, "Waiting for GPS signal to build route...", Toast.LENGTH_SHORT).show()
+            if (loc == null || locationAgeMs(loc) > 120_000L) {
+                Toast.makeText(this, "Acquiring fresh GPS fix before building route...", Toast.LENGTH_SHORT).show()
                 return
             }
             startLat = loc.latitude
             startLng = loc.longitude
             startLabel = "My Location"
+            if (loc.hasBearing() && loc.speed > 1.5f) startBearing = loc.bearing
         }
 
         travelMode = modeOverride
         DevicePrefs.setTravelMode(this, modeOverride)
         Toast.makeText(this, "Building ${modeOverride.label.lowercase()} route...", Toast.LENGTH_SHORT).show()
 
-        RoutingEngine.fetchRoute(startLat, startLng, destLat, destLng, modeOverride) { route, err ->
+        RoutingEngine.fetchRoute(startLat, startLng, destLat, destLng, modeOverride, startBearing) { route, err ->
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (route == null) {
@@ -2646,10 +2674,37 @@ class MainActivity : AppCompatActivity() {
         showInScreenSheet(peekDp = 225)
     }
 
+    private fun moveCameraForNavigation(loc: Location, durationMs: Int = 500) {
+        val m = map ?: return
+        val speedKmh = if (loc.hasSpeed()) loc.speed * 3.6f else 0f
+        val targetZoom = when {
+            speedKmh >= 75f -> 15.6
+            speedKmh >= 45f -> 16.3
+            else -> 17.0
+        }
+        val camBearing = when {
+            loc.hasBearing() && loc.speed > 1.0f -> loc.bearing.toDouble()
+            displayedBearing != 0f -> displayedBearing.toDouble()
+            else -> m.cameraPosition.bearing
+        }
+        val cam = CameraPosition.Builder()
+            .target(LatLng(loc.latitude, loc.longitude))
+            .zoom(targetZoom)
+            .tilt(45.0)
+            .bearing(camBearing)
+            .padding(0.0, dp(200).toDouble(), 0.0, 0.0)
+            .build()
+        m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), durationMs)
+    }
+
     private fun confirmStartNavigation(route: NavRoute, destLat: Double, destLng: Double, destTitle: String) {
         if (!ensureLocationServiceOn()) return
+        startLiveGpsUpdates(forceRestart = true)
         val loc = currentLocation ?: return
         activeNavRoute = route
+        activeNavTrimmedGeom = route.geometry
+        navLastSegIdx = 0
+        isRerouting = false
         previewRoute = null
         navDestLatLng = LatLng(destLat, destLng)
         navDestName = destTitle
@@ -2664,15 +2719,7 @@ class MainActivity : AppCompatActivity() {
         updateSpeedBadge(loc)
         renderMapData()
         updateNavigationProgress(loc, route, LatLng(destLat, destLng))
-
-        val cam = CameraPosition.Builder()
-            .target(LatLng(loc.latitude, loc.longitude))
-            .zoom(17.0)
-            .tilt(48.0)
-            .bearing(if (loc.hasBearing()) loc.bearing.toDouble() else 0.0)
-            .padding(0.0, 0.0, 0.0, 0.0)
-            .build()
-        map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 700)
+        moveCameraForNavigation(loc, 650)
     }
 
     private fun updateNavigationProgress(loc: Location, route: NavRoute, dest: LatLng) {
@@ -2684,21 +2731,28 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val (offRouteMeters, remainingRoadMeters) = RoutingEngine.measureAlongRoute(loc.latitude, loc.longitude, route.geometry)
+        val prog = RoutingEngine.trackRouteProgress(loc.latitude, loc.longitude, route.geometry, navLastSegIdx)
+        navLastSegIdx = prog.segmentIndex
+        activeNavTrimmedGeom = prog.remainingGeometry
+        updateActiveRouteLine(prog.remainingGeometry)
 
+        val remainingRoadMeters = prog.remainingMeters
         if (route.steps.isNotEmpty()) {
-            navCurrentStepIdx = navCurrentStepIdx.coerceIn(0, route.steps.lastIndex)
-            while (navCurrentStepIdx < route.steps.lastIndex) {
-                val s = route.steps[navCurrentStepIdx]
-                val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, s.lat, s.lng)
-                if (d < 30.0) navCurrentStepIdx++ else break
+            val nextIdx = route.steps.indexOfFirst { it.routeDistMeters > prog.traveledMeters + 18.0 }
+            navCurrentStepIdx = when {
+                nextIdx >= 0 -> nextIdx.coerceAtLeast(if (route.steps.size > 1) 1 else 0)
+                else -> route.steps.lastIndex
             }
         }
 
         val step = route.steps.getOrElse(navCurrentStepIdx) {
-            NavStep("Continue to destination", "↑", remainingRoadMeters, dest.latitude, dest.longitude)
+            NavStep("Continue to destination", "↑", remainingRoadMeters, dest.latitude, dest.longitude, prog.traveledMeters + remainingRoadMeters)
         }
-        val distToStep = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, step.lat, step.lng)
+        val distToStep = if (step.routeDistMeters > 0.0) {
+            (step.routeDistMeters - prog.traveledMeters).coerceAtLeast(0.0)
+        } else {
+            RoutingEngine.haversineMeters(loc.latitude, loc.longitude, step.lat, step.lng)
+        }
 
         val etaSec = if (route.totalDistanceMeters > 10.0 && route.totalDurationSeconds > 0.0) {
             (remainingRoadMeters / route.totalDistanceMeters) * route.totalDurationSeconds
@@ -2708,36 +2762,42 @@ class MainActivity : AppCompatActivity() {
         val etaMin = (etaSec / 60.0).toInt().coerceAtLeast(1)
 
         tvNavArrow.text = step.arrow
-        tvNavInstruction.text = step.instruction
+        tvNavInstruction.text = if (isRerouting) "Recalculating route..." else step.instruction
         tvNavMeta.text = "${route.mode.icon} In ${formatDistanceShort(distToStep)}  •  ${formatDistanceShort(remainingRoadMeters)} left (~$etaMin min)"
 
-        if (navCurrentStepIdx != lastSpokenStepIdx && distToStep < 250.0) {
+        val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
+        if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
             lastSpokenStepIdx = navCurrentStepIdx
             speakPrompt("In ${formatDistanceShort(distToStep)}, ${step.instruction}")
         }
 
         if (isFollowingGps) {
-            val cam = CameraPosition.Builder()
-                .target(LatLng(loc.latitude, loc.longitude))
-                .zoom(17.0)
-                .tilt(48.0)
-                .bearing(if (loc.hasBearing()) loc.bearing.toDouble() else (map?.cameraPosition?.bearing ?: 0.0))
-                .build()
-            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 700)
+            moveCameraForNavigation(loc, 450)
         }
 
         val now = System.currentTimeMillis()
-        if (offRouteMeters > 65.0 && now - lastRerouteTime > 12000L) {
+        val rerouteThreshold = if (loc.hasAccuracy() && loc.accuracy > 20f) {
+            (45.0 + loc.accuracy * 0.5).coerceAtMost(75.0)
+        } else 45.0
+        if (prog.offRouteMeters > rerouteThreshold && !isRerouting && now - lastRerouteTime > 7000L) {
+            isRerouting = true
             lastRerouteTime = now
+            tvNavInstruction.text = "Recalculating route..."
             speakPrompt("Recalculating route")
-            RoutingEngine.fetchRoute(loc.latitude, loc.longitude, dest.latitude, dest.longitude, route.mode) { newRoute, _ ->
-                if (newRoute != null) {
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed || activeNavRoute == null) return@runOnUiThread
-                        activeNavRoute = newRoute
-                        navCurrentStepIdx = if (newRoute.steps.size > 1) 1 else 0
-                        lastSpokenStepIdx = -1
-                        renderMapData()
+            val heading = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
+            RoutingEngine.fetchRoute(loc.latitude, loc.longitude, dest.latitude, dest.longitude, route.mode, heading) { newRoute, _ ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    isRerouting = false
+                    if (activeNavRoute == null || newRoute == null) return@runOnUiThread
+                    activeNavRoute = newRoute
+                    activeNavTrimmedGeom = newRoute.geometry
+                    navLastSegIdx = 0
+                    navCurrentStepIdx = if (newRoute.steps.size > 1) 1 else 0
+                    lastSpokenStepIdx = -1
+                    renderMapData()
+                    currentLocation?.let { latest ->
+                        updateNavigationProgress(latest, newRoute, dest)
                     }
                 }
             }
@@ -2746,6 +2806,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopNavigation() {
         activeNavRoute = null
+        activeNavTrimmedGeom = null
+        navLastSegIdx = 0
+        isRerouting = false
         previewRoute = null
         navDestLatLng = null
         navCurrentStepIdx = 0
@@ -2753,7 +2816,16 @@ class MainActivity : AppCompatActivity() {
         topCluster.visibility = View.VISIBLE
         updateSpeedBadge(currentLocation)
         renderMapData()
-        map?.animateCamera(CameraUpdateFactory.tiltTo(0.0), 400)
+        map?.let { m ->
+            val cam = CameraPosition.Builder()
+                .target(m.cameraPosition.target)
+                .zoom(m.cameraPosition.zoom)
+                .tilt(0.0)
+                .bearing(0.0)
+                .padding(0.0, 0.0, 0.0, 0.0)
+                .build()
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 400)
+        }
     }
 
     private fun speakPrompt(text: String) {
@@ -2785,14 +2857,32 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
+    private fun locationAgeMs(loc: Location): Long {
+        return if (loc.elapsedRealtimeNanos > 0L) {
+            ((android.os.SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000L).coerceAtLeast(0L)
+        } else {
+            (System.currentTimeMillis() - loc.time).coerceAtLeast(0L)
+        }
+    }
+
     @SuppressLint("MissingPermission")
-    private fun startLiveGpsUpdates() {
+    private fun startLiveGpsUpdates(forceRestart: Boolean = false) {
+        if (forceRestart) stopLiveGpsUpdates()
         if (gpsTrackingActive || !hasLocationPermission()) return
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-        val bestLast = providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
-            .maxByOrNull { it.time }
-        if (bestLast != null) {
+        val providers = buildList {
+            add(LocationManager.GPS_PROVIDER)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                add(LocationManager.FUSED_PROVIDER)
+            }
+            add(LocationManager.NETWORK_PROVIDER)
+        }
+
+        val bestLast = providers
+            .mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+            .filter { locationAgeMs(it) <= 120_000L }
+            .minByOrNull { locationAgeMs(it) }
+        if (bestLast != null && (currentLocation == null || locationAgeMs(bestLast) < locationAgeMs(currentLocation!!))) {
             currentLocation = bestLast
             displayedLat = bestLast.latitude
             displayedLng = bestLast.longitude
@@ -2801,14 +2891,16 @@ class MainActivity : AppCompatActivity() {
             updateSpeedBadge(bestLast)
         }
 
+        var registeredAny = false
         providers.forEach { provider ->
             runCatching {
                 if (lm.isProviderEnabled(provider)) {
-                    lm.requestLocationUpdates(provider, 1200L, 1.5f, gpsListener)
+                    lm.requestLocationUpdates(provider, 600L, 0f, gpsListener)
+                    registeredAny = true
                 }
             }
         }
-        gpsTrackingActive = true
+        gpsTrackingActive = registeredAny
     }
 
     private fun stopLiveGpsUpdates() {
@@ -2823,17 +2915,23 @@ class MainActivity : AppCompatActivity() {
     private fun isBetterLocation(candidate: Location, current: Location?): Boolean {
         val now = System.currentTimeMillis()
         val isGps = candidate.provider == LocationManager.GPS_PROVIDER
+        val isFused = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+            candidate.provider == LocationManager.FUSED_PROVIDER
         if (isGps) {
             lastGpsFixTimeMs = now
-        } else if (now - lastGpsFixTimeMs < 15_000L) {
+        } else if (!isFused && now - lastGpsFixTimeMs < 10_000L) {
+            return false
+        } else if (isFused && now - lastGpsFixTimeMs < 3_000L && candidate.hasAccuracy() && candidate.accuracy > 25f) {
             return false
         }
         if (current == null) return true
-        if (candidate.time + 5_000L < current.time) return false
-        val isNewer = candidate.time - current.time > 8_000L
-        if (!isNewer && candidate.hasAccuracy() && current.hasAccuracy()) {
-            if (!isGps && candidate.accuracy > current.accuracy + 25f) return false
-            if (isGps && candidate.accuracy > 60f && current.accuracy < 25f) return false
+        val candAge = locationAgeMs(candidate)
+        val currAge = locationAgeMs(current)
+        if (candAge > currAge + 3_000L) return false
+        val isSignificantlyNewer = currAge - candAge > 5_000L
+        if (!isSignificantlyNewer && candidate.hasAccuracy() && current.hasAccuracy()) {
+            if (!isGps && !isFused && candidate.accuracy > current.accuracy + 25f) return false
+            if ((isGps || isFused) && candidate.accuracy > 80f && current.accuracy < 25f) return false
         }
         return true
     }
@@ -2859,10 +2957,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun onNewLocation(loc: Location) {
         if (!isBetterLocation(loc, currentLocation)) return
-        val prevLat = if (currentLocation == null) loc.latitude else displayedLat
-        val prevLng = if (currentLocation == null) loc.longitude else displayedLng
+        lastLiveLocationFixMs = System.currentTimeMillis()
+        val prevLoc = currentLocation
+        val prevLat = if (prevLoc == null) loc.latitude else displayedLat
+        val prevLng = if (prevLoc == null) loc.longitude else displayedLng
         val prevBearing = displayedBearing
-        val targetBearing = if (loc.hasBearing() && loc.speed > 0.5f) loc.bearing else prevBearing
+        val targetBearing = when {
+            loc.hasBearing() && loc.speed > 0.8f -> loc.bearing
+            prevLoc != null && prevLoc.distanceTo(loc) > 3.5f -> (prevLoc.bearingTo(loc) + 360f) % 360f
+            else -> prevBearing
+        }
         var deltaBearing = (targetBearing - prevBearing) % 360f
         if (deltaBearing > 180f) deltaBearing -= 360f
         if (deltaBearing < -180f) deltaBearing += 360f
@@ -2872,7 +2976,7 @@ class MainActivity : AppCompatActivity() {
 
         gpsAnim?.cancel()
         gpsAnim = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 650L
+            duration = 450L
             interpolator = DecelerateInterpolator()
             addUpdateListener { anim ->
                 val t = anim.animatedValue as Float
@@ -3427,7 +3531,8 @@ class MainActivity : AppCompatActivity() {
                 val layerTracks = tracks.filter { it.layerId == layer.id }
                 val visible = DevicePrefs.isLayerVisible(this, layer.id)
                 val isPinned = DevicePrefs.isLayerPinned(this, layer.id)
-                val isCreator = layer.creatorDeviceId.isBlank() || layer.creatorDeviceId.equals(myDevId, ignoreCase = true)
+                val isCreator = (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
+                    (layer.creatorDeviceId.isBlank() && layer.createdBy.contains("#$myDevId", ignoreCase = true))
 
                 val doneCnt = layerPins.count { it.status.equals("done", true) }
                 val issueCnt = layerPins.count { it.status.equals("issue", true) }
@@ -3571,7 +3676,9 @@ class MainActivity : AppCompatActivity() {
                                     if (isPinned) {
                                         Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to leave.", Toast.LENGTH_LONG).show()
                                     } else {
-                                        showLeaveFolderDialog(layer)
+                                        DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
+                                        refreshJoinedSync()
+                                        Toast.makeText(this@MainActivity, "Left \"${layer.name}\"", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                                 9 -> {
@@ -3724,59 +3831,18 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showLeaveFolderDialog(layer: LayerItem) {
-        AlertDialog.Builder(this)
-            .setTitle("Leave \"${layer.name}\"?")
-            .setMessage("Remove this folder from this phone only? Other team members keep it, and you can rejoin later with code ${layer.shareCode}.")
-            .setPositiveButton("Leave") { _, _ ->
-                DevicePrefs.removeJoinedLayerId(this, layer.id)
-                refreshJoinedSync()
-                Toast.makeText(this, "Left \"${layer.name}\"", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
     private fun showDeleteCloudDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
-        }
-        box.addView(TextView(this).apply {
-            text = "This permanently deletes \"${layer.name}\" (${layerPins.size} pins) for EVERY team member.\n\nType DELETE below to confirm:"
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#334155"))
-            setPadding(0, 0, 0, dp(10))
-        })
-        val etConfirm = EditText(this).apply {
-            hint = "Type DELETE"
-            setSingleLine(true)
-        }
-        box.addView(etConfirm)
-
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Delete Folder from Cloud?")
-            .setView(box)
-            .setPositiveButton("Delete Cloud", null)
-            .setNegativeButton("Cancel", null)
-            .create()
-
-        dlg.setOnShowListener {
-            val posBtn = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
-            posBtn.setTextColor(Color.parseColor("#DC2626"))
-            posBtn.setOnClickListener {
-                if (!etConfirm.text.toString().trim().equals("DELETE", ignoreCase = true)) {
-                    Toast.makeText(this, "Type DELETE to confirm permanent cloud deletion", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
+        AlertDialog.Builder(this)
+            .setTitle("Delete \"${layer.name}\" from Cloud?")
+            .setMessage("This permanently removes all ${layerPins.size} bookmarks for every team member.")
+            .setPositiveButton("Delete Cloud") { _, _ ->
                 DevicePrefs.removeJoinedLayerId(this, layer.id)
                 repo.deleteLayer(layer.id, layerPins.map { it.id }, layerTracks.map { it.id })
                 refreshJoinedSync()
                 Toast.makeText(this, "Deleted \"${layer.name}\" from cloud", Toast.LENGTH_SHORT).show()
-                dlg.dismiss()
             }
-        }
-        dlg.show()
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // --- Subpage: Folder Bookmarks List ---
@@ -4413,6 +4479,14 @@ class MainActivity : AppCompatActivity() {
         addSwitchRow("Turn-by-Turn Voice Prompts", DevicePrefs.isVoiceNav(this)) {
             DevicePrefs.setVoiceNav(this, it)
         }
+        addSwitchRow("Beta Updates Channel (Pre-releases)", DevicePrefs.isBetaUpdatesEnabled(this)) {
+            DevicePrefs.setBetaUpdatesEnabled(this, it)
+            Toast.makeText(
+                this,
+                if (it) "Beta updates enabled on this phone" else "Stable updates only",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
 
         // 6. Offline Street Maps
         body.addView(TextView(this).apply {
@@ -4592,7 +4666,8 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         heroText.addView(TextView(this).apply {
-            text = "Version ${AppUpdater.getInstalledVersionName(this@MainActivity)} • Kotlin + MapLibre GL"
+            val ch = if (DevicePrefs.isBetaUpdatesEnabled(this@MainActivity)) " • Beta" else ""
+            text = "Version ${AppUpdater.getInstalledVersionName(this@MainActivity)}$ch • Kotlin + MapLibre GL"
             textSize = 13f
             setTextColor(Color.parseColor("#0F766E"))
             setTypeface(null, Typeface.BOLD)
@@ -5136,10 +5211,12 @@ class MainActivity : AppCompatActivity() {
     // --- In-App GitHub Updater ---
 
     private fun checkForAppUpdate(silent: Boolean) {
+        val includeBeta = DevicePrefs.isBetaUpdatesEnabled(this)
         if (!silent) {
-            Toast.makeText(this, "Checking for updates...", Toast.LENGTH_SHORT).show()
+            val channel = if (includeBeta) "beta & stable" else "stable"
+            Toast.makeText(this, "Checking for $channel updates...", Toast.LENGTH_SHORT).show()
         }
-        AppUpdater.checkForUpdate(this) { info, err ->
+        AppUpdater.checkForUpdate(this, includeBeta = includeBeta) { info, err ->
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (info != null) {
@@ -5179,7 +5256,7 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(box)
 
         AlertDialog.Builder(this)
-            .setTitle("Update Available (v${info.versionName})")
+            .setTitle(if (info.isPreRelease) "Beta Update Available (v${info.versionName})" else "Update Available (v${info.versionName})")
             .setView(scroll)
             .setPositiveButton("Update Now") { _, _ -> startApkUpdateDownload(info) }
             .setNeutralButton("GitHub") { _, _ ->

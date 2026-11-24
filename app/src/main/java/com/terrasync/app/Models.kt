@@ -63,7 +63,8 @@ data class NavStep(
     val arrow: String,
     val distanceMeters: Double,
     val lat: Double,
-    val lng: Double
+    val lng: Double,
+    val routeDistMeters: Double = 0.0
 )
 
 data class NavRoute(
@@ -72,6 +73,16 @@ data class NavRoute(
     val totalDurationSeconds: Double,
     val steps: List<NavStep>,
     val mode: TravelMode = TravelMode.CAR
+)
+
+data class RouteProgress(
+    val offRouteMeters: Double,
+    val traveledMeters: Double,
+    val remainingMeters: Double,
+    val snappedLat: Double,
+    val snappedLng: Double,
+    val segmentIndex: Int,
+    val remainingGeometry: List<Pair<Double, Double>>
 )
 
 data class PlaceResult(

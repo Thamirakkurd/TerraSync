@@ -8,6 +8,7 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -21,11 +22,13 @@ data class UpdateInfo(
     val apkUrl: String,
     val apkName: String,
     val sizeBytes: Long,
-    val htmlUrl: String
+    val htmlUrl: String,
+    val isPreRelease: Boolean = false
 )
 
 object AppUpdater {
     private const val LATEST_RELEASE_API = "https://api.github.com/repos/Thamirakkurd/TerraSync/releases/latest"
+    private const val ALL_RELEASES_API = "https://api.github.com/repos/Thamirakkurd/TerraSync/releases?per_page=10"
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -44,27 +47,49 @@ object AppUpdater {
             } else {
                 ctx.packageManager.getPackageInfo(ctx.packageName, 0)
             }
-            (info.versionName ?: "2.6.0").trim().removePrefix("v").removePrefix("V")
-        }.getOrDefault("2.6.0")
+            (info.versionName ?: "2.6.1").trim().removePrefix("v").removePrefix("V")
+        }.getOrDefault("2.6.1")
     }
 
     fun isNewerVersion(remoteRaw: String, currentRaw: String): Boolean {
-        val rParts = parseVersionParts(remoteRaw)
-        val cParts = parseVersionParts(currentRaw)
-        val len = maxOf(rParts.size, cParts.size)
-        for (i in 0 until len) {
-            val r = rParts.getOrElse(i) { 0 }
-            val c = cParts.getOrElse(i) { 0 }
-            if (r != c) return r > c
-        }
-        return false
+        return compareVersions(remoteRaw, currentRaw) > 0
     }
 
-    private fun parseVersionParts(raw: String): List<Int> {
-        val clean = raw.trim().removePrefix("v").removePrefix("V").substringBefore("-")
-        return clean.split(".").map { seg ->
+    private fun compareVersions(aRaw: String, bRaw: String): Int {
+        val aClean = aRaw.trim().removePrefix("v").removePrefix("V")
+        val bClean = bRaw.trim().removePrefix("v").removePrefix("V")
+        val aBase = parseBaseParts(aClean)
+        val bBase = parseBaseParts(bClean)
+        val len = maxOf(aBase.size, bBase.size)
+        for (i in 0 until len) {
+            val av = aBase.getOrElse(i) { 0 }
+            val bv = bBase.getOrElse(i) { 0 }
+            if (av != bv) return av.compareTo(bv)
+        }
+        val aPre = aClean.substringAfter("-", "")
+        val bPre = bClean.substringAfter("-", "")
+        if (aPre.isBlank() && bPre.isBlank()) return 0
+        if (aPre.isBlank()) return 1   // stable > prerelease
+        if (bPre.isBlank()) return -1  // prerelease < stable
+        return preReleaseRank(aPre).compareTo(preReleaseRank(bPre))
+    }
+
+    private fun parseBaseParts(clean: String): List<Int> {
+        return clean.substringBefore("-").split(".").map { seg ->
             seg.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
         }
+    }
+
+    private fun preReleaseRank(pre: String): Int {
+        val lower = pre.lowercase()
+        val tier = when {
+            lower.startsWith("rc") -> 600
+            lower.startsWith("beta") -> 300
+            lower.startsWith("alpha") -> 100
+            else -> 10
+        }
+        val num = Regex("\d+").find(lower)?.value?.toIntOrNull()?.coerceIn(0, 99) ?: 0
+        return tier + num
     }
 
     fun cleanupOldApks(ctx: Context) {
@@ -80,15 +105,44 @@ object AppUpdater {
         }
     }
 
+    private fun parseReleaseJson(json: JSONObject): UpdateInfo? {
+        if (json.optBoolean("draft", false)) return null
+        val tag = json.optString("tag_name", "").trim()
+        val ver = tag.removePrefix("v").removePrefix("V")
+        if (ver.isBlank()) return null
+
+        val assets = json.optJSONArray("assets") ?: return null
+        var apkUrl = ""
+        var apkName = "TerraSync-$tag.apk"
+        var apkSize = 0L
+        for (i in 0 until assets.length()) {
+            val asset = assets.getJSONObject(i)
+            val name = asset.optString("name", "")
+            if (name.lowercase().endsWith(".apk")) {
+                apkUrl = asset.optString("browser_download_url", "")
+                apkName = name
+                apkSize = asset.optLong("size", 0L)
+                break
+            }
+        }
+        if (apkUrl.isBlank()) return null
+        val isPre = json.optBoolean("prerelease", false) || ver.contains("-")
+        val notes = json.optString("body", "").trim()
+        val htmlUrl = json.optString("html_url", "https://github.com/Thamirakkurd/TerraSync/releases")
+        return UpdateInfo(ver, tag, notes, apkUrl, apkName, apkSize, htmlUrl, isPre)
+    }
+
     fun checkForUpdate(
         ctx: Context,
+        includeBeta: Boolean = false,
         onResult: (update: UpdateInfo?, error: String?) -> Unit
     ) {
         val currentVersion = getInstalledVersionName(ctx)
         Thread {
             try {
+                val url = if (includeBeta) ALL_RELEASES_API else LATEST_RELEASE_API
                 val req = Request.Builder()
-                    .url(LATEST_RELEASE_API)
+                    .url(url)
                     .header("Accept", "application/vnd.github+json")
                     .header("User-Agent", "TerraSync/$currentVersion (https://github.com/Thamirakkurd/TerraSync)")
                     .build()
@@ -104,38 +158,26 @@ object AppUpdater {
                         return@Thread
                     }
                     val body = resp.body?.string().orEmpty()
-                    val json = JSONObject(body)
-                    val tag = json.optString("tag_name", "").trim()
-                    val remoteVer = tag.removePrefix("v").removePrefix("V")
-                    if (remoteVer.isBlank() || !isNewerVersion(remoteVer, currentVersion)) {
-                        onResult(null, null)
-                        return@Thread
-                    }
-
-                    val assets = json.optJSONArray("assets")
-                    var apkUrl = ""
-                    var apkName = "TerraSync-$tag.apk"
-                    var apkSize = 0L
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.getJSONObject(i)
-                            val name = asset.optString("name", "")
-                            if (name.lowercase().endsWith(".apk")) {
-                                apkUrl = asset.optString("browser_download_url", "")
-                                apkName = name
-                                apkSize = asset.optLong("size", 0L)
-                                break
+                    val best: UpdateInfo? = if (includeBeta) {
+                        val arr = JSONArray(body)
+                        var highest: UpdateInfo? = null
+                        for (i in 0 until arr.length()) {
+                            val cand = parseReleaseJson(arr.getJSONObject(i)) ?: continue
+                            if (highest == null || compareVersions(cand.versionName, highest.versionName) > 0) {
+                                highest = cand
                             }
                         }
-                    }
-                    if (apkUrl.isBlank()) {
-                        onResult(null, "Release $tag has no APK asset yet")
-                        return@Thread
+                        highest
+                    } else {
+                        val parsed = parseReleaseJson(JSONObject(body))
+                        if (parsed != null && !parsed.isPreRelease) parsed else null
                     }
 
-                    val notes = json.optString("body", "").trim()
-                    val htmlUrl = json.optString("html_url", "https://github.com/Thamirakkurd/TerraSync/releases")
-                    onResult(UpdateInfo(remoteVer, tag, notes, apkUrl, apkName, apkSize, htmlUrl), null)
+                    if (best != null && isNewerVersion(best.versionName, currentVersion)) {
+                        onResult(best, null)
+                    } else {
+                        onResult(null, null)
+                    }
                 }
             } catch (e: Exception) {
                 onResult(null, e.message ?: "Unable to reach GitHub")

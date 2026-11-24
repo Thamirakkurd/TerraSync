@@ -14,10 +14,24 @@ android {
         targetSdk = 34
         val tagVer = (project.findProperty("appVersionName") as String?)
             ?: System.getenv("GITHUB_REF_NAME")?.removePrefix("v")?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+.*")) }
-            ?: "2.6.0"
+            ?: "2.6.1"
+        val baseNum = tagVer.substringBefore("-").split(".").mapNotNull { it.toIntOrNull() }
+            .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20601 }
+        val preOffset = if (!tagVer.contains("-")) {
+            99
+        } else {
+            val pre = tagVer.substringAfter("-").lowercase()
+            val tier = when {
+                pre.startsWith("rc") -> 60
+                pre.startsWith("beta") -> 30
+                pre.startsWith("alpha") -> 10
+                else -> 1
+            }
+            val num = Regex("\\d+").find(pre)?.value?.toIntOrNull()?.coerceIn(0, 29) ?: 0
+            (tier + num).coerceIn(1, 98)
+        }
         val computedCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull()
-            ?: tagVer.substringBefore("-").split(".").mapNotNull { it.toIntOrNull() }
-                .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20600 }
+            ?: (baseNum * 100 + preOffset)
         versionCode = computedCode
         versionName = tagVer
     }

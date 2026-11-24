@@ -25,6 +25,7 @@ object DevicePrefs {
     private const val KEY_LOCAL_SENT_PINS = "local_sent_pin_ids"
     private const val KEY_HIDE_SENT_PINS = "hide_sent_pins"
     private const val KEY_PINNED_LAYERS = "pinned_layer_ids"
+    private const val KEY_BETA_UPDATES = "beta_updates_enabled"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -211,4 +212,7 @@ object DevicePrefs {
         prefs(ctx).edit().putStringSet(KEY_PINNED_LAYERS, next).apply()
         return nowPinned
     }
+
+    fun isBetaUpdatesEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_BETA_UPDATES, false)
+    fun setBetaUpdatesEnabled(ctx: Context, enabled: Boolean) = prefs(ctx).edit().putBoolean(KEY_BETA_UPDATES, enabled).apply()
 }
