@@ -72,6 +72,7 @@ import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.RasterDemSource
+import org.maplibre.android.style.sources.TileSet
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
@@ -805,113 +806,161 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMultiStatusFilterDialog() {
-        val txtPrimary = Color.parseColor("#0F172A")
-        val dividerColor = Color.parseColor("#E2E8F0")
+        val p = currentPalette()
+        val night = p.isDark
 
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(10), dp(20), dp(6))
+        sheetContent.removeAllViews()
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10) }
         }
+        header.addView(TextView(this).apply {
+            text = "Filter Pins"
+            textSize = 18f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(p.textPrimary)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(ImageButton(this).apply {
+            setImageResource(R.drawable.ic_close)
+            setColorFilter(p.textSecondary)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            setOnClickListener { hideInScreenSheet() }
+        })
+        sheetContent.addView(header)
 
+        val card = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 4, bottomMarginDp = 12)
         var updatingUi = false
-        lateinit var cbAll: CheckBox
-        val statusChecks = mutableMapOf<String, CheckBox>()
+        lateinit var swAll: MaterialSwitch
+        val statusSwitches = mutableMapOf<String, MaterialSwitch>()
 
-        fun syncCheckboxesAndMap() {
+        fun syncSwitchesAndMap() {
             updatingUi = true
-            cbAll.isChecked = visibleStatuses.containsAll(ALL_STATUSES)
-            statusChecks.forEach { (key, cb) -> cb.isChecked = visibleStatuses.contains(key) }
+            swAll.isChecked = visibleStatuses.containsAll(ALL_STATUSES)
+            statusSwitches.forEach { (key, sw) -> sw.isChecked = visibleStatuses.contains(key) }
             updatingUi = false
             DevicePrefs.setVisibleStatuses(this, visibleStatuses)
             updateFilterIconTint()
             renderMapData()
         }
 
-        cbAll = CheckBox(this).apply {
-            text = "All Pins"
-            textSize = 15f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            isChecked = visibleStatuses.containsAll(ALL_STATUSES)
-            setPadding(dp(8), dp(10), dp(8), dp(10))
-            setOnCheckedChangeListener { _, checked ->
-                if (updatingUi) return@setOnCheckedChangeListener
-                visibleStatuses.clear()
-                if (checked) visibleStatuses.addAll(ALL_STATUSES)
-                syncCheckboxesAndMap()
+        fun makeFilterRow(dotColor: Int?, title: String, subtitle: String?, initialChecked: Boolean, onToggle: (Boolean) -> Unit): MaterialSwitch {
+            if (card.childCount > 0) {
+                card.addView(DesignSystem.createHairlineDivider(this, p))
             }
-        }
-        box.addView(cbAll)
-
-        box.addView(View(this).apply {
-            setBackgroundColor(dividerColor)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(4)
-                bottomMargin = dp(6)
-            }
-        })
-
-        listOf(
-            Triple("pending", "Pending", "#F59E0B"),
-            Triple("done", "Done", "#22C55E"),
-            Triple("issue", "Issue", "#EF4444")
-        ).forEach { (key, label, hex) ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(4), dp(4), dp(4))
+                minimumHeight = dp(52)
+                setPadding(0, dp(6), 0, dp(6))
             }
-            row.addView(View(this).apply {
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.parseColor(hex))
+            if (dotColor != null) {
+                row.addView(View(this).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(dotColor)
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dp(12), dp(12)).apply { marginEnd = dp(12) }
+                })
+            }
+            val textCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(10)
                 }
-                layoutParams = LinearLayout.LayoutParams(dp(12), dp(12)).apply { marginEnd = dp(10) }
+            }
+            textCol.addView(TextView(this).apply {
+                text = title
+                textSize = 15f
+                setTypeface(null, if (dotColor == null) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(p.textPrimary)
             })
-            val cb = CheckBox(this).apply {
-                text = label
-                textSize = 14.5f
-                setTextColor(txtPrimary)
-                isChecked = visibleStatuses.contains(key)
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                setOnCheckedChangeListener { _, checked ->
-                    if (updatingUi) return@setOnCheckedChangeListener
-                    if (checked) visibleStatuses.add(key) else visibleStatuses.remove(key)
-                    syncCheckboxesAndMap()
-                }
+            if (!subtitle.isNullOrBlank()) {
+                textCol.addView(TextView(this).apply {
+                    text = subtitle
+                    textSize = 12f
+                    setTextColor(p.textSecondary)
+                    DesignSystem.applyTabularNumerals(this)
+                })
             }
-            statusChecks[key] = cb
-            row.addView(cb)
-            box.addView(row)
+            val sw = MaterialSwitch(this).apply {
+                isChecked = initialChecked
+                DesignSystem.styleMaterialSwitch(this, p)
+                setOnCheckedChangeListener { _, checked -> onToggle(checked) }
+            }
+            row.addView(textCol)
+            row.addView(sw)
+            card.addView(row)
+            return sw
         }
 
-        box.addView(View(this).apply {
-            setBackgroundColor(dividerColor)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(8)
-                bottomMargin = dp(6)
+        swAll = makeFilterRow(
+            dotColor = null,
+            title = "All Statuses",
+            subtitle = "Show pending, done, and issue pins",
+            initialChecked = visibleStatuses.containsAll(ALL_STATUSES)
+        ) { checked ->
+            if (updatingUi) return@makeFilterRow
+            visibleStatuses.clear()
+            if (checked) visibleStatuses.addAll(ALL_STATUSES)
+            syncSwitchesAndMap()
+        }
+
+        listOf(
+            Triple("pending", AppStrings.pending(this), p.amber),
+            Triple("done", AppStrings.done(this), p.green),
+            Triple("issue", AppStrings.issue(this), p.red)
+        ).forEach { (key, label, colorInt) ->
+            statusSwitches[key] = makeFilterRow(
+                dotColor = colorInt,
+                title = label,
+                subtitle = null,
+                initialChecked = visibleStatuses.contains(key)
+            ) { checked ->
+                if (updatingUi) return@makeFilterRow
+                if (checked) visibleStatuses.add(key) else visibleStatuses.remove(key)
+                syncSwitchesAndMap()
             }
-        })
+        }
+
         val sentCount = activeLocalSentCount()
-        box.addView(CheckBox(this).apply {
-            text = "Unsent Only (hide $sentCount sent on this phone)"
+        makeFilterRow(
+            dotColor = null,
+            title = "Unsent Only",
+            subtitle = "Hide $sentCount pin${if (sentCount == 1) "" else "s"} marked sent on this phone",
+            initialChecked = hideSentPins
+        ) { checked ->
+            hideSentPins = checked
+            DevicePrefs.setHideSentPins(this@MainActivity, checked)
+            updateSentToggleUi()
+            renderMapData()
+        }
+
+        sheetContent.addView(card)
+
+        sheetContent.addView(MaterialButton(this).apply {
+            text = "Done"
             textSize = 14f
-            setTextColor(txtPrimary)
-            isChecked = hideSentPins
-            setPadding(dp(4), dp(8), dp(4), dp(8))
-            setOnCheckedChangeListener { _, checked ->
-                hideSentPins = checked
-                DevicePrefs.setHideSentPins(this@MainActivity, checked)
-                updateSentToggleUi()
-                renderMapData()
-            }
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            setTextColor(Color.WHITE)
+            setBackgroundColor(p.accent)
+            cornerRadius = dp(12)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener { hideInScreenSheet() }
         })
 
-        AlertDialog.Builder(this)
-            .setTitle("Filter Pins by Status")
-            .setView(box)
-            .setPositiveButton("Done", null)
-            .show()
+        showInScreenSheet(peekDp = 420)
+        sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
     }
 
     private fun setupBackNavigation() {
@@ -1091,9 +1140,9 @@ class MainActivity : AppCompatActivity() {
             existing.setProperties(
                 PropertyFactory.visibility(if (enabled) Property.VISIBLE else Property.NONE),
                 PropertyFactory.hillshadeExaggeration(if (night) intensity.exaggeration * 0.55f else intensity.exaggeration),
-                PropertyFactory.hillshadeShadowColor(Color.parseColor(if (night) "#0D1710" else "#4E6E3B")),
-                PropertyFactory.hillshadeHighlightColor(Color.parseColor(if (night) "#2A3A30" else "#FFFFFF")),
-                PropertyFactory.hillshadeAccentColor(Color.parseColor(if (night) "#223629" else "#72945A"))
+                PropertyFactory.hillshadeShadowColor(Color.parseColor(if (night) "#0A140D" else "#3C5E2B")),
+                PropertyFactory.hillshadeHighlightColor(Color.parseColor(if (night) "#2A3E31" else "#FFFFFF")),
+                PropertyFactory.hillshadeAccentColor(Color.parseColor(if (night) "#1F3527" else "#5D8346"))
             )
         } else if (enabled) {
             attachTerrainHillshade(style)
@@ -1102,43 +1151,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun attachTerrainHillshade(style: Style) {
         if (mapStyleMode != MapStyleMode.VECTOR || !DevicePrefs.isHillshadeEnabled(this)) return
-        val demFile = java.io.File(cacheDir, "terrarium_dem.json")
-        fun addHillshadeFromFile() {
-            runCatching {
-                if (map?.style !== style || !style.isFullyLoaded) return
-                if (style.getSource(HILLSHADE_SOURCE) == null) {
-                    style.addSource(RasterDemSource(HILLSHADE_SOURCE, demFile.toURI()))
+        runCatching {
+            if (map?.style !== style || !style.isFullyLoaded) return
+            if (style.getSource(HILLSHADE_SOURCE) == null) {
+                val tileSet = TileSet(
+                    "2.2.0",
+                    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+                ).apply {
+                    encoding = "terrarium"
+                    minZoom = 0f
+                    maxZoom = 14f
                 }
-                if (style.getLayer(HILLSHADE_LAYER) == null) {
-                    val night = isDarkMapUi()
-                    val intensity = DevicePrefs.getHillshadeIntensity(this)
-                    val hill = HillshadeLayer(HILLSHADE_LAYER, HILLSHADE_SOURCE).withProperties(
-                        PropertyFactory.hillshadeExaggeration(if (night) intensity.exaggeration * 0.55f else intensity.exaggeration),
-                        PropertyFactory.hillshadeShadowColor(Color.parseColor(if (night) "#0D1710" else "#4E6E3B")),
-                        PropertyFactory.hillshadeHighlightColor(Color.parseColor(if (night) "#2A3A30" else "#FFFFFF")),
-                        PropertyFactory.hillshadeAccentColor(Color.parseColor(if (night) "#223629" else "#72945A")),
-                        PropertyFactory.hillshadeIlluminationDirection(315f)
-                    )
-                    val belowLayer = style.layers.firstOrNull { l ->
-                        val id = l.id.lowercase()
-                        id.contains("water") || id.contains("road") || id.contains("highway") || id.contains("building") || id.contains("contours")
-                    }
-                    if (belowLayer != null) style.addLayerBelow(hill, belowLayer.id) else style.addLayer(hill)
-                } else {
-                    applyHillshadeSettings(style)
-                }
+                style.addSource(RasterDemSource(HILLSHADE_SOURCE, tileSet, 256))
             }
-        }
-        if (demFile.exists()) {
-            addHillshadeFromFile()
-        } else {
-            RoutingEngine.ioExecutor.execute {
-                runCatching {
-                    demFile.writeText("""{"tilejson":"2.2.0","tiles":["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],"minzoom":0,"maxzoom":14,"encoding":"terrarium"}""")
+            if (style.getLayer(HILLSHADE_LAYER) == null) {
+                val night = isDarkMapUi()
+                val intensity = DevicePrefs.getHillshadeIntensity(this)
+                val hill = HillshadeLayer(HILLSHADE_LAYER, HILLSHADE_SOURCE).withProperties(
+                    PropertyFactory.hillshadeExaggeration(if (night) intensity.exaggeration * 0.55f else intensity.exaggeration),
+                    PropertyFactory.hillshadeShadowColor(Color.parseColor(if (night) "#0A140D" else "#3C5E2B")),
+                    PropertyFactory.hillshadeHighlightColor(Color.parseColor(if (night) "#2A3E31" else "#FFFFFF")),
+                    PropertyFactory.hillshadeAccentColor(Color.parseColor(if (night) "#1F3527" else "#5D8346")),
+                    PropertyFactory.hillshadeIlluminationDirection(315f)
+                )
+                val belowLayer = style.layers.firstOrNull { l ->
+                    val id = l.id.lowercase()
+                    id.contains("water") || id.contains("road") || id.contains("highway") || id.contains("building") || id.contains("contours")
                 }
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) addHillshadeFromFile()
-                }
+                if (belowLayer != null) style.addLayerBelow(hill, belowLayer.id) else style.addLayer(hill)
+            } else {
+                applyHillshadeSettings(style)
             }
         }
     }
@@ -1345,7 +1387,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderMapData() {
-        btnSyncStatus.setColorFilter(Color.parseColor(if (isLiveConnected) "#22C55E" else "#F59E0B"))
+        val p = currentPalette()
+        btnSyncStatus.setColorFilter(if (isLiveConnected) p.green else p.amber)
 
         val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
         val visiblePins = getVisiblePins()
@@ -1938,9 +1981,9 @@ class MainActivity : AppCompatActivity() {
         m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 240)
     }
 
-    private fun showInScreenSheet(peekDp: Int = 250) {
-        UiAnimations.fadeHide(bottomDock, 140L)
-        val maxPeek = (resources.displayMetrics.heightPixels * 0.48f).toInt().coerceAtLeast(dp(160))
+    private fun showInScreenSheet(peekDp: Int = 280) {
+        UiAnimations.fadeHide(bottomDock, 120L)
+        val maxPeek = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(dp(180))
         sheetBehavior.peekHeight = minOf(dp(peekDp) + navBarInsetBottom, maxPeek)
         sheetBehavior.state = BottomSheetBehavior.STATE_COLLAPSED
     }
@@ -2569,7 +2612,7 @@ class MainActivity : AppCompatActivity() {
             UiAnimations.animateContentSwap(sheetContent)
         }
 
-        val peekHeight = if (stackedPins.size > 1) 304 else 264
+        val peekHeight = if (stackedPins.size > 1) 345 else 305
         showInScreenSheet(peekDp = peekHeight)
     }
 
@@ -2722,7 +2765,7 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(btnRow)
 
-        showInScreenSheet(peekDp = 230)
+        showInScreenSheet(peekDp = 310)
     }
 
     // --- Route Preview (Route From + Car / Bicycle / Walk Modes) & Active Navigation ---
@@ -2965,7 +3008,7 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(btnRow)
 
-        showInScreenSheet(peekDp = 225)
+        showInScreenSheet(peekDp = 265)
     }
 
     private fun moveCameraForNavigation(loc: Location, durationMs: Int = 500) {
@@ -3421,6 +3464,7 @@ class MainActivity : AppCompatActivity() {
         liveEditHistoryRefresh = null
         hideSoftKeyboard()
         pageBackStack.clear()
+        pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
         pageOverlayContainer.removeAllViews()
         pageOverlayContainer.addView(builder())
         UiAnimations.animatePageEnter(pageOverlayContainer)
@@ -3436,10 +3480,24 @@ class MainActivity : AppCompatActivity() {
         liveEditHistoryRefresh = null
         hideSoftKeyboard()
         pageBackStack.add(onBack)
-        pageOverlayContainer.removeAllViews()
+        pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
         val v = builder()
-        pageOverlayContainer.addView(v)
-        UiAnimations.animateSubPageEnter(v)
+        UiAnimations.transitionSubPagePush(pageOverlayContainer, v, AppStrings.isRtl(this))
+        updateSystemBarContrast(forFullPage = true)
+    }
+
+    private fun popSubPage(builder: () -> View) {
+        pageOverlayContainer.animate().cancel()
+        activePageCleanup?.invoke()
+        activePageCleanup = null
+        liveBookmarksRefresh = null
+        livePinListRefresh = null
+        liveEditHistoryRefresh = null
+        offlineMaps.setStateListener(null)
+        hideSoftKeyboard()
+        pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
+        val backView = builder()
+        UiAnimations.transitionSubPagePop(pageOverlayContainer, backView, AppStrings.isRtl(this))
         updateSystemBarContrast(forFullPage = true)
     }
 
@@ -3886,7 +3944,7 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(14), dp(14), dp(10), dp(14))
                     UiAnimations.applyRowRipple(this@MainActivity, this, night)
                     setOnClickListener {
-                        pushSubPage({ openFullPage(::buildBookmarksAndTracksPage) }) {
+                        pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
                             buildPinsListPage("Starred", bookmarkedPins, null)
                         }
                     }
@@ -3960,7 +4018,7 @@ class MainActivity : AppCompatActivity() {
                         marginEnd = dp(4)
                     }
                     setOnClickListener {
-                        pushSubPage({ openFullPage(::buildBookmarksAndTracksPage) }) {
+                        pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
                             buildPinsListPage(layer.name, layerPins, layer)
                         }
                     }
@@ -4079,7 +4137,7 @@ class MainActivity : AppCompatActivity() {
                             when (item.itemId) {
                                 1 -> shareLayerLink(layer)
                                 12 -> {
-                                    pushSubPage({ openFullPage(::buildBookmarksAndTracksPage) }) {
+                                    pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
                                         buildEditHistoryPage(layer)
                                     }
                                 }
@@ -4332,7 +4390,7 @@ class MainActivity : AppCompatActivity() {
                 UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     pushSubPage({
-                        pushSubPage({ openFullPage(::buildBookmarksAndTracksPage) }) {
+                        popSubPage {
                             buildPinsListPage(layer.name, currentSourcePins(), layer)
                         }
                     }) {
@@ -5090,13 +5148,17 @@ class MainActivity : AppCompatActivity() {
                     if (isOwner && entry.historyLineIndex >= 0) {
                         row.addView(TextView(this).apply {
                             text = "✕"
-                            textSize = 14f
+                            textSize = 13f
                             setTypeface(null, Typeface.BOLD)
                             setTextColor(p.red)
                             gravity = Gravity.CENTER
-                            minimumWidth = dp(40)
-                            minimumHeight = dp(44)
-                            setPadding(dp(8), dp(8), dp(8), dp(8))
+                            background = GradientDrawable().apply {
+                                setColor(if (entry.isOutsideWorkHours) Color.parseColor(if (night) "#452328" else "#FCE3E1") else p.chipSurface)
+                                cornerRadius = dp(10).toFloat()
+                            }
+                            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                                marginStart = dp(6)
+                            }
                             setOnClickListener {
                                 AlertDialog.Builder(this@MainActivity)
                                     .setTitle("Remove this submission?")
@@ -5496,7 +5558,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openSettingsSection(section: SettingsSection) {
-        pushSubPage({ openFullPage(::buildSettingsPage) }) {
+        pushSubPage({ popSubPage(::buildSettingsPage) }) {
             buildSettingsSubPage(section)
         }
     }
@@ -5507,12 +5569,13 @@ class MainActivity : AppCompatActivity() {
         activePageCleanup = null
         liveBookmarksRefresh = null
         livePinListRefresh = null
+        liveEditHistoryRefresh = null
         offlineMaps.setStateListener(null)
         hideSoftKeyboard()
         pageBackStack.clear()
-        pageBackStack.add { openFullPage(::buildSettingsPage) }
-        pageOverlayContainer.removeAllViews()
-        pageOverlayContainer.addView(buildSettingsSubPage(section))
+        pageBackStack.add { popSubPage(::buildSettingsPage) }
+        pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
+        UiAnimations.transitionCrossfade(pageOverlayContainer, buildSettingsSubPage(section))
         updateSystemBarContrast(forFullPage = true)
     }
 
@@ -5542,6 +5605,7 @@ class MainActivity : AppCompatActivity() {
                 minimumHeight = dp(62)
                 setPadding(dp(14), dp(12), dp(14), dp(12))
                 UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                UiAnimations.attachSnappyPress(this, 0.985f)
                 setOnClickListener { onClick() }
             }
             val iconWrap = FrameLayout(this).apply {
@@ -6108,22 +6172,27 @@ class MainActivity : AppCompatActivity() {
 
                 val syncActionRow = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
                     setPadding(0, 0, 0, dp(10))
                 }
                 syncActionRow.addView(MaterialButton(this).apply {
-                    text = "Import KML/KMZ"
+                    text = "Import KML"
                     textSize = 12.5f
                     isAllCaps = false
-                    maxLines = 1
+                    setSingleLine(true)
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
                     insetTop = 0
                     insetBottom = 0
                     minWidth = 0
                     minimumWidth = 0
+                    minHeight = 0
+                    minimumHeight = 0
                     setPadding(dp(8), 0, dp(8), 0)
                     setTextColor(Color.WHITE)
                     setBackgroundColor(p.green)
                     cornerRadius = dp(10)
-                    layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.05f).apply { marginEnd = dp(6) }
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
                         closeFullPage()
@@ -6131,19 +6200,23 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 syncActionRow.addView(MaterialButton(this).apply {
-                    text = "Bookmarks & Export"
+                    text = "Bookmarks"
                     textSize = 12.5f
                     isAllCaps = false
-                    maxLines = 1
+                    setSingleLine(true)
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
                     insetTop = 0
                     insetBottom = 0
                     minWidth = 0
                     minimumWidth = 0
+                    minHeight = 0
+                    minimumHeight = 0
                     setPadding(dp(8), 0, dp(8), 0)
                     setTextColor(Color.WHITE)
                     setBackgroundColor(p.accent)
                     cornerRadius = dp(10)
-                    layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
+                    layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.05f).apply { marginEnd = dp(6) }
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener { openFullPage(::buildBookmarksAndTracksPage) }
                 })
@@ -6151,14 +6224,18 @@ class MainActivity : AppCompatActivity() {
                     text = "Sync"
                     textSize = 12.5f
                     isAllCaps = false
-                    maxLines = 1
+                    setSingleLine(true)
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
                     insetTop = 0
                     insetBottom = 0
                     minWidth = 0
                     minimumWidth = 0
-                    setPadding(dp(10), 0, dp(10), 0)
+                    minHeight = 0
+                    minimumHeight = 0
+                    setPadding(dp(12), 0, dp(12), 0)
                     cornerRadius = dp(10)
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
+                    layoutParams = LinearLayout.LayoutParams(0, dp(42), 0.72f)
                     DesignSystem.styleSegmentedButton(this, false, p)
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {

@@ -172,29 +172,32 @@ object MapCartography {
                         when {
                             id == "landuse_residential" -> layer.setProperties(
                                 PropertyFactory.fillColor(
-                                    Color.parseColor(if (isDark) "#1A2029" else "#EFECE4")
+                                    Color.parseColor(if (isDark) "#1A2029" else "#F2F0EA")
                                 )
                             )
                             id == "landcover_wood" -> layer.setProperties(
                                 PropertyFactory.fillColor(
                                     Color.parseColor(if (isDark) "#1C2C22" else "#D2E6B8")
                                 ),
-                                PropertyFactory.fillOpacity(if (isDark) 0.75f else 0.58f)
+                                PropertyFactory.fillOpacity(if (isDark) 0.75f else 0.54f)
                             )
                             id == "landcover_grass" || id == "park" -> layer.setProperties(
                                 PropertyFactory.fillColor(
                                     Color.parseColor(if (isDark) "#18261E" else "#DFEECC")
                                 ),
-                                PropertyFactory.fillOpacity(if (isDark) 0.70f else 0.52f)
+                                PropertyFactory.fillOpacity(if (isDark) 0.70f else 0.48f)
                             )
-                            id == "building" -> layer.setProperties(
-                                PropertyFactory.fillColor(
-                                    Color.parseColor(if (isDark) "#222934" else "#E5E2DB")
-                                ),
-                                PropertyFactory.fillOutlineColor(
-                                    Color.parseColor(if (isDark) "#2E3746" else "#D3CFC6")
+                            id == "building" -> {
+                                if (layer.minZoom > 13.0f) layer.minZoom = 13.0f
+                                layer.setProperties(
+                                    PropertyFactory.fillColor(
+                                        Color.parseColor(if (isDark) "#272F3C" else "#DBD7CD")
+                                    ),
+                                    PropertyFactory.fillOutlineColor(
+                                        Color.parseColor(if (isDark) "#374254" else "#C2BDB0")
+                                    )
                                 )
-                            )
+                            }
                             id == "water" -> layer.setProperties(
                                 PropertyFactory.fillColor(
                                     Color.parseColor(if (isDark) "#162A3D" else "#B8DBF2")

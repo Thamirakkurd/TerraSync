@@ -15,14 +15,20 @@ import android.view.ViewGroup
 import android.view.animation.PathInterpolator
 
 /**
- * Fast, snappy, utilitarian animations aligned with Organic Maps:
- * zero floaty springs or heavy overshoot, hardware-layered transitions,
- * and full Reduced Motion support.
+ * Crisp, GPU-accelerated utilitarian motion system for Organic Maps minimalism:
+ * smooth dual-view horizontal push/pop navigation for Settings & Bookmarks,
+ * zero map bleed-through, subtle tactile feedback, and full Reduced Motion support.
  */
 object UiAnimations {
 
+    /** Smooth emphasized decelerate for page/sheet entrances & shared-axis slides */
+    val EMPHASIZED_DECELERATE = PathInterpolator(0.05f, 0.7f, 0.1f, 1.0f)
+
+    /** Standard fast-out-slow-in for micro-interactions */
     val FAST_OUT_SLOW_IN = PathInterpolator(0.2f, 0.0f, 0.0f, 1.0f)
-    val FAST_EXIT = PathInterpolator(0.4f, 0.0f, 1.0f, 1.0f)
+
+    /** Clean decisive exit curve */
+    val FAST_EXIT = PathInterpolator(0.35f, 0.0f, 0.85f, 0.15f)
 
     private val pressAttached = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
 
@@ -39,7 +45,7 @@ object UiAnimations {
 
     /** Crisp, subtle utilitarian tap feedback (no bouncy overshoot). */
     @SuppressLint("ClickableViewAccessibility")
-    fun attachSnappyPress(view: View) {
+    fun attachSnappyPress(view: View, pressScale: Float = 0.96f) {
         if (!pressAttached.add(view)) return
         view.setOnTouchListener { v, event ->
             if (isReducedMotion(v.context)) return@setOnTouchListener false
@@ -47,9 +53,9 @@ object UiAnimations {
                 MotionEvent.ACTION_DOWN -> {
                     v.animate().cancel()
                     v.animate()
-                        .scaleX(0.96f)
-                        .scaleY(0.96f)
-                        .setDuration(55L)
+                        .scaleX(pressScale)
+                        .scaleY(pressScale)
+                        .setDuration(60L)
                         .setInterpolator(FAST_OUT_SLOW_IN)
                         .withLayer()
                         .start()
@@ -59,7 +65,7 @@ object UiAnimations {
                     v.animate()
                         .scaleX(1f)
                         .scaleY(1f)
-                        .setDuration(95L)
+                        .setDuration(110L)
                         .setInterpolator(FAST_OUT_SLOW_IN)
                         .withLayer()
                         .start()
@@ -78,7 +84,7 @@ object UiAnimations {
         view.background = RippleDrawable(ColorStateList.valueOf(rippleColor), null, mask)
     }
 
-    fun showSlideTop(view: View, durationMs: Long = 150L) {
+    fun showSlideTop(view: View, durationMs: Long = 175L) {
         view.animate().cancel()
         if (isReducedMotion(view.context)) {
             view.visibility = View.VISIBLE
@@ -87,29 +93,29 @@ object UiAnimations {
             return
         }
         if (view.visibility == View.VISIBLE && view.alpha >= 0.99f && view.translationY == 0f) return
+        val shift = -(14f * view.resources.displayMetrics.density)
+        view.visibility = View.VISIBLE
+        view.alpha = 0f
+        view.translationY = shift
+        view.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(durationMs)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
+    }
+
+    fun hideSlideTop(view: View, durationMs: Long = 135L) {
+        view.animate().cancel()
+        if (view.visibility != View.VISIBLE) return
+        if (isReducedMotion(view.context)) {
+            view.visibility = View.GONE
+            view.alpha = 1f
+            view.translationY = 0f
+            return
+        }
         val shift = -(12f * view.resources.displayMetrics.density)
-        view.visibility = View.VISIBLE
-        view.alpha = 0f
-        view.translationY = shift
-        view.animate()
-            .alpha(1f)
-            .translationY(0f)
-            .setDuration(durationMs)
-            .setInterpolator(FAST_OUT_SLOW_IN)
-            .withLayer()
-            .start()
-    }
-
-    fun hideSlideTop(view: View, durationMs: Long = 120L) {
-        view.animate().cancel()
-        if (view.visibility != View.VISIBLE) return
-        if (isReducedMotion(view.context)) {
-            view.visibility = View.GONE
-            view.alpha = 1f
-            view.translationY = 0f
-            return
-        }
-        val shift = -(10f * view.resources.displayMetrics.density)
         view.animate()
             .alpha(0f)
             .translationY(shift)
@@ -124,7 +130,7 @@ object UiAnimations {
             .start()
     }
 
-    fun showSlideBottom(view: View, durationMs: Long = 150L) {
+    fun showSlideBottom(view: View, durationMs: Long = 180L) {
         view.animate().cancel()
         if (isReducedMotion(view.context)) {
             view.visibility = View.VISIBLE
@@ -133,7 +139,7 @@ object UiAnimations {
             return
         }
         if (view.visibility == View.VISIBLE && view.alpha >= 0.99f && view.translationY == 0f) return
-        val shift = 14f * view.resources.displayMetrics.density
+        val shift = 16f * view.resources.displayMetrics.density
         view.visibility = View.VISIBLE
         view.alpha = 0f
         view.translationY = shift
@@ -141,12 +147,12 @@ object UiAnimations {
             .alpha(1f)
             .translationY(0f)
             .setDuration(durationMs)
-            .setInterpolator(FAST_OUT_SLOW_IN)
+            .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
             .start()
     }
 
-    fun hideSlideBottom(view: View, durationMs: Long = 120L) {
+    fun hideSlideBottom(view: View, durationMs: Long = 135L) {
         view.animate().cancel()
         if (view.visibility != View.VISIBLE) return
         if (isReducedMotion(view.context)) {
@@ -155,7 +161,7 @@ object UiAnimations {
             view.translationY = 0f
             return
         }
-        val shift = 12f * view.resources.displayMetrics.density
+        val shift = 14f * view.resources.displayMetrics.density
         view.animate()
             .alpha(0f)
             .translationY(shift)
@@ -170,7 +176,7 @@ object UiAnimations {
             .start()
     }
 
-    fun fadeShow(view: View, durationMs: Long = 130L) {
+    fun fadeShow(view: View, durationMs: Long = 145L) {
         view.animate().cancel()
         if (isReducedMotion(view.context)) {
             view.visibility = View.VISIBLE
@@ -188,7 +194,7 @@ object UiAnimations {
             .start()
     }
 
-    fun fadeHide(view: View, durationMs: Long = 110L) {
+    fun fadeHide(view: View, durationMs: Long = 120L) {
         view.animate().cancel()
         if (view.visibility != View.VISIBLE) return
         if (isReducedMotion(view.context)) {
@@ -216,33 +222,14 @@ object UiAnimations {
             container.translationY = 0f
             return
         }
-        val shift = 14f * container.resources.displayMetrics.density
+        val shift = 22f * container.resources.displayMetrics.density
         container.alpha = 0f
         container.translationY = shift
         container.animate()
             .alpha(1f)
             .translationY(0f)
-            .setDuration(155L)
-            .setInterpolator(FAST_OUT_SLOW_IN)
-            .withLayer()
-            .start()
-    }
-
-    fun animateSubPageEnter(view: View) {
-        view.animate().cancel()
-        if (isReducedMotion(view.context)) {
-            view.alpha = 1f
-            view.translationX = 0f
-            return
-        }
-        val shift = 18f * view.resources.displayMetrics.density
-        view.alpha = 0f
-        view.translationX = shift
-        view.animate()
-            .alpha(1f)
-            .translationX(0f)
-            .setDuration(150L)
-            .setInterpolator(FAST_OUT_SLOW_IN)
+            .setDuration(200L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
             .start()
     }
@@ -256,11 +243,11 @@ object UiAnimations {
             onEnd()
             return
         }
-        val shift = 12f * container.resources.displayMetrics.density
+        val shift = 18f * container.resources.displayMetrics.density
         container.animate()
             .alpha(0f)
             .translationY(shift)
-            .setDuration(125L)
+            .setDuration(155L)
             .setInterpolator(FAST_EXIT)
             .withLayer()
             .withEndAction {
@@ -272,6 +259,117 @@ object UiAnimations {
             .start()
     }
 
+    /**
+     * Smooth native dual-view horizontal Push (e.g., Settings Menu -> Section Sub-Page).
+     * Outgoing view glides slightly left while incoming sub-page slides cleanly from right.
+     * Zero map bleed-through.
+     */
+    fun transitionSubPagePush(container: ViewGroup, incoming: View, isRtl: Boolean) {
+        val outgoingViews = (0 until container.childCount).map { container.getChildAt(it) }
+        outgoingViews.forEach { it.animate().cancel() }
+
+        if (isReducedMotion(container.context) || outgoingViews.isEmpty()) {
+            container.removeAllViews()
+            container.addView(incoming)
+            return
+        }
+
+        val dir = if (isRtl) -1f else 1f
+        val d = container.resources.displayMetrics.density
+        val inStart = 76f * d * dir
+        val outEnd = -28f * d * dir
+
+        incoming.translationX = inStart
+        incoming.alpha = 0.72f
+        container.addView(incoming)
+
+        outgoingViews.forEach { old ->
+            old.animate()
+                .translationX(outEnd)
+                .alpha(0.84f)
+                .setDuration(210L)
+                .setInterpolator(EMPHASIZED_DECELERATE)
+                .withLayer()
+                .withEndAction { container.removeView(old) }
+                .start()
+        }
+
+        incoming.animate()
+            .translationX(0f)
+            .alpha(1f)
+            .setDuration(220L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
+    }
+
+    /**
+     * Smooth native dual-view horizontal Pop (e.g., Section Sub-Page -> Settings Menu).
+     * Previous menu glides gently back from left while outgoing sub-page slides out right.
+     */
+    fun transitionSubPagePop(container: ViewGroup, backView: View, isRtl: Boolean) {
+        val outgoingViews = (0 until container.childCount).map { container.getChildAt(it) }
+        outgoingViews.forEach { it.animate().cancel() }
+
+        if (isReducedMotion(container.context) || outgoingViews.isEmpty()) {
+            container.removeAllViews()
+            container.addView(backView)
+            return
+        }
+
+        val dir = if (isRtl) -1f else 1f
+        val d = container.resources.displayMetrics.density
+        val backStart = -28f * d * dir
+        val outEnd = 76f * d * dir
+
+        backView.translationX = backStart
+        backView.alpha = 0.85f
+        container.addView(backView, 0)
+
+        backView.animate()
+            .translationX(0f)
+            .alpha(1f)
+            .setDuration(205L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
+
+        outgoingViews.forEach { old ->
+            old.animate()
+                .translationX(outEnd)
+                .alpha(0f)
+                .setDuration(185L)
+                .setInterpolator(FAST_OUT_SLOW_IN)
+                .withLayer()
+                .withEndAction { container.removeView(old) }
+                .start()
+        }
+    }
+
+    /** Clean in-place crossfade (e.g., switching Day/Night or App Language inside a Settings sub-page). */
+    fun transitionCrossfade(container: ViewGroup, incoming: View) {
+        val outgoingViews = (0 until container.childCount).map { container.getChildAt(it) }
+        outgoingViews.forEach { it.animate().cancel() }
+
+        if (isReducedMotion(container.context) || outgoingViews.isEmpty()) {
+            container.removeAllViews()
+            container.addView(incoming)
+            return
+        }
+
+        incoming.alpha = 0f
+        container.addView(incoming)
+        incoming.animate()
+            .alpha(1f)
+            .setDuration(150L)
+            .setInterpolator(FAST_OUT_SLOW_IN)
+            .withLayer()
+            .withEndAction {
+                outgoingViews.forEach { container.removeView(it) }
+            }
+            .start()
+    }
+
     fun animateContentSwap(view: View) {
         view.animate().cancel()
         if (isReducedMotion(view.context)) {
@@ -279,28 +377,20 @@ object UiAnimations {
             view.translationX = 0f
             return
         }
-        val shift = 12f * view.resources.displayMetrics.density
+        val shift = 14f * view.resources.displayMetrics.density
         view.alpha = 0f
         view.translationX = shift
         view.animate()
             .alpha(1f)
             .translationX(0f)
-            .setDuration(135L)
-            .setInterpolator(FAST_OUT_SLOW_IN)
+            .setDuration(155L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
             .start()
     }
 
-    /** Fast, subtle single-pass list reveal (no floaty staggered cascading). */
+    /** Subtle optional content reveal (no double-fade when container already animates). */
     fun staggerRevealChildren(parent: ViewGroup, maxAnimated: Int = 6) {
-        if (isReducedMotion(parent.context)) return
-        parent.animate().cancel()
-        parent.alpha = 0f
-        parent.animate()
-            .alpha(1f)
-            .setDuration(130L)
-            .setInterpolator(FAST_OUT_SLOW_IN)
-            .withLayer()
-            .start()
+        // Container-level push/pop/enter handles page transitions cleanly without double-fading.
     }
 }

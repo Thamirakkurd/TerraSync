@@ -11,6 +11,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.PersistentCacheSettings
 import com.google.firebase.firestore.SetOptions
 import java.text.SimpleDateFormat
@@ -41,6 +42,7 @@ class SyncRepo(context: Context? = null) {
     private val layerMap = mutableMapOf<String, LayerItem>()
     private val pinsByLayer = mutableMapOf<String, List<PinItem>>()
     private val tracksByLayer = mutableMapOf<String, List<TrackItem>>()
+    private val liveListenerStates = mutableMapOf<String, Boolean>()
     private var connected: Boolean = false
     private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
 
@@ -156,9 +158,18 @@ class SyncRepo(context: Context? = null) {
             layerMap.remove(layerId)
             pinsByLayer.remove(layerId)
             tracksByLayer.remove(layerId)
+            liveListenerStates.remove("layer:$layerId")
+            liveListenerStates.remove("pins:$layerId")
+            liveListenerStates.remove("tracks:$layerId")
+        }
+
+        fun updateConnectedFlag(key: String, isLive: Boolean) {
+            liveListenerStates[key] = isLive
+            connected = isOnline() && liveListenerStates.values.any { it }
         }
 
         if (joinedLayerIds.isEmpty()) {
+            liveListenerStates.clear()
             connected = isOnline()
             emit()
             return
@@ -167,83 +178,87 @@ class SyncRepo(context: Context? = null) {
         val added = joinedLayerIds - layerRegs.keys
         added.forEach { layerId ->
             val regsForLayer = mutableListOf<ListenerRegistration>()
-            regsForLayer += db.collection("layers").document(layerId).addSnapshotListener { doc, err ->
-                if (err != null) {
-                    connected = false
+            regsForLayer += db.collection("layers").document(layerId)
+                .addSnapshotListener(MetadataChanges.INCLUDE) { doc, err ->
+                    if (err != null) {
+                        updateConnectedFlag("layer:$layerId", false)
+                        emit()
+                        return@addSnapshotListener
+                    }
+                    updateConnectedFlag("layer:$layerId", doc?.metadata?.isFromCache != true)
+                    if (doc != null && doc.exists()) {
+                        layerMap[layerId] = LayerItem(
+                            id = doc.id,
+                            name = doc.getString("name") ?: "Layer",
+                            shareCode = doc.getString("shareCode") ?: "",
+                            createdBy = doc.getString("createdBy") ?: "",
+                            creatorDeviceId = doc.getString("creatorDeviceId") ?: "",
+                            creatorUid = doc.getString("creatorUid") ?: "",
+                            updatedAt = doc.getLong("updatedAt") ?: 0L
+                        )
+                    } else {
+                        layerMap.remove(layerId)
+                        pinsByLayer.remove(layerId)
+                        tracksByLayer.remove(layerId)
+                    }
                     emit()
-                    return@addSnapshotListener
                 }
-                connected = isOnline() && (doc?.metadata?.isFromCache != true)
-                if (doc != null && doc.exists()) {
-                    layerMap[layerId] = LayerItem(
-                        id = doc.id,
-                        name = doc.getString("name") ?: "Layer",
-                        shareCode = doc.getString("shareCode") ?: "",
-                        createdBy = doc.getString("createdBy") ?: "",
-                        creatorDeviceId = doc.getString("creatorDeviceId") ?: "",
-                        creatorUid = doc.getString("creatorUid") ?: "",
-                        updatedAt = doc.getLong("updatedAt") ?: 0L
-                    )
-                } else {
-                    layerMap.remove(layerId)
-                    pinsByLayer.remove(layerId)
-                    tracksByLayer.remove(layerId)
-                }
-                emit()
-            }
 
-            regsForLayer += db.collection("pins").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
-                if (err != null) {
-                    connected = false
+            regsForLayer += db.collection("pins").whereEqualTo("layerId", layerId)
+                .addSnapshotListener(MetadataChanges.INCLUDE) { snap, err ->
+                    if (err != null) {
+                        updateConnectedFlag("pins:$layerId", false)
+                        emit()
+                        return@addSnapshotListener
+                    }
+                    updateConnectedFlag("pins:$layerId", snap?.metadata?.isFromCache != true)
+                    pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
+                        val lat = d.getDouble("lat") ?: return@mapNotNull null
+                        val lng = d.getDouble("lng") ?: return@mapNotNull null
+                        PinItem(
+                            id = d.id,
+                            layerId = d.getString("layerId") ?: layerId,
+                            name = d.getString("name") ?: "Pin",
+                            description = d.getString("description") ?: "",
+                            lat = lat,
+                            lng = lng,
+                            status = d.getString("status") ?: "pending",
+                            issueReason = d.getString("issueReason") ?: "",
+                            updatedAt = d.getLong("updatedAt") ?: 0L,
+                            isEdited = d.getBoolean("isEdited") ?: false,
+                            editedBy = d.getString("editedBy") ?: "",
+                            editedAt = d.getLong("editedAt") ?: 0L,
+                            editHistory = d.getString("editHistory") ?: ""
+                        )
+                    } ?: emptyList()
                     emit()
-                    return@addSnapshotListener
                 }
-                connected = isOnline() && (snap?.metadata?.isFromCache != true)
-                pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
-                    val lat = d.getDouble("lat") ?: return@mapNotNull null
-                    val lng = d.getDouble("lng") ?: return@mapNotNull null
-                    PinItem(
-                        id = d.id,
-                        layerId = d.getString("layerId") ?: layerId,
-                        name = d.getString("name") ?: "Pin",
-                        description = d.getString("description") ?: "",
-                        lat = lat,
-                        lng = lng,
-                        status = d.getString("status") ?: "pending",
-                        issueReason = d.getString("issueReason") ?: "",
-                        updatedAt = d.getLong("updatedAt") ?: 0L,
-                        isEdited = d.getBoolean("isEdited") ?: false,
-                        editedBy = d.getString("editedBy") ?: "",
-                        editedAt = d.getLong("editedAt") ?: 0L,
-                        editHistory = d.getString("editHistory") ?: ""
-                    )
-                } ?: emptyList()
-                emit()
-            }
 
-            regsForLayer += db.collection("tracks").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
-                if (err != null) {
-                    connected = false
+            regsForLayer += db.collection("tracks").whereEqualTo("layerId", layerId)
+                .addSnapshotListener(MetadataChanges.INCLUDE) { snap, err ->
+                    if (err != null) {
+                        updateConnectedFlag("tracks:$layerId", false)
+                        emit()
+                        return@addSnapshotListener
+                    }
+                    updateConnectedFlag("tracks:$layerId", snap?.metadata?.isFromCache != true)
+                    tracksByLayer[layerId] = snap?.documents?.mapNotNull { d ->
+                        val coords = d.getString("coords") ?: return@mapNotNull null
+                        TrackItem(
+                            id = d.id,
+                            layerId = d.getString("layerId") ?: layerId,
+                            name = d.getString("name") ?: "Track",
+                            coords = coords,
+                            updatedAt = d.getLong("updatedAt") ?: 0L
+                        )
+                    } ?: emptyList()
                     emit()
-                    return@addSnapshotListener
                 }
-                connected = isOnline() && (snap?.metadata?.isFromCache != true)
-                tracksByLayer[layerId] = snap?.documents?.mapNotNull { d ->
-                    val coords = d.getString("coords") ?: return@mapNotNull null
-                    TrackItem(
-                        id = d.id,
-                        layerId = d.getString("layerId") ?: layerId,
-                        name = d.getString("name") ?: "Track",
-                        coords = coords,
-                        updatedAt = d.getLong("updatedAt") ?: 0L
-                    )
-                } ?: emptyList()
-                emit()
-            }
             layerRegs[layerId] = regsForLayer
         }
 
         if (removed.isNotEmpty() || added.isEmpty()) {
+            connected = isOnline() && (liveListenerStates.isEmpty() || liveListenerStates.values.any { it })
             emit()
         }
     }

@@ -5,9 +5,9 @@ import android.os.Build
 import java.util.UUID
 
 enum class HillshadeIntensity(val id: String, val label: String, val exaggeration: Float) {
-    LIGHT("light", "Light", 0.22f),
-    MEDIUM("medium", "Medium", 0.36f),
-    STRONG("strong", "Strong", 0.52f);
+    LIGHT("light", "Light", 0.36f),
+    MEDIUM("medium", "Medium", 0.56f),
+    STRONG("strong", "Strong", 0.78f);
 
     companion object {
         fun fromId(id: String?): HillshadeIntensity =
