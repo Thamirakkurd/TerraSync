@@ -5390,9 +5390,9 @@ class MainActivity : AppCompatActivity() {
     private fun applyExtraMapToolsVisibility() {
         val show = DevicePrefs.isShowExtraMapTools(this)
         val vis = if (show) View.VISIBLE else View.GONE
-        btnSentToggle.visibility = vis
-        btnLasso.visibility = vis
-        btnImport.visibility = vis
+        if (::btnSentToggle.isInitialized) btnSentToggle.visibility = vis
+        if (::btnLasso.isInitialized) btnLasso.visibility = vis
+        if (::btnImport.isInitialized) btnImport.visibility = vis
         if (!show && isLassoMode) toggleLassoMode(false)
     }
 

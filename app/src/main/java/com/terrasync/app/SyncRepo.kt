@@ -368,8 +368,7 @@ class SyncRepo {
         val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
         if (lineIndex !in lines.indices) return
         lines.removeAt(lineIndex)
-        val newHistory = lines.joinToString("
-")
+        val newHistory = lines.joinToString("\n")
         val now = System.currentTimeMillis()
 
         // Recalculate live status & note from the newest remaining status entry ("→")
