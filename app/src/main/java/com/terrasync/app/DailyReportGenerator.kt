@@ -29,13 +29,17 @@ object DailyReportGenerator {
     fun buildReport(
         folderName: String,
         pins: List<PinItem>,
-        isCloudLive: Boolean = true
-    ): DailyFieldReport = DailyFieldReport(generate(folderName, pins, isCloudLive))
+        isCloudLive: Boolean = true,
+        workStartMin: Int? = null,
+        workEndMin: Int? = null
+    ): DailyFieldReport = DailyFieldReport(generate(folderName, pins, isCloudLive, workStartMin, workEndMin))
 
     fun generate(
         folderName: String,
         pins: List<PinItem>,
-        isCloudLive: Boolean = false
+        isCloudLive: Boolean = false,
+        workStartMin: Int? = null,
+        workEndMin: Int? = null
     ): String {
         val now = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US).format(Date())
         if (pins.isEmpty()) {
@@ -141,6 +145,14 @@ object DailyReportGenerator {
             appendLine("• ✓ Done: *$doneCount*")
             appendLine("• ⚠ Issue: *$issueCount*")
             appendLine("• ⏳ Pending: *$pendingTotal* ($pendingUntouched untouched, $pendingTouched touched)")
+            if (workStartMin != null && workEndMin != null) {
+                val allEdits = PinEditHistoryAudit.collectFolderHistory(uniquePins, workStartMin, workEndMin)
+                val lateCount = allEdits.count { it.isOutsideWorkHours }
+                if (lateCount > 0) {
+                    val window = "${PinEditHistoryAudit.formatMinutes(workStartMin)}–${PinEditHistoryAudit.formatMinutes(workEndMin)}"
+                    appendLine("• ⏰ Outside Working Hours ($window): *$lateCount* edit${if (lateCount == 1) "" else "s"}")
+                }
+            }
 
             if (doneCount > 0) {
                 appendLine()

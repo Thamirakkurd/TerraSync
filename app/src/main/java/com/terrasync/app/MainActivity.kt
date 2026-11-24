@@ -306,6 +306,7 @@ class MainActivity : AppCompatActivity() {
     private var backCallback: OnBackPressedCallback? = null
     private var liveBookmarksRefresh: (() -> Unit)? = null
     private var livePinListRefresh: (() -> Unit)? = null
+    private var liveEditHistoryRefresh: (() -> Unit)? = null
 
     private val gpsListener = LocationListener { loc -> onNewLocation(loc) }
 
@@ -2414,6 +2415,8 @@ class MainActivity : AppCompatActivity() {
 
         if (pin.editHistory.isNotBlank()) {
             val histLines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }
+            val workStart = DevicePrefs.getWorkStartMinutes(this)
+            val workEnd = DevicePrefs.getWorkEndMinutes(this)
             if (isOwner && histLines.isNotEmpty()) {
                 sheetContent.addView(TextView(this).apply {
                     text = "Edit Log (Tap ✕ to delete an edit without deleting pin):"
@@ -2422,32 +2425,46 @@ class MainActivity : AppCompatActivity() {
                     setTextColor(txtSub)
                     setPadding(0, dp(2), 0, dp(4))
                 })
-                val rowBgColor = Color.parseColor(if (isDarkMapUi()) "#1E293B" else "#F1F5F9")
                 histLines.forEachIndexed { idx, line ->
+                    val afterHours = PinEditHistoryAudit.isHistoryLineOutsideWorkHours(line, workStart, workEnd)
                     val row = LinearLayout(this).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(8), dp(5), dp(4), dp(5))
+                        setPadding(dp(10), dp(6), dp(4), dp(6))
                         background = GradientDrawable().apply {
-                            cornerRadius = dp(8).toFloat()
-                            setColor(rowBgColor)
+                            cornerRadius = dp(10).toFloat()
+                            setColor(if (afterHours) p.redSoft else p.cardSurface)
                         }
                         layoutParams = LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT
                         ).apply { bottomMargin = dp(5) }
                     }
-                    row.addView(TextView(this).apply {
+                    val textCol = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    if (afterHours) {
+                        textCol.addView(TextView(this).apply {
+                            text = "⏰ AFTER WORKING HOURS"
+                            textSize = 10f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(p.red)
+                            setPadding(0, 0, 0, dp(2))
+                        })
+                    }
+                    textCol.addView(TextView(this).apply {
                         text = line
                         textSize = 11.5f
-                        setTextColor(txtSub)
-                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                        setTextColor(if (afterHours) p.textPrimary else txtSub)
+                        DesignSystem.applyTabularNumerals(this)
                     })
+                    row.addView(textCol)
                     row.addView(TextView(this).apply {
                         text = "✕"
                         textSize = 14f
                         setTypeface(null, android.graphics.Typeface.BOLD)
-                        setTextColor(Color.parseColor("#EF4444"))
+                        setTextColor(p.red)
                         gravity = Gravity.CENTER
                         setPadding(dp(10), dp(4), dp(8), dp(4))
                         setOnClickListener {
@@ -2468,14 +2485,25 @@ class MainActivity : AppCompatActivity() {
                     })
                     sheetContent.addView(row)
                 }
-            } else {
+            } else if (histLines.isNotEmpty()) {
                 sheetContent.addView(TextView(this).apply {
-                    text = "Edit Log:\n${pin.editHistory}"
+                    text = "Edit Log:"
                     textSize = 12f
-                    setLineSpacing(dp(2).toFloat(), 1.0f)
+                    setTypeface(null, Typeface.BOLD)
                     setTextColor(txtSub)
-                    setPadding(0, 0, 0, dp(10))
+                    setPadding(0, dp(2), 0, dp(4))
                 })
+                histLines.forEach { line ->
+                    val afterHours = PinEditHistoryAudit.isHistoryLineOutsideWorkHours(line, workStart, workEnd)
+                    sheetContent.addView(TextView(this).apply {
+                        text = if (afterHours) "⏰ $line" else line
+                        textSize = 11.5f
+                        setLineSpacing(dp(2).toFloat(), 1.0f)
+                        setTextColor(if (afterHours) p.red else txtSub)
+                        DesignSystem.applyTabularNumerals(this)
+                        setPadding(0, 0, 0, dp(4))
+                    })
+                }
             }
         }
         if (isOwner && pin.editHistory.isBlank() && !pin.status.equals("pending", true)) {
@@ -3390,6 +3418,7 @@ class MainActivity : AppCompatActivity() {
         activePageCleanup = null
         liveBookmarksRefresh = null
         livePinListRefresh = null
+        liveEditHistoryRefresh = null
         hideSoftKeyboard()
         pageBackStack.clear()
         pageOverlayContainer.removeAllViews()
@@ -3404,6 +3433,7 @@ class MainActivity : AppCompatActivity() {
         activePageCleanup = null
         liveBookmarksRefresh = null
         livePinListRefresh = null
+        liveEditHistoryRefresh = null
         hideSoftKeyboard()
         pageBackStack.add(onBack)
         pageOverlayContainer.removeAllViews()
@@ -3420,6 +3450,7 @@ class MainActivity : AppCompatActivity() {
         webSearchSeq++
         liveBookmarksRefresh = null
         livePinListRefresh = null
+        liveEditHistoryRefresh = null
         offlineMaps.setStateListener(null)
         hideSoftKeyboard()
         pageBackStack.clear()
@@ -4032,20 +4063,26 @@ class MainActivity : AppCompatActivity() {
                             menu.menu.add(0, 1, 1, "Share Link & Code (${layer.shareCode})")
                         }
                         menu.menu.add(0, 2, 2, "Zoom to Folder")
-                        menu.menu.add(0, 3, 3, if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder")
-                        menu.menu.add(0, 4, 4, "Daily Team Report (WhatsApp)")
-                        menu.menu.add(0, 5, 5, "Export as KML...")
-                        menu.menu.add(0, 6, 6, "Export as CSV")
-                        if (isCreator) menu.menu.add(0, 7, 7, "Rename Folder")
+                        menu.menu.add(0, 12, 3, "Edit History & Hours Audit")
+                        menu.menu.add(0, 3, 4, if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder")
+                        menu.menu.add(0, 4, 5, "Daily Team Report (WhatsApp)")
+                        menu.menu.add(0, 5, 6, "Export as KML...")
+                        menu.menu.add(0, 6, 7, "Export as CSV")
+                        if (isCreator) menu.menu.add(0, 7, 8, "Rename Folder")
                         if (isLocal) {
-                            menu.menu.add(0, 11, 8, if (isPinned) "🔒 Delete Local Folder (Pinned)" else "Delete Local Folder")
+                            menu.menu.add(0, 11, 9, if (isPinned) "🔒 Delete Local Folder (Pinned)" else "Delete Local Folder")
                         } else {
-                            menu.menu.add(0, 8, 8, if (isPinned) "🔒 Leave Folder (Pinned)" else "Leave Folder (This Phone)")
-                            if (isCreator) menu.menu.add(0, 9, 9, if (isPinned) "🔒 Delete from Cloud (Pinned)" else "Delete from Cloud (All Users)")
+                            menu.menu.add(0, 8, 9, if (isPinned) "🔒 Leave Folder (Pinned)" else "Leave Folder (This Phone)")
+                            if (isCreator) menu.menu.add(0, 9, 10, if (isPinned) "🔒 Delete from Cloud (Pinned)" else "Delete from Cloud (All Users)")
                         }
                         menu.setOnMenuItemClickListener { item ->
                             when (item.itemId) {
                                 1 -> shareLayerLink(layer)
+                                12 -> {
+                                    pushSubPage({ openFullPage(::buildBookmarksAndTracksPage) }) {
+                                        buildEditHistoryPage(layer)
+                                    }
+                                }
                                 2 -> {
                                     val freshPins = pins.filter { it.layerId == layer.id }
                                     val freshTracks = tracks.filter { it.layerId == layer.id }
@@ -4172,7 +4209,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showDailyWhatsAppReportDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
-        val report = DailyReportGenerator.buildReport(layer.name, layerPins, !LocalFolderStore.isLocalLayerId(layer.id))
+        val report = DailyReportGenerator.buildReport(
+            layer.name,
+            layerPins,
+            !LocalFolderStore.isLocalLayerId(layer.id),
+            DevicePrefs.getWorkStartMinutes(this),
+            DevicePrefs.getWorkEndMinutes(this)
+        )
         val scroll = android.widget.ScrollView(this).apply {
             setPadding(dp(20), dp(12), dp(20), dp(8))
         }
@@ -4267,15 +4310,50 @@ class MainActivity : AppCompatActivity() {
             else -> sourcePins
         }
 
-        val btnZoom = MaterialButton(this).apply {
+        val topActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        if (layer != null) {
+            topActions.addView(MaterialButton(this).apply {
+                text = "History"
+                textSize = 12f
+                isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(10), 0, dp(10), 0)
+                cornerRadius = dp(10)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
+                    marginEnd = dp(6)
+                }
+                DesignSystem.styleSegmentedButton(this, false, p)
+                UiAnimations.attachSnappyPress(this)
+                setOnClickListener {
+                    pushSubPage({
+                        pushSubPage({ openFullPage(::buildBookmarksAndTracksPage) }) {
+                            buildPinsListPage(layer.name, currentSourcePins(), layer)
+                        }
+                    }) {
+                        buildEditHistoryPage(layer)
+                    }
+                }
+            })
+        }
+        topActions.addView(MaterialButton(this).apply {
             text = AppStrings.zoom(this@MainActivity)
-            textSize = 12.5f
+            textSize = 12f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(12), 0, dp(12), 0)
             setTextColor(Color.WHITE)
             setBackgroundColor(p.accent)
             cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 val targetPins = currentSourcePins()
@@ -4284,11 +4362,11 @@ class MainActivity : AppCompatActivity() {
                 closeFullPage()
                 zoomToKmlBounds(targetPts, layer?.id)
             }
-        }
+        })
 
         val (outer, body) = makePageFrame(title, {
             if (pageBackStack.isNotEmpty()) pageBackStack.removeAt(pageBackStack.lastIndex).invoke() else closeFullPage()
-        }, btnZoom)
+        }, topActions)
 
         var sortNearest = currentLocation != null
         var filterKey = "all"
@@ -4484,6 +4562,583 @@ class MainActivity : AppCompatActivity() {
 
         livePinListRefresh = { renderPinRows() }
         renderPinRows()
+        return outer
+    }
+
+    // --- Subpage: KML Folder Pin Edit History & Working-Hours Audit ---
+
+    private fun showWorkingHoursDialog(onSaved: () -> Unit) {
+        val curStart = DevicePrefs.getWorkStartMinutes(this)
+        val curEnd = DevicePrefs.getWorkEndMinutes(this)
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        box.addView(TextView(this).apply {
+            text = "Submissions made outside this shift window are automatically flagged as After Hours."
+            textSize = 13f
+            setTextColor(Color.parseColor("#6E6E73"))
+            setPadding(0, 0, 0, dp(12))
+        })
+
+        var chosenStartMin = curStart
+        var chosenEndMin = curEnd
+
+        fun makeTimePickerRow(label: String, initialMin: Int, onPicked: (Int) -> Unit): LinearLayout {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(6), 0, dp(6))
+            }
+            row.addView(TextView(this).apply {
+                text = label
+                textSize = 14.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#1C1C1E"))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            val btnPick = MaterialButton(this).apply {
+                text = PinEditHistoryAudit.formatMinutes(initialMin)
+                textSize = 14f
+                isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#1E88E5"))
+                cornerRadius = dp(10)
+                DesignSystem.applyTabularNumerals(this)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
+                setOnClickListener {
+                    val cur = if (label.startsWith("Start")) chosenStartMin else chosenEndMin
+                    android.app.TimePickerDialog(
+                        this@MainActivity,
+                        { _, h, m ->
+                            val total = h * 60 + m
+                            onPicked(total)
+                            text = PinEditHistoryAudit.formatMinutes(total)
+                        },
+                        cur / 60,
+                        cur % 60,
+                        true
+                    ).show()
+                }
+            }
+            row.addView(btnPick)
+            return row
+        }
+
+        box.addView(makeTimePickerRow("Start Time", curStart) { chosenStartMin = it })
+        box.addView(makeTimePickerRow("End Time", curEnd) { chosenEndMin = it })
+
+        // Quick shift presets
+        box.addView(TextView(this).apply {
+            text = "Quick presets:"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#6E6E73"))
+            setPadding(0, dp(10), 0, dp(6))
+        })
+        val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        var dialogRef: AlertDialog? = null
+        listOf(
+            Triple("08:00–16:00", 8 * 60, 16 * 60),
+            Triple("08:00–17:00", 8 * 60, 17 * 60),
+            Triple("07:00–15:00", 7 * 60, 15 * 60)
+        ).forEachIndexed { idx, (lbl, sMin, eMin) ->
+            presetRow.addView(MaterialButton(this).apply {
+                text = lbl
+                textSize = 11.5f
+                isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(6), 0, dp(6), 0)
+                setTextColor(Color.parseColor("#1C1C1E"))
+                setBackgroundColor(Color.parseColor("#E8E8EE"))
+                cornerRadius = dp(8)
+                DesignSystem.applyTabularNumerals(this)
+                layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply {
+                    if (idx < 2) marginEnd = dp(6)
+                }
+                setOnClickListener {
+                    chosenStartMin = sMin
+                    chosenEndMin = eMin
+                    DevicePrefs.setWorkStartMinutes(this@MainActivity, sMin)
+                    DevicePrefs.setWorkEndMinutes(this@MainActivity, eMin)
+                    Toast.makeText(this@MainActivity, "Working hours set to $lbl", Toast.LENGTH_SHORT).show()
+                    onSaved()
+                    dialogRef?.dismiss()
+                }
+            })
+        }
+        box.addView(presetRow)
+
+        dialogRef = AlertDialog.Builder(this)
+            .setTitle("Working Hours Window")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                DevicePrefs.setWorkStartMinutes(this, chosenStartMin)
+                DevicePrefs.setWorkEndMinutes(this, chosenEndMin)
+                val win = "${PinEditHistoryAudit.formatMinutes(chosenStartMin)}–${PinEditHistoryAudit.formatMinutes(chosenEndMin)}"
+                Toast.makeText(this, "Working hours set to $win", Toast.LENGTH_SHORT).show()
+                onSaved()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun buildEditHistoryPage(layer: LayerItem): View {
+        val p = currentPalette()
+        val night = p.isDark
+        val txtPrimary = p.textPrimary
+        val txtSub = p.textSecondary
+        val isOwner = isLayerOwner(layer)
+        val isLocal = LocalFolderStore.isLocalLayerId(layer.id)
+
+        var currentEntries: List<PinEditEntry> = emptyList()
+
+        val btnShareAudit = MaterialButton(this).apply {
+            text = "Share"
+            textSize = 12.5f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(12), 0, dp(12), 0)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(p.accent)
+            cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener {
+                val txt = PinEditHistoryAudit.buildAuditShareText(
+                    layer.name,
+                    currentEntries,
+                    DevicePrefs.getWorkStartMinutes(this@MainActivity),
+                    DevicePrefs.getWorkEndMinutes(this@MainActivity)
+                )
+                safeStartActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, txt)
+                }, "Share Edit History Audit"))
+            }
+        }
+
+        val (outer, body) = makePageFrame("Edit History", {
+            if (pageBackStack.isNotEmpty()) pageBackStack.removeAt(pageBackStack.lastIndex).invoke() else closeFullPage()
+        }, btnShareAudit)
+
+        var timeFilter = "all" // "all", "after_hours", "in_hours"
+        var operatorFilter: String? = null
+        var displayLimit = 120
+
+        val contentRoot = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        body.addView(contentRoot)
+
+        fun renderAudit() {
+            contentRoot.removeAllViews()
+            val workStart = DevicePrefs.getWorkStartMinutes(this)
+            val workEnd = DevicePrefs.getWorkEndMinutes(this)
+            val windowStr = "${PinEditHistoryAudit.formatMinutes(workStart)} – ${PinEditHistoryAudit.formatMinutes(workEnd)}"
+            val layerPins = pins.filter { it.layerId == layer.id }
+            val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPins, workStart, workEnd)
+            currentEntries = allEntries
+
+            val afterHoursCnt = allEntries.count { it.isOutsideWorkHours }
+            val inHoursCnt = allEntries.size - afterHoursCnt
+
+            // 1. Summary & Working-Hours Control Card
+            val summaryCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12, bottomMarginDp = 10)
+
+            val folderRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(8))
+            }
+            folderRow.addView(TextView(this).apply {
+                text = layer.name
+                textSize = 15.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(txtPrimary)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.MIDDLE
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(8)
+                }
+            })
+            folderRow.addView(TextView(this).apply {
+                text = if (isLocal) "LOCAL" else if (isOwner) "CLOUD OWNER" else "CLOUD"
+                textSize = 10f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(if (isLocal) p.textSecondary else p.green)
+                setPadding(dp(7), dp(3), dp(7), dp(3))
+                background = GradientDrawable().apply {
+                    setColor(if (isLocal) p.chipSurface else p.greenSoft)
+                    cornerRadius = dp(6).toFloat()
+                }
+            })
+            summaryCard.addView(folderRow)
+
+            // Working Hours Row
+            val hoursRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, dp(10))
+            }
+            val hoursCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            hoursCol.addView(TextView(this).apply {
+                text = "Working Hours"
+                textSize = 11.5f
+                setTextColor(txtSub)
+            })
+            hoursCol.addView(TextView(this).apply {
+                text = windowStr
+                textSize = 15f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(txtPrimary)
+                DesignSystem.applyTabularNumerals(this)
+            })
+            hoursRow.addView(hoursCol)
+            hoursRow.addView(MaterialButton(this).apply {
+                text = "Change"
+                textSize = 12f
+                isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(12), 0, dp(12), 0)
+                cornerRadius = dp(10)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+                DesignSystem.styleSegmentedButton(this, false, p)
+                UiAnimations.attachSnappyPress(this)
+                setOnClickListener {
+                    showWorkingHoursDialog { renderAudit() }
+                }
+            })
+            summaryCard.addView(hoursRow)
+
+            summaryCard.addView(DesignSystem.createHairlineDivider(this, p))
+
+            // 3 Tabular Stat Counters
+            val statsRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(10), 0, dp(2))
+            }
+            fun addStat(label: String, count: Int, color: Int) {
+                val col = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                col.addView(TextView(this).apply {
+                    text = "$count"
+                    textSize = 20f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(color)
+                    DesignSystem.applyTabularNumerals(this)
+                })
+                col.addView(TextView(this).apply {
+                    text = label
+                    textSize = 11.5f
+                    setTextColor(txtSub)
+                })
+                statsRow.addView(col)
+            }
+            addStat("Total Edits", allEntries.size, txtPrimary)
+            addStat("In Hours", inHoursCnt, p.green)
+            addStat("After Hours", afterHoursCnt, if (afterHoursCnt > 0) p.red else txtSub)
+            summaryCard.addView(statsRow)
+            contentRoot.addView(summaryCard)
+
+            // 2. Time Filter Pills (All / After Hours / In Hours)
+            val filterScroll = android.widget.HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+            }
+            val filterRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(2), 0, dp(8))
+            }
+            listOf(
+                Triple("all", "All (${allEntries.size})", p.accent),
+                Triple("after_hours", "⏰ After Hours ($afterHoursCnt)", p.red),
+                Triple("in_hours", "✓ In Hours ($inHoursCnt)", p.green)
+            ).forEachIndexed { idx, (key, lbl, activeCol) ->
+                filterRow.addView(MaterialButton(this).apply {
+                    text = lbl
+                    textSize = 12f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(dp(12), 0, dp(12), 0)
+                    cornerRadius = dp(10)
+                    DesignSystem.applyTabularNumerals(this)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
+                        if (idx < 2) marginEnd = dp(6)
+                    }
+                    DesignSystem.styleSegmentedButton(this, timeFilter == key, p, activeCol)
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        timeFilter = key
+                        displayLimit = 120
+                        renderAudit()
+                    }
+                })
+            }
+            filterScroll.addView(filterRow)
+            contentRoot.addView(filterScroll)
+
+            // 3. Operator Filter Pills (if multiple team members contributed)
+            val operatorCounts = allEntries.groupingBy { it.operatorShort }.eachCount()
+                .entries.sortedByDescending { it.value }
+            if (operatorCounts.size > 1) {
+                val opScroll = android.widget.HorizontalScrollView(this).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                }
+                val opRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 0, 0, dp(10))
+                }
+                fun addOpChip(label: String, opKey: String?) {
+                    opRow.addView(MaterialButton(this).apply {
+                        text = label
+                        textSize = 11.5f
+                        isAllCaps = false
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        cornerRadius = dp(9)
+                        DesignSystem.applyTabularNumerals(this)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
+                            marginEnd = dp(6)
+                        }
+                        DesignSystem.styleSegmentedButton(this, operatorFilter == opKey, p)
+                        UiAnimations.attachSnappyPress(this)
+                        setOnClickListener {
+                            operatorFilter = opKey
+                            displayLimit = 120
+                            renderAudit()
+                        }
+                    })
+                }
+                addOpChip("All Teams", null)
+                operatorCounts.forEach { (opName, cnt) ->
+                    addOpChip("$opName ($cnt)", opName)
+                }
+                opScroll.addView(opRow)
+                contentRoot.addView(opScroll)
+            }
+
+            // 4. Filtered Chronological Timeline Grouped by Date
+            val filtered = allEntries.filter { e ->
+                val timeOk = when (timeFilter) {
+                    "after_hours" -> e.isOutsideWorkHours
+                    "in_hours" -> !e.isOutsideWorkHours
+                    else -> true
+                }
+                val opOk = operatorFilter == null || e.operatorShort == operatorFilter
+                timeOk && opOk
+            }
+
+            if (filtered.isEmpty()) {
+                val emptyCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 18)
+                emptyCard.addView(TextView(this).apply {
+                    text = when {
+                        allEntries.isEmpty() -> "No edits recorded yet in this folder. Whenever team members update a pin, each timestamped submission appears here."
+                        timeFilter == "after_hours" -> "✓ Great — zero submissions were made outside working hours ($windowStr)."
+                        else -> "No matching submissions for this filter."
+                    }
+                    textSize = 13.5f
+                    setLineSpacing(dp(2).toFloat(), 1.05f)
+                    setTextColor(txtSub)
+                })
+                contentRoot.addView(emptyCard)
+                return
+            }
+
+            val pageItems = filtered.take(displayLimit)
+            val groupedByDate = pageItems.groupBy { it.dateGroup }
+
+            groupedByDate.forEach { (dateLabel, dayEntries) ->
+                val dayLate = dayEntries.count { it.isOutsideWorkHours }
+                val headerTxt = if (dayLate > 0) "$dateLabel  •  $dayLate after hours" else "$dateLabel  •  ${dayEntries.size} edit${if (dayEntries.size == 1) "" else "s"}"
+                contentRoot.addView(DesignSystem.createSectionHeader(this, headerTxt, p))
+
+                val dayCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 8)
+                dayEntries.forEachIndexed { idx, entry ->
+                    if (idx > 0) {
+                        dayCard.addView(DesignSystem.createHairlineDivider(this, p, 14, 14))
+                    }
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        minimumHeight = dp(58)
+                        setPadding(dp(14), dp(10), dp(10), dp(10))
+                        if (entry.isOutsideWorkHours) {
+                            setBackgroundColor(p.redSoft)
+                        } else {
+                            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                        }
+                        setOnClickListener {
+                            ensurePinVisibleOnMap(entry.pin)
+                            closeFullPage()
+                            selectPinAndOpenCard(entry.pin, zoomIfFar = true)
+                        }
+                    }
+
+                    // Left timestamp + status dot column
+                    val timeCol = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            marginEnd = dp(10)
+                        }
+                    }
+                    timeCol.addView(TextView(this).apply {
+                        text = entry.clockTime
+                        textSize = 14f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(if (entry.isOutsideWorkHours) p.red else txtPrimary)
+                        DesignSystem.applyTabularNumerals(this)
+                    })
+                    val dotColor = when (entry.actionStatus) {
+                        "done" -> p.green
+                        "issue" -> p.red
+                        "pending" -> p.amber
+                        else -> p.accent
+                    }
+                    timeCol.addView(View(this).apply {
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(dotColor)
+                        }
+                        layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { topMargin = dp(4) }
+                    })
+                    row.addView(timeCol)
+
+                    // Center details column
+                    val infoCol = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginEnd = dp(6)
+                        }
+                    }
+                    val titleRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    titleRow.addView(TextView(this).apply {
+                        text = entry.pin.name
+                        textSize = 14.5f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(txtPrimary)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.MIDDLE
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    })
+                    if (entry.isOutsideWorkHours) {
+                        titleRow.addView(TextView(this).apply {
+                            text = "AFTER HOURS"
+                            textSize = 9.5f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(Color.WHITE)
+                            setPadding(dp(6), dp(2), dp(6), dp(2))
+                            background = GradientDrawable().apply {
+                                setColor(p.red)
+                                cornerRadius = dp(6).toFloat()
+                            }
+                            layoutParams = LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            ).apply { marginStart = dp(6) }
+                        })
+                    }
+                    infoCol.addView(titleRow)
+
+                    infoCol.addView(TextView(this).apply {
+                        text = "${entry.operatorShort} • ${entry.actionSummary}"
+                        textSize = 12.5f
+                        setTextColor(
+                            when {
+                                entry.actionStatus == "issue" -> p.red
+                                entry.actionStatus == "done" -> p.green
+                                else -> txtSub
+                            }
+                        )
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
+                        setPadding(0, dp(2), 0, 0)
+                    })
+                    row.addView(infoCol)
+
+                    // Folder owner can delete a specific out-of-hours / mistaken submission directly
+                    if (isOwner && entry.historyLineIndex >= 0) {
+                        row.addView(TextView(this).apply {
+                            text = "✕"
+                            textSize = 14f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(p.red)
+                            gravity = Gravity.CENTER
+                            minimumWidth = dp(40)
+                            minimumHeight = dp(44)
+                            setPadding(dp(8), dp(8), dp(8), dp(8))
+                            setOnClickListener {
+                                AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("Remove this submission?")
+                                    .setMessage("[${entry.fullTimeLabel}] ${entry.operatorShort}\n${entry.pin.name} → ${entry.actionSummary}\n\nOnly this edit will be removed. The pin remains on the map.")
+                                    .setPositiveButton("Delete Edit") { _, _ ->
+                                        deletePinHistoryEntryUnified(entry.pin, entry.historyLineIndex)
+                                        Toast.makeText(this@MainActivity, "Submission removed", Toast.LENGTH_SHORT).show()
+                                        renderAudit()
+                                    }
+                                    .setNegativeButton("Cancel", null)
+                                    .show()
+                            }
+                        })
+                    }
+                    dayCard.addView(row)
+                }
+                contentRoot.addView(dayCard)
+            }
+
+            val remaining = filtered.size - pageItems.size
+            if (remaining > 0) {
+                contentRoot.addView(MaterialButton(this).apply {
+                    text = "Show more ($remaining remaining)"
+                    textSize = 13f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    cornerRadius = dp(12)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
+                        topMargin = dp(4)
+                    }
+                    DesignSystem.styleSegmentedButton(this, false, p)
+                    setOnClickListener {
+                        displayLimit += 120
+                        renderAudit()
+                    }
+                })
+            }
+        }
+
+        liveEditHistoryRefresh = { renderAudit() }
+        renderAudit()
         return outer
     }
 
@@ -5514,6 +6169,61 @@ class MainActivity : AppCompatActivity() {
                 fieldCard.addView(syncActionRow)
 
                 fieldCard.addView(DesignSystem.createHairlineDivider(this, p))
+
+                // Working Hours Audit Window row
+                val hoursRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = dp(52)
+                    setPadding(0, dp(8), 0, dp(8))
+                }
+                val hoursCol = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginEnd = dp(10)
+                    }
+                }
+                hoursCol.addView(TextView(this).apply {
+                    text = "Working Hours Audit Window"
+                    textSize = 14.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                })
+                val tvWorkWindow = TextView(this).apply {
+                    val s = PinEditHistoryAudit.formatMinutes(DevicePrefs.getWorkStartMinutes(this@MainActivity))
+                    val e = PinEditHistoryAudit.formatMinutes(DevicePrefs.getWorkEndMinutes(this@MainActivity))
+                    text = "$s – $e • Flags after-hours pin edits"
+                    textSize = 12f
+                    setTextColor(txtSub)
+                    DesignSystem.applyTabularNumerals(this)
+                    setPadding(0, dp(2), 0, 0)
+                }
+                hoursCol.addView(tvWorkWindow)
+                hoursRow.addView(hoursCol)
+                hoursRow.addView(MaterialButton(this).apply {
+                    text = "Change"
+                    textSize = 12.5f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(dp(12), 0, dp(12), 0)
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
+                    DesignSystem.styleSegmentedButton(this, false, p)
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        showWorkingHoursDialog {
+                            val s = PinEditHistoryAudit.formatMinutes(DevicePrefs.getWorkStartMinutes(this@MainActivity))
+                            val e = PinEditHistoryAudit.formatMinutes(DevicePrefs.getWorkEndMinutes(this@MainActivity))
+                            tvWorkWindow.text = "$s – $e • Flags after-hours pin edits"
+                        }
+                    }
+                })
+                fieldCard.addView(hoursRow)
+
+                fieldCard.addView(DesignSystem.createHairlineDivider(this, p))
                 fieldCard.addView(TextView(this).apply {
                     text = "Field Operator Stamp"
                     textSize = 14.5f
@@ -6480,6 +7190,7 @@ class MainActivity : AppCompatActivity() {
         renderMapData()
         liveBookmarksRefresh?.invoke()
         livePinListRefresh?.invoke()
+        liveEditHistoryRefresh?.invoke()
         if (isLassoMode) updateLassoUi()
     }
 

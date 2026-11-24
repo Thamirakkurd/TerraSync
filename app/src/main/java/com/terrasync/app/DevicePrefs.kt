@@ -93,6 +93,8 @@ object DevicePrefs {
     private const val KEY_APP_LANGUAGE = "app_ui_language"
     private const val KEY_MAP_LABEL_LANGUAGE = "map_label_language"
     private const val KEY_POI_LABEL_BEHAVIOR = "poi_label_behavior"
+    private const val KEY_WORK_START_MIN = "work_hours_start_min"
+    private const val KEY_WORK_END_MIN = "work_hours_end_min"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -251,6 +253,15 @@ object DevicePrefs {
         PoiLabelBehavior.fromId(prefs(ctx).getString(KEY_POI_LABEL_BEHAVIOR, PoiLabelBehavior.MATCH_MAP.id))
     fun setPoiLabelBehavior(ctx: Context, behavior: PoiLabelBehavior) =
         prefs(ctx).edit().putString(KEY_POI_LABEL_BEHAVIOR, behavior.id).apply()
+
+    /** Working hours window in minutes since midnight (default 08:00 – 17:00). */
+    fun getWorkStartMinutes(ctx: Context): Int = prefs(ctx).getInt(KEY_WORK_START_MIN, 8 * 60).coerceIn(0, 23 * 60 + 59)
+    fun setWorkStartMinutes(ctx: Context, minutes: Int) =
+        prefs(ctx).edit().putInt(KEY_WORK_START_MIN, minutes.coerceIn(0, 23 * 60 + 59)).apply()
+
+    fun getWorkEndMinutes(ctx: Context): Int = prefs(ctx).getInt(KEY_WORK_END_MIN, 17 * 60).coerceIn(0, 23 * 60 + 59)
+    fun setWorkEndMinutes(ctx: Context, minutes: Int) =
+        prefs(ctx).edit().putInt(KEY_WORK_END_MIN, minutes.coerceIn(0, 23 * 60 + 59)).apply()
 
     fun getLocalSentPinIds(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_LOCAL_SENT_PINS, emptySet())?.toSet() ?: emptySet()
