@@ -668,11 +668,11 @@
 
         <View
             android:id="@+id/sheetDragHandle"
-            android:layout_width="40dp"
+            android:layout_width="38dp"
             android:layout_height="4dp"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="10dp"
-            android:layout_marginBottom="8dp" />
+            android:layout_marginBottom="10dp" />
 
         <androidx.core.widget.NestedScrollView
             android:layout_width="match_parent"

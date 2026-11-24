@@ -28,6 +28,8 @@ object DevicePrefs {
     private const val KEY_SHOW_EXTRA_MAP_TOOLS = "show_extra_map_tools"
     private const val KEY_CACHED_LAYER_NAMES = "cached_layer_names"
     private const val KEY_THEME_MODE = "ui_theme_mode"
+    private const val KEY_UI_DESIGN_STYLE = "ui_design_style"
+    private const val KEY_REDUCED_MOTION = "ui_reduced_motion"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -229,6 +231,15 @@ object DevicePrefs {
 
     fun getThemeMode(ctx: Context): String = prefs(ctx).getString(KEY_THEME_MODE, "day") ?: "day"
     fun setThemeMode(ctx: Context, mode: String) = prefs(ctx).edit().putString(KEY_THEME_MODE, mode).apply()
+
+    fun getUiDesignStyle(ctx: Context): UiDesignStyle =
+        UiDesignStyle.fromId(prefs(ctx).getString(KEY_UI_DESIGN_STYLE, UiDesignStyle.CLASSIC.id))
+    fun setUiDesignStyle(ctx: Context, style: UiDesignStyle) =
+        prefs(ctx).edit().putString(KEY_UI_DESIGN_STYLE, style.id).apply()
+
+    fun isReducedMotion(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_REDUCED_MOTION, false)
+    fun setReducedMotion(ctx: Context, enabled: Boolean) =
+        prefs(ctx).edit().putBoolean(KEY_REDUCED_MOTION, enabled).apply()
 
     fun isShowExtraMapTools(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, false)
     fun setShowExtraMapTools(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, show).apply()

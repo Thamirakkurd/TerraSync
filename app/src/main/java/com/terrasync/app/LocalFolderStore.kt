@@ -200,6 +200,48 @@ object LocalFolderStore {
         writeAll(ctx, LocalStoreSnapshot(updatedLayers, cur.pins + fixedPins, cur.tracks + fixedTracks))
     }
 
+    fun addManualPin(
+        ctx: Context,
+        name: String,
+        description: String,
+        lat: Double,
+        lng: Double,
+        deviceStamp: String,
+        deviceId: String
+    ): PinItem = synchronized(lock) {
+        val cur = loadAll(ctx)
+        val now = System.currentTimeMillis()
+        val cleanId = deviceId.filter { it.isLetterOrDigit() }.uppercase().ifBlank { "LOCAL" }
+        val layerId = "local_manual_$cleanId"
+        val existingLayer = cur.layers.firstOrNull { it.id == layerId }
+        val updatedLayer = existingLayer?.copy(updatedAt = now) ?: LayerItem(
+            id = layerId,
+            name = "My Field Pins",
+            shareCode = "",
+            createdBy = deviceStamp,
+            creatorDeviceId = cleanId,
+            updatedAt = now
+        )
+        val pin = PinItem(
+            id = UUID.randomUUID().toString(),
+            layerId = layerId,
+            name = name.ifBlank { "New Pin" },
+            description = description,
+            lat = lat,
+            lng = lng,
+            status = "pending",
+            issueReason = "",
+            updatedAt = now,
+            isEdited = false,
+            editedBy = deviceStamp,
+            editedAt = now,
+            editHistory = ""
+        )
+        val nextLayers = cur.layers.filterNot { it.id == layerId } + updatedLayer
+        writeAll(ctx, cur.copy(layers = nextLayers, pins = cur.pins + pin))
+        pin
+    }
+
     fun updatePinStatus(
         ctx: Context,
         pin: PinItem,
