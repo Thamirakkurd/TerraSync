@@ -22,6 +22,8 @@ object DevicePrefs {
     private const val KEY_3D_BUILDINGS = "buildings_3d_enabled"
     private const val KEY_TRAVEL_MODE = "travel_mode"
     private const val KEY_SPEED_INDICATOR = "speed_indicator_enabled"
+    private const val KEY_LOCAL_SENT_PINS = "local_sent_pin_ids"
+    private const val KEY_HIDE_SENT_PINS = "hide_sent_pins"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -145,4 +147,42 @@ object DevicePrefs {
 
     fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, true)
     fun setHillshadeEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_HILLSHADE, v).apply()
+
+    fun getLocalSentPinIds(ctx: Context): Set<String> {
+        return prefs(ctx).getStringSet(KEY_LOCAL_SENT_PINS, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun isPinLocalSent(ctx: Context, pinId: String): Boolean = getLocalSentPinIds(ctx).contains(pinId)
+
+    fun addLocalSentPinIds(ctx: Context, ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val next = getLocalSentPinIds(ctx).toMutableSet().apply { addAll(ids) }
+        prefs(ctx).edit().putStringSet(KEY_LOCAL_SENT_PINS, next).apply()
+    }
+
+    fun removeLocalSentPinIds(ctx: Context, ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val next = getLocalSentPinIds(ctx).toMutableSet().apply { removeAll(ids.toSet()) }
+        prefs(ctx).edit().putStringSet(KEY_LOCAL_SENT_PINS, next).apply()
+    }
+
+    fun toggleLocalSentPin(ctx: Context, pinId: String): Boolean {
+        val next = getLocalSentPinIds(ctx).toMutableSet()
+        val nowSent = if (next.contains(pinId)) {
+            next.remove(pinId)
+            false
+        } else {
+            next.add(pinId)
+            true
+        }
+        prefs(ctx).edit().putStringSet(KEY_LOCAL_SENT_PINS, next).apply()
+        return nowSent
+    }
+
+    fun clearLocalSentPins(ctx: Context) {
+        prefs(ctx).edit().putStringSet(KEY_LOCAL_SENT_PINS, emptySet()).apply()
+    }
+
+    fun isHideSentPins(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HIDE_SENT_PINS, false)
+    fun setHideSentPins(ctx: Context, hide: Boolean) = prefs(ctx).edit().putBoolean(KEY_HIDE_SENT_PINS, hide).apply()
 }

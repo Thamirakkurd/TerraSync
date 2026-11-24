@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -170,7 +171,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSyncStatus: ImageButton
     private lateinit var btnStyleToggle: ImageButton
     private lateinit var btnStatusFilter: ImageButton
+    private lateinit var btnSentToggle: TextView
+    private lateinit var btnLasso: ImageButton
     private lateinit var btnRuler: ImageButton
+    private lateinit var lassoOverlay: LassoOverlayView
+    private lateinit var lassoCard: LinearLayout
+    private lateinit var tvLassoTitle: TextView
+    private lateinit var tvLassoSubtitle: TextView
+    private lateinit var btnLassoMarkSent: TextView
+    private lateinit var btnLassoRedraw: TextView
+    private lateinit var btnLassoUndo: TextView
+    private lateinit var btnLassoReset: TextView
+    private lateinit var btnLassoClose: ImageButton
     private lateinit var btnZoomIn: ImageButton
     private lateinit var btnZoomOut: ImageButton
     private lateinit var btnLocate: ImageButton
@@ -227,6 +239,12 @@ class MainActivity : AppCompatActivity() {
     private var tappedResolvedTitle: String = ""
     private var tappedResolvedSub: String = ""
     private var lastGpsFixTimeMs: Long = 0L
+
+    // Local-only Sent Tracking & Circle-Select State
+    private var hideSentPins = false
+    private var isLassoMode = false
+    private var lassoPendingPinIds: List<String> = emptyList()
+    private val sentUndoStack = mutableListOf<List<String>>()
 
     // Ruler state
     private var isRulerMode = false
@@ -306,6 +324,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         visibleStatuses = DevicePrefs.getVisibleStatuses(this).toMutableSet()
+        hideSentPins = DevicePrefs.isHideSentPins(this)
         mapStyleMode = DevicePrefs.getMapStyleMode(this)
         travelMode = DevicePrefs.getTravelMode(this)
 
@@ -419,7 +438,18 @@ class MainActivity : AppCompatActivity() {
         btnSyncStatus = findViewById(R.id.btnSyncStatus)
         btnStyleToggle = findViewById(R.id.btnStyleToggle)
         btnStatusFilter = findViewById(R.id.btnStatusFilter)
+        btnSentToggle = findViewById(R.id.btnSentToggle)
+        btnLasso = findViewById(R.id.btnLasso)
         btnRuler = findViewById(R.id.btnRuler)
+        lassoOverlay = findViewById(R.id.lassoOverlay)
+        lassoCard = findViewById(R.id.lassoCard)
+        tvLassoTitle = findViewById(R.id.tvLassoTitle)
+        tvLassoSubtitle = findViewById(R.id.tvLassoSubtitle)
+        btnLassoMarkSent = findViewById(R.id.btnLassoMarkSent)
+        btnLassoRedraw = findViewById(R.id.btnLassoRedraw)
+        btnLassoUndo = findViewById(R.id.btnLassoUndo)
+        btnLassoReset = findViewById(R.id.btnLassoReset)
+        btnLassoClose = findViewById(R.id.btnLassoClose)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
         btnLocate = findViewById(R.id.btnLocate)
@@ -467,6 +497,14 @@ class MainActivity : AppCompatActivity() {
         UiAnimations.styleFloatingTile(this, btnSyncStatus, tileBg, 20f, 5f)
         UiAnimations.styleFloatingTile(
             this,
+            btnLasso,
+            if (isLassoMode) Color.parseColor("#16A34A") else tileBg,
+            22f,
+            6f,
+            if (isLassoMode) "#44FFFFFF" else "#3316A34A"
+        )
+        UiAnimations.styleFloatingTile(
+            this,
             btnRuler,
             if (isRulerMode) Color.parseColor("#2563EB") else tileBg,
             22f,
@@ -491,7 +529,9 @@ class MainActivity : AppCompatActivity() {
                 }
             )
         )
+        btnLasso.setColorFilter(if (isLassoMode) Color.WHITE else iconTint)
         btnRuler.setColorFilter(if (isRulerMode) Color.WHITE else iconTint)
+        updateSentToggleUi()
         btnZoomIn.setColorFilter(iconTint)
         btnZoomOut.setColorFilter(iconTint)
         btnImport.setColorFilter(Color.WHITE)
@@ -527,6 +567,29 @@ class MainActivity : AppCompatActivity() {
         tvRulerSubtitle.setTextColor(Color.parseColor(if (night) "#94A3B8" else "#64748B"))
         btnRulerUndo.setColorFilter(iconTint)
         btnRulerClose.setColorFilter(iconTint)
+
+        lassoCard.background = GradientDrawable().apply {
+            setColor(sheetBg)
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(1), Color.parseColor("#E2E8F0"))
+        }
+        btnLassoClose.setColorFilter(iconTint)
+        btnLassoMarkSent.background = GradientDrawable().apply {
+            setColor(Color.parseColor("#16A34A"))
+            cornerRadius = dp(10).toFloat()
+        }
+        btnLassoRedraw.background = GradientDrawable().apply {
+            setColor(Color.parseColor("#F1F5F9"))
+            cornerRadius = dp(10).toFloat()
+        }
+        btnLassoUndo.background = GradientDrawable().apply {
+            setColor(Color.parseColor("#F1F5F9"))
+            cornerRadius = dp(10).toFloat()
+        }
+        btnLassoReset.background = GradientDrawable().apply {
+            setColor(Color.parseColor("#FEE2E2"))
+            cornerRadius = dp(10).toFloat()
+        }
 
         inScreenSheet.background = GradientDrawable().apply {
             setColor(sheetBg)
@@ -568,6 +631,30 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnStatusFilter.setOnClickListener { showMultiStatusFilterDialog() }
+        btnSentToggle.setOnClickListener {
+            hideSentPins = !hideSentPins
+            DevicePrefs.setHideSentPins(this, hideSentPins)
+            updateSentToggleUi()
+            renderMapData()
+            val sentCount = DevicePrefs.getLocalSentPinIds(this).size
+            val msg = if (hideSentPins) {
+                if (sentCount > 0) "Showing unsent pins only ($sentCount sent hidden)" else "Unsent Only mode (no pins marked sent yet)"
+            } else {
+                "Showing all pins"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        btnLasso.setOnClickListener { toggleLassoMode(!isLassoMode) }
+        btnLassoMarkSent.setOnClickListener { confirmLassoMarkSent() }
+        btnLassoRedraw.setOnClickListener { clearLassoSelection() }
+        btnLassoUndo.setOnClickListener { undoLastLassoMark() }
+        btnLassoReset.setOnClickListener { confirmResetAllSentPins() }
+        btnLassoClose.setOnClickListener { toggleLassoMode(false) }
+        lassoOverlay.onLoopStarted = {
+            lassoPendingPinIds = emptyList()
+            updateLassoUi()
+        }
+        lassoOverlay.onLoopCompleted = { poly -> handleLassoLoopCompleted(poly) }
         btnRuler.setOnClickListener { toggleRulerMode(!isRulerMode) }
         btnRulerUndo.setOnClickListener { undoRulerPoint() }
         btnRulerReset.setOnClickListener { resetRulerPoints() }
@@ -697,6 +784,28 @@ class MainActivity : AppCompatActivity() {
             box.addView(row)
         }
 
+        box.addView(View(this).apply {
+            setBackgroundColor(dividerColor)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                topMargin = dp(8)
+                bottomMargin = dp(6)
+            }
+        })
+        val sentCount = DevicePrefs.getLocalSentPinIds(this).size
+        box.addView(CheckBox(this).apply {
+            text = "Unsent Only (hide $sentCount sent on this phone)"
+            textSize = 14f
+            setTextColor(txtPrimary)
+            isChecked = hideSentPins
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            setOnCheckedChangeListener { _, checked ->
+                hideSentPins = checked
+                DevicePrefs.setHideSentPins(this@MainActivity, checked)
+                updateSentToggleUi()
+                renderMapData()
+            }
+        })
+
         AlertDialog.Builder(this)
             .setTitle("Filter Pins by Status")
             .setView(box)
@@ -714,6 +823,10 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         closeFullPage()
                     }
+                    return
+                }
+                if (isLassoMode) {
+                    toggleLassoMode(false)
                     return
                 }
                 if (isRulerMode) {
@@ -1091,9 +1204,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun getVisiblePins(): List<PinItem> {
         val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
+        val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
         return pins.filter { p ->
             val normStatus = p.status.lowercase().ifBlank { "pending" }
-            p.layerId !in hiddenLayerIds && normStatus in visibleStatuses
+            p.layerId !in hiddenLayerIds && normStatus in visibleStatuses && p.id !in sentIds
         }
     }
 
@@ -1270,7 +1384,143 @@ class MainActivity : AppCompatActivity() {
 
     // --- Multi-Point Distance Ruler Tool ---
 
+    // --- Local-Only Sent Pin Tracking & Draw-a-Circle (Lasso) Selection ---
+
+    private fun updateSentToggleUi() {
+        if (hideSentPins) {
+            btnSentToggle.text = "Unsent Only"
+            btnSentToggle.setTextColor(Color.WHITE)
+            UiAnimations.styleFloatingTile(this, btnSentToggle, Color.parseColor("#16A34A"), 20f, 5f, "#44FFFFFF")
+        } else {
+            btnSentToggle.text = "All Pins"
+            btnSentToggle.setTextColor(Color.parseColor("#334155"))
+            UiAnimations.styleFloatingTile(this, btnSentToggle, Color.parseColor("#F7FFFFFF"), 20f, 5f)
+        }
+    }
+
+    private fun toggleLassoMode(enabled: Boolean) {
+        if (enabled && isRulerMode) toggleRulerMode(false)
+        isLassoMode = enabled
+        if (enabled) {
+            hideInScreenSheet()
+            bottomIconRow.visibility = View.GONE
+            lassoCard.visibility = View.VISIBLE
+            lassoOverlay.visibility = View.VISIBLE
+            lassoOverlay.clearLoop()
+            lassoPendingPinIds = emptyList()
+            updateLassoUi()
+        } else {
+            lassoPendingPinIds = emptyList()
+            lassoOverlay.clearLoop()
+            lassoOverlay.visibility = View.GONE
+            lassoCard.visibility = View.GONE
+            bottomIconRow.visibility = View.VISIBLE
+        }
+        applyMapChromeTheme()
+    }
+
+    private fun clearLassoSelection() {
+        lassoPendingPinIds = emptyList()
+        lassoOverlay.clearLoop()
+        updateLassoUi()
+    }
+
+    private fun handleLassoLoopCompleted(poly: List<PointF>) {
+        val m = map ?: return
+        val inside = getVisiblePins().filter { p ->
+            val pt = m.projection.toScreenLocation(LatLng(p.lat, p.lng))
+            LassoOverlayView.isPointInPolygon(pt.x, pt.y, poly)
+        }
+        if (inside.isEmpty()) {
+            lassoPendingPinIds = emptyList()
+            lassoOverlay.clearLoop()
+            updateLassoUi()
+            Toast.makeText(this, "No visible pins inside circle", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val unsentInside = inside.filter { !DevicePrefs.isPinLocalSent(this, it.id) }
+        if (unsentInside.isEmpty()) {
+            lassoPendingPinIds = emptyList()
+            lassoOverlay.clearLoop()
+            updateLassoUi()
+            Toast.makeText(this, "All ${inside.size} pins inside are already marked sent", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lassoPendingPinIds = unsentInside.map { it.id }
+        updateLassoUi()
+    }
+
+    private fun confirmLassoMarkSent() {
+        if (lassoPendingPinIds.isEmpty()) {
+            Toast.makeText(this, "Draw a circle around pins first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val batch = lassoPendingPinIds.toList()
+        DevicePrefs.addLocalSentPinIds(this, batch)
+        sentUndoStack.add(batch)
+        lassoPendingPinIds = emptyList()
+        lassoOverlay.clearLoop()
+        updateSentToggleUi()
+        updateLassoUi()
+        renderMapData()
+        Toast.makeText(this, "Marked ${batch.size} pin${if (batch.size == 1) "" else "s"} as sent (local only)", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun undoLastLassoMark() {
+        if (sentUndoStack.isEmpty()) return
+        val lastBatch = sentUndoStack.removeAt(sentUndoStack.lastIndex)
+        DevicePrefs.removeLocalSentPinIds(this, lastBatch)
+        updateSentToggleUi()
+        updateLassoUi()
+        renderMapData()
+        Toast.makeText(this, "Undid ${lastBatch.size} sent pin${if (lastBatch.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun confirmResetAllSentPins() {
+        val total = DevicePrefs.getLocalSentPinIds(this).size
+        if (total == 0) {
+            Toast.makeText(this, "No sent pins to reset", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Reset Sent Marks?")
+            .setMessage("Clear all $total local sent marks on this phone? All pins remain safely in your folders.")
+            .setPositiveButton("Reset") { _, _ ->
+                DevicePrefs.clearLocalSentPins(this)
+                sentUndoStack.clear()
+                lassoPendingPinIds = emptyList()
+                lassoOverlay.clearLoop()
+                updateSentToggleUi()
+                updateLassoUi()
+                renderMapData()
+                Toast.makeText(this, "Cleared all local sent marks", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateLassoUi() {
+        val sel = lassoPendingPinIds.size
+        val totalSent = DevicePrefs.getLocalSentPinIds(this).size
+        if (sel > 0) {
+            tvLassoTitle.text = "$sel pin${if (sel == 1) "" else "s"} selected"
+            tvLassoSubtitle.text = "Tap Mark Sent (local only • $totalSent sent total)"
+            btnLassoMarkSent.text = "Mark Sent ($sel)"
+            btnLassoMarkSent.alpha = 1f
+            btnLassoRedraw.alpha = 1f
+        } else {
+            tvLassoTitle.text = "Draw circle around sent pins"
+            tvLassoSubtitle.text = if (totalSent > 0) "$totalSent marked sent on this phone" else "Local to this phone only"
+            btnLassoMarkSent.text = "Mark Sent"
+            btnLassoMarkSent.alpha = 0.45f
+            btnLassoRedraw.alpha = 0.45f
+        }
+        btnLassoUndo.alpha = if (sentUndoStack.isNotEmpty()) 1f else 0.4f
+        btnLassoReset.alpha = if (totalSent > 0) 1f else 0.4f
+    }
+
     private fun toggleRulerMode(enabled: Boolean) {
+        if (enabled && isLassoMode) toggleLassoMode(false)
         isRulerMode = enabled
         if (enabled) {
             hideInScreenSheet()
@@ -1791,12 +2041,43 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtPrimary)
             setBackgroundColor(chipBg)
             cornerRadius = dp(12)
-            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSpringTouch(this)
             setOnClickListener {
                 val label = Uri.encode(pin.name)
                 val geoUri = Uri.parse("geo:${pin.lat},${pin.lng}?q=${pin.lat},${pin.lng}($label)")
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, geoUri), "Open in"))
+            }
+        })
+        var localSent = DevicePrefs.isPinLocalSent(this, pin.id)
+        actionRow.addView(MaterialButton(this).apply {
+            text = if (localSent) "Sent ✓" else "Mark Sent"
+            textSize = 12.5f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            maxLines = 1
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(6), 0, dp(6), 0)
+            setTextColor(if (localSent) Color.WHITE else txtPrimary)
+            setBackgroundColor(if (localSent) Color.parseColor("#16A34A") else chipBg)
+            cornerRadius = dp(12)
+            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
+            UiAnimations.attachSpringTouch(this)
+            setOnClickListener {
+                localSent = DevicePrefs.toggleLocalSentPin(this@MainActivity, pin.id)
+                text = if (localSent) "Sent ✓" else "Mark Sent"
+                setTextColor(if (localSent) Color.WHITE else txtPrimary)
+                setBackgroundColor(if (localSent) Color.parseColor("#16A34A") else chipBg)
+                updateSentToggleUi()
+                renderMapData()
+                Toast.makeText(
+                    this@MainActivity,
+                    if (localSent) "Marked sent (local only)" else "Removed sent mark",
+                    Toast.LENGTH_SHORT
+                ).show()
+                if (localSent && hideSentPins) hideInScreenSheet()
             }
         })
         sheetContent.addView(actionRow)
@@ -4355,10 +4636,10 @@ class MainActivity : AppCompatActivity() {
         })
 
         val cbDedup = CheckBox(this).apply {
-            text = "Skip duplicate pins (same name & GPS)"
+            text = "Skip exact duplicates (same name, desc & GPS)"
             textSize = 13f
             setTextColor(Color.parseColor("#334155"))
-            isChecked = true
+            isChecked = false
         }
         box.addView(cbDedup)
 
@@ -4397,7 +4678,7 @@ class MainActivity : AppCompatActivity() {
                                 .thenByDescending { it.updatedAt }
                         )
                         .distinctBy {
-                            "${it.name.trim().lowercase()}|${"%.6f".format(Locale.US, it.lat)}|${"%.6f".format(Locale.US, it.lng)}"
+                            "${it.name.trim().lowercase()}|${it.description.trim().lowercase()}|${"%.6f".format(Locale.US, it.lat)}|${"%.6f".format(Locale.US, it.lng)}"
                         }
                 } else {
                     rawPins
@@ -4411,10 +4692,12 @@ class MainActivity : AppCompatActivity() {
                 val newLayerId = UUID.randomUUID().toString()
                 val stamp = DevicePrefs.getDeviceStamp(this)
                 val devId = DevicePrefs.getDeviceId(this)
+                val skippedCount = rawPins.size - finalPins.size
                 repo.combineLayers(newLayerId, combinedName, stamp, devId, finalPins, rawTracks) { ok, msg, _ ->
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        val fullMsg = if (skippedCount > 0) "$msg ($skippedCount duplicates skipped)" else msg
+                        Toast.makeText(this, fullMsg, Toast.LENGTH_LONG).show()
                         if (ok) {
                             DevicePrefs.addJoinedLayerId(this, newLayerId)
                             if (cbHideOriginals.isChecked) {
