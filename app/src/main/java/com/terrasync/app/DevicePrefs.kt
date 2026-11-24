@@ -95,6 +95,7 @@ object DevicePrefs {
     private const val KEY_POI_LABEL_BEHAVIOR = "poi_label_behavior"
     private const val KEY_WORK_START_MIN = "work_hours_start_min"
     private const val KEY_WORK_END_MIN = "work_hours_end_min"
+    private const val KEY_OPERATOR_SETUP_DONE = "operator_setup_prompt_done"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -113,7 +114,18 @@ object DevicePrefs {
     fun getCustomName(ctx: Context): String = prefs(ctx).getString(KEY_CUSTOM_NAME, "") ?: ""
 
     fun setCustomName(ctx: Context, name: String) {
-        prefs(ctx).edit().putString(KEY_CUSTOM_NAME, name.trim()).apply()
+        val clean = name.trim()
+        prefs(ctx).edit()
+            .putString(KEY_CUSTOM_NAME, clean)
+            .apply { if (clean.isNotBlank()) putBoolean(KEY_OPERATOR_SETUP_DONE, true) }
+            .apply()
+    }
+
+    fun isOperatorSetupDone(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_OPERATOR_SETUP_DONE, false) || getCustomName(ctx).isNotBlank()
+
+    fun setOperatorSetupDone(ctx: Context, done: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_OPERATOR_SETUP_DONE, done).apply()
     }
 
     fun getDeviceStamp(ctx: Context): String {

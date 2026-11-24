@@ -776,6 +776,20 @@ class SyncRepo(context: Context? = null) {
             .addOnFailureListener { e -> onError?.invoke(e.message ?: "Failed to delete pin") }
     }
 
+    fun deletePinsBatch(pinIds: Collection<String>, onError: ((String) -> Unit)? = null) {
+        if (pinIds.isEmpty()) return
+        val reported = AtomicBoolean(false)
+        pinIds.distinct().chunked(400).forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { id -> batch.delete(db.collection("pins").document(id)) }
+            batch.commit().addOnFailureListener { e ->
+                if (reported.compareAndSet(false, true)) {
+                    onError?.invoke(e.message ?: "Failed to delete selected pins")
+                }
+            }
+        }
+    }
+
     fun deleteLayer(layerId: String, pinIds: List<String>, trackIds: List<String>, onError: ((String) -> Unit)? = null) {
         val refs = mutableListOf(db.collection("layers").document(layerId))
         pinIds.forEach { refs += db.collection("pins").document(it) }

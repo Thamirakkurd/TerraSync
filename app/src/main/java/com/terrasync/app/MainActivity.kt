@@ -502,6 +502,106 @@ class MainActivity : AppCompatActivity() {
 
         refreshJoinedSync()
         handleDeepLinkIntent(intent)
+        if (!DevicePrefs.isOperatorSetupDone(this)) {
+            window.decorView.post {
+                if (!isFinishing && !isDestroyed && !DevicePrefs.isOperatorSetupDone(this)) {
+                    showFirstInstallOperatorDialog()
+                }
+            }
+        }
+    }
+
+    private fun showFirstInstallOperatorDialog() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        box.addView(TextView(this).apply {
+            text = "Enter your operator or team name (e.g. Team 212, Ali, Supervisor) so every pin edit and cloud submission is stamped accurately."
+            textSize = 13.5f
+            setLineSpacing(dp(2).toFloat(), 1.05f)
+            setTextColor(Color.parseColor("#6E6E73"))
+            setPadding(0, 0, 0, dp(12))
+        })
+
+        val etName = EditText(this).apply {
+            hint = "Operator or Team Name"
+            textSize = 15f
+            setTextColor(Color.parseColor("#1C1C1E"))
+            setHintTextColor(Color.parseColor("#8E8E93"))
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F2F2F5"))
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        box.addView(etName)
+
+        val baseDeviceStamp = DevicePrefs.getDeviceStamp(this)
+        val tvPreview = TextView(this).apply {
+            text = "Stamp preview: $baseDeviceStamp"
+            textSize = 12f
+            setTextColor(Color.parseColor("#1E88E5"))
+            setTypeface(null, Typeface.BOLD)
+            setPadding(dp(4), dp(8), dp(4), dp(4))
+        }
+        box.addView(tvPreview)
+
+        etName.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                val typed = s?.toString()?.trim().orEmpty()
+                tvPreview.text = if (typed.isNotBlank()) {
+                    "Stamp preview: $typed ($baseDeviceStamp)"
+                } else {
+                    "Stamp preview: $baseDeviceStamp"
+                }
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Field Operator Stamp")
+            .setView(box)
+            .setCancelable(false)
+            .setPositiveButton("Save & Continue", null)
+            .setNegativeButton("Skip for now") { _, _ ->
+                DevicePrefs.setOperatorSetupDone(this, true)
+                Toast.makeText(this, "You can set your stamp anytime in Settings → Field Data & Sync", Toast.LENGTH_SHORT).show()
+            }
+            .create()
+
+        fun trySave() {
+            val entered = etName.text.toString().trim()
+            if (entered.isBlank()) {
+                Toast.makeText(this, "Please enter your operator or team name (or tap Skip)", Toast.LENGTH_SHORT).show()
+                return
+            }
+            DevicePrefs.setCustomName(this, entered)
+            DevicePrefs.setOperatorSetupDone(this, true)
+            Toast.makeText(this, "Field Stamp set: ${DevicePrefs.getDeviceStamp(this)}", Toast.LENGTH_SHORT).show()
+            dlg.dismiss()
+        }
+
+        etName.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                trySave()
+                true
+            } else false
+        }
+
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { trySave() }
+            etName.requestFocus()
+        }
+        dlg.show()
     }
 
     private fun bindViews() {
@@ -4428,6 +4528,96 @@ class MainActivity : AppCompatActivity() {
 
         var sortNearest = currentLocation != null
         var filterKey = "all"
+        var selectionMode = false
+        val selectedPinIds = linkedSetOf<String>()
+        val canDeletePins = layer == null || isLayerOwner(layer)
+
+        fun pinPriorityRank(pin: PinItem): Int = when (pin.status.lowercase(Locale.US)) {
+            "done" -> 3
+            "issue" -> 2
+            else -> if (pin.isEdited) 1 else 0
+        }
+
+        fun sortKeepPrimaryFirst(group: List<PinItem>): List<PinItem> =
+            group.sortedWith(
+                compareByDescending<PinItem> { pinPriorityRank(it) }
+                    .thenByDescending { it.editedAt }
+                    .thenByDescending { it.updatedAt }
+                    .thenBy { it.id }
+            )
+
+        /** Finds extra duplicate pin IDs (same normalized name + same coordinates), keeping 1 primary per group. */
+        fun findDuplicateExtraIds(list: List<PinItem>): Set<String> {
+            val byKey = list.groupBy { pin ->
+                "${pin.name.trim().lowercase(Locale.US)}|${"%.6f".format(Locale.US, pin.lat)}|${"%.6f".format(Locale.US, pin.lng)}"
+            }
+            val extras = linkedSetOf<String>()
+            byKey.values.forEach { grp ->
+                if (grp.size >= 2) {
+                    val ordered = sortKeepPrimaryFirst(grp)
+                    for (i in 1 until ordered.size) extras.add(ordered[i].id)
+                }
+            }
+            return extras
+        }
+
+        /**
+         * Clusters pins sharing the same GPS coordinates (<= 2.0 m) using a fast spatial grid.
+         * Returns (extraStackedPinIds keeping 1 best primary per cluster, clusterSizeByPinId).
+         */
+        fun analyzeSameCoordClusters(list: List<PinItem>): Pair<Set<String>, Map<String, Int>> {
+            val cellSize = 0.00003 // ~3.3 m
+            val buckets = HashMap<Long, MutableList<Int>>()
+            fun bucketKey(cx: Int, cy: Int): Long = (cx.toLong() shl 32) xor (cy.toLong() and 0xFFFFFFFFL)
+            list.forEachIndexed { idx, pin ->
+                val cx = kotlin.math.floor(pin.lat / cellSize).toInt()
+                val cy = kotlin.math.floor(pin.lng / cellSize).toInt()
+                buckets.getOrPut(bucketKey(cx, cy)) { mutableListOf() }.add(idx)
+            }
+
+            val visited = BooleanArray(list.size)
+            val extras = linkedSetOf<String>()
+            val clusterSizes = HashMap<String, Int>()
+
+            for (i in list.indices) {
+                if (visited[i]) continue
+                val seed = list[i]
+                val cx = kotlin.math.floor(seed.lat / cellSize).toInt()
+                val cy = kotlin.math.floor(seed.lng / cellSize).toInt()
+                val cluster = mutableListOf<PinItem>()
+                val queue = ArrayDeque<Int>()
+                visited[i] = true
+                queue.add(i)
+
+                while (queue.isNotEmpty()) {
+                    val curIdx = queue.removeFirst()
+                    val curPin = list[curIdx]
+                    cluster.add(curPin)
+                    val curCx = kotlin.math.floor(curPin.lat / cellSize).toInt()
+                    val curCy = kotlin.math.floor(curPin.lng / cellSize).toInt()
+                    for (dx in -1..1) {
+                        for (dy in -1..1) {
+                            val candIndices = buckets[bucketKey(curCx + dx, curCy + dy)] ?: continue
+                            for (candIdx in candIndices) {
+                                if (visited[candIdx]) continue
+                                val cand = list[candIdx]
+                                if (RoutingEngine.haversineMeters(curPin.lat, curPin.lng, cand.lat, cand.lng) <= 2.0) {
+                                    visited[candIdx] = true
+                                    queue.add(candIdx)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (cluster.size >= 2) {
+                    val ordered = sortKeepPrimaryFirst(cluster)
+                    ordered.forEach { clusterSizes[it.id] = ordered.size }
+                    for (k in 1 until ordered.size) extras.add(ordered[k].id)
+                }
+            }
+            return extras to clusterSizes
+        }
 
         val controlsScroll = android.widget.HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
@@ -4436,8 +4626,23 @@ class MainActivity : AppCompatActivity() {
         val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(10))
+            setPadding(0, dp(4), 0, dp(8))
         }
+        val btnSelectMode = MaterialButton(this).apply {
+            text = "Select"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(10)
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(12), 0, dp(12), 0)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply { marginEnd = dp(8) }
+            UiAnimations.attachSnappyPress(this)
+        }
+        controlsRow.addView(btnSelectMode)
+
         val btnSort = MaterialButton(this).apply {
             textSize = 12f
             isAllCaps = false
@@ -4475,13 +4680,168 @@ class MainActivity : AppCompatActivity() {
         controlsScroll.addView(controlsRow)
         body.addView(controlsScroll)
 
+        // Auto-Selection Bar (Visible in Selection Mode: Duplicates, Same Coords, All, Clear)
+        val autoSelectScroll = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            visibility = View.GONE
+        }
+        val autoSelectRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(10))
+        }
+        val btnAutoDuplicates = MaterialButton(this).apply {
+            text = "Auto: Duplicates"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(11), 0, dp(11), 0)
+            cornerRadius = dp(10)
+            DesignSystem.applyTabularNumerals(this)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply { marginEnd = dp(6) }
+            DesignSystem.styleSegmentedButton(this, false, p)
+            UiAnimations.attachSnappyPress(this)
+        }
+        val btnAutoSameCoords = MaterialButton(this).apply {
+            text = "Auto: Same Coords"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(11), 0, dp(11), 0)
+            cornerRadius = dp(10)
+            DesignSystem.applyTabularNumerals(this)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply { marginEnd = dp(6) }
+            DesignSystem.styleSegmentedButton(this, false, p)
+            UiAnimations.attachSnappyPress(this)
+        }
+        val btnSelectAll = MaterialButton(this).apply {
+            text = "All"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(11), 0, dp(11), 0)
+            cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply { marginEnd = dp(6) }
+            DesignSystem.styleSegmentedButton(this, false, p)
+            UiAnimations.attachSnappyPress(this)
+        }
+        val btnClearSel = MaterialButton(this).apply {
+            text = "Clear"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(11), 0, dp(11), 0)
+            cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+            DesignSystem.styleSegmentedButton(this, false, p)
+            UiAnimations.attachSnappyPress(this)
+        }
+        autoSelectRow.addView(btnAutoDuplicates)
+        autoSelectRow.addView(btnAutoSameCoords)
+        autoSelectRow.addView(btnSelectAll)
+        autoSelectRow.addView(btnClearSel)
+        autoSelectScroll.addView(autoSelectRow)
+        body.addView(autoSelectScroll)
+
         val listCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 16f)
         }
         body.addView(listCard)
 
+        // Bottom Selection Action Bar pinned at bottom of `outer`
+        val selectionDivider = DesignSystem.createHairlineDivider(this, p).apply {
+            visibility = View.GONE
+        }
+        val selectionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(p.pageBackdrop)
+            setPadding(dp(14), dp(8), dp(14), dp(10))
+            visibility = View.GONE
+        }
+        val tvSelSummary = TextView(this).apply {
+            text = "0 selected"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(txtPrimary)
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(dp(2), 0, dp(2), dp(8))
+        }
+        val selBtnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        fun makeSelActionBtn(label: String, bgColor: Int, txtColor: Int, weight: Float, marginEndDp: Int): MaterialButton {
+            return MaterialButton(this).apply {
+                text = label
+                textSize = 12f
+                isAllCaps = false
+                setSingleLine(true)
+                ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER
+                insetTop = 0
+                insetBottom = 0
+                minWidth = 0
+                minimumWidth = 0
+                minHeight = 0
+                minimumHeight = 0
+                setPadding(dp(6), 0, dp(6), 0)
+                setTextColor(txtColor)
+                setBackgroundColor(bgColor)
+                cornerRadius = dp(10)
+                layoutParams = LinearLayout.LayoutParams(0, dp(40), weight).apply {
+                    if (marginEndDp > 0) marginEnd = dp(6)
+                }
+                UiAnimations.attachSnappyPress(this)
+            }
+        }
+        val btnSelZoom = makeSelActionBtn("Zoom", p.chipSurface, txtPrimary, 0.85f, 6)
+        val btnSelExport = makeSelActionBtn("Export", p.accent, Color.WHITE, 0.95f, 6)
+        val btnSelStatus = makeSelActionBtn("Status", p.green, Color.WHITE, 0.95f, if (canDeletePins) 6 else 0)
+        val btnSelDelete = makeSelActionBtn("Delete", p.red, Color.WHITE, 0.95f, 0).apply {
+            visibility = if (canDeletePins) View.VISIBLE else View.GONE
+        }
+        selBtnRow.addView(btnSelZoom)
+        selBtnRow.addView(btnSelExport)
+        selBtnRow.addView(btnSelStatus)
+        if (canDeletePins) selBtnRow.addView(btnSelDelete)
+        selectionBar.addView(tvSelSummary)
+        selectionBar.addView(selBtnRow)
+        outer.addView(selectionDivider)
+        outer.addView(selectionBar)
+
         var displayLimit = 150
+        var latestFiltered: List<PinItem> = emptyList()
+
+        fun updateSelectionBarState() {
+            val liveIds = currentSourcePins().map { it.id }.toSet()
+            selectedPinIds.retainAll(liveIds)
+            val cnt = selectedPinIds.size
+            btnSelectMode.text = if (selectionMode) "Done" else "Select"
+            DesignSystem.styleSegmentedButton(btnSelectMode, selectionMode, p, p.accent)
+            autoSelectScroll.visibility = if (selectionMode) View.VISIBLE else View.GONE
+            selectionDivider.visibility = if (selectionMode) View.VISIBLE else View.GONE
+            selectionBar.visibility = if (selectionMode) View.VISIBLE else View.GONE
+            tvSelSummary.text = if (cnt == 0) "Tap bookmarks or use Auto-Select above" else "$cnt bookmark${if (cnt == 1) "" else "s"} selected"
+            val hasAny = cnt > 0
+            listOf(btnSelZoom, btnSelExport, btnSelStatus, btnSelDelete).forEach { b ->
+                b.isEnabled = hasAny
+                b.alpha = if (hasAny) 1f else 0.45f
+            }
+        }
 
         fun renderPinRows() {
             btnSort.text = if (sortNearest) "Nearest ↓" else "A–Z ↓"
@@ -4493,8 +4853,37 @@ class MainActivity : AppCompatActivity() {
             listCard.removeAllViews()
             val loc = currentLocation
             val unit = DevicePrefs.getSpeedUnit(this)
-            val filtered = currentSourcePins().filter { filterKey == "all" || it.status.equals(filterKey, true) }
-            val ordered = if (sortNearest && loc != null) {
+            val allInFolder = currentSourcePins()
+            val filtered = allInFolder.filter { filterKey == "all" || it.status.equals(filterKey, true) }
+            latestFiltered = filtered
+
+            val dupExtras = findDuplicateExtraIds(filtered)
+            val (sameCoordExtras, clusterSizes) = analyzeSameCoordClusters(filtered)
+            btnAutoDuplicates.text = "Duplicates (${dupExtras.size})"
+            btnAutoSameCoords.text = "Same Coords (${sameCoordExtras.size})"
+            DesignSystem.styleSegmentedButton(
+                btnAutoDuplicates,
+                selectionMode && dupExtras.isNotEmpty() && selectedPinIds.containsAll(dupExtras) && selectedPinIds.size == dupExtras.size,
+                p,
+                p.amber
+            )
+            DesignSystem.styleSegmentedButton(
+                btnAutoSameCoords,
+                selectionMode && sameCoordExtras.isNotEmpty() && selectedPinIds.containsAll(sameCoordExtras) && selectedPinIds.size == sameCoordExtras.size,
+                p,
+                p.accent
+            )
+
+            updateSelectionBarState()
+
+            val ordered = if (selectionMode && selectedPinIds.isNotEmpty()) {
+                val baseSorted = if (sortNearest && loc != null) {
+                    filtered.sortedBy { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
+                } else {
+                    filtered.sortedBy { it.name.lowercase() }
+                }
+                baseSorted.sortedByDescending { it.id in selectedPinIds }
+            } else if (sortNearest && loc != null) {
                 filtered.sortedBy { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
             } else {
                 filtered.sortedBy { it.name.lowercase() }
@@ -4515,39 +4904,105 @@ class MainActivity : AppCompatActivity() {
                 if (idx > 0) {
                     listCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
                 }
+                val isSelected = pin.id in selectedPinIds
+                val sameCount = clusterSizes[pin.id] ?: 0
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     minimumHeight = dp(52)
                     setPadding(dp(14), dp(11), dp(14), dp(11))
-                    UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                    if (selectionMode && isSelected) {
+                        setBackgroundColor(p.accentSoft)
+                    } else {
+                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                    }
                     setOnClickListener {
-                        ensurePinVisibleOnMap(pin)
-                        closeFullPage()
-                        selectPinAndOpenCard(pin, zoomIfFar = true)
+                        if (selectionMode) {
+                            if (!selectedPinIds.add(pin.id)) selectedPinIds.remove(pin.id)
+                            renderPinRows()
+                        } else {
+                            ensurePinVisibleOnMap(pin)
+                            closeFullPage()
+                            selectPinAndOpenCard(pin, zoomIfFar = true)
+                        }
+                    }
+                    setOnLongClickListener {
+                        if (!selectionMode) {
+                            selectionMode = true
+                            selectedPinIds.add(pin.id)
+                            renderPinRows()
+                            true
+                        } else false
                     }
                 }
-                row.addView(View(this).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.parseColor(statusColorHex(pin.status)))
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
-                })
+
+                if (selectionMode) {
+                    row.addView(TextView(this).apply {
+                        text = if (isSelected) "✓" else ""
+                        textSize = 13f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(Color.WHITE)
+                        gravity = Gravity.CENTER
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            if (isSelected) {
+                                setColor(p.accent)
+                            } else {
+                                setColor(Color.TRANSPARENT)
+                                setStroke(dp(2), p.iconMuted)
+                            }
+                        }
+                        layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(12) }
+                    })
+                } else {
+                    row.addView(View(this).apply {
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(Color.parseColor(statusColorHex(pin.status)))
+                        }
+                        layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+                    })
+                }
+
                 val col = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                         marginEnd = dp(8)
                     }
                 }
-                col.addView(TextView(this).apply {
+                val nameRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                nameRow.addView(TextView(this).apply {
                     text = pin.name
                     textSize = 15f
                     setTextColor(txtPrimary)
                     setTypeface(null, Typeface.BOLD)
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.MIDDLE
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
+                if (sameCount >= 2) {
+                    nameRow.addView(TextView(this).apply {
+                        text = "${sameCount}× GPS"
+                        textSize = 10f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(p.amber)
+                        DesignSystem.applyTabularNumerals(this)
+                        setPadding(dp(6), dp(2), dp(6), dp(2))
+                        background = GradientDrawable().apply {
+                            setColor(p.amberSoft)
+                            cornerRadius = dp(6).toFloat()
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { marginStart = dp(6) }
+                    })
+                }
+                col.addView(nameRow)
+
                 val subParts = mutableListOf(statusLabel(pin.status))
                 if (pin.status.equals("issue", true) && pin.issueReason.isNotBlank()) subParts += "⚠ ${pin.issueReason}"
                 else if (pin.status.equals("done", true) && pin.issueReason.isNotBlank()) subParts += "✓ ${pin.issueReason}"
@@ -4598,6 +5053,110 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
             }
+        }
+
+        btnSelectMode.setOnClickListener {
+            selectionMode = !selectionMode
+            if (!selectionMode) selectedPinIds.clear()
+            renderPinRows()
+        }
+        btnAutoDuplicates.setOnClickListener {
+            val extras = findDuplicateExtraIds(latestFiltered)
+            selectedPinIds.clear()
+            selectedPinIds.addAll(extras)
+            renderPinRows()
+            val msg = if (extras.isEmpty()) {
+                "No duplicate bookmarks found in this folder"
+            } else {
+                "Auto-selected ${extras.size} duplicate cop${if (extras.size == 1) "y" else "ies"} (kept 1 primary per group)"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        btnAutoSameCoords.setOnClickListener {
+            val (extras, _) = analyzeSameCoordClusters(latestFiltered)
+            selectedPinIds.clear()
+            selectedPinIds.addAll(extras)
+            renderPinRows()
+            val msg = if (extras.isEmpty()) {
+                "No bookmarks sharing the same coordinates found"
+            } else {
+                "Auto-selected ${extras.size} extra bookmark${if (extras.size == 1) "" else "s"} at same coordinates (kept 1 primary per spot)"
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+        btnSelectAll.setOnClickListener {
+            selectedPinIds.clear()
+            selectedPinIds.addAll(latestFiltered.map { it.id })
+            renderPinRows()
+        }
+        btnClearSel.setOnClickListener {
+            selectedPinIds.clear()
+            renderPinRows()
+        }
+
+        btnSelZoom.setOnClickListener {
+            val chosen = currentSourcePins().filter { it.id in selectedPinIds }
+            if (chosen.isEmpty()) return@setOnClickListener
+            closeFullPage()
+            zoomToKmlBounds(collectLayerLatLngs(chosen, emptyList()), layer?.id)
+        }
+        btnSelExport.setOnClickListener {
+            val chosen = currentSourcePins().filter { it.id in selectedPinIds }
+            if (chosen.isEmpty()) return@setOnClickListener
+            val exportLayer = layer ?: LayerItem(id = "selected", name = title)
+            KmlCsvExporter.exportAndShareKml(this, exportLayer, chosen, emptyList(), "Selected_${chosen.size}")
+        }
+        btnSelStatus.setOnClickListener {
+            val chosen = currentSourcePins().filter { it.id in selectedPinIds }
+            if (chosen.isEmpty()) return@setOnClickListener
+            val items = arrayOf("Mark Pending", "Mark Done", "Mark Issue", "Mark Sent (This Phone)")
+            AlertDialog.Builder(this)
+                .setTitle("Update ${chosen.size} Selected Bookmark${if (chosen.size == 1) "" else "s"}")
+                .setItems(items) { _, which ->
+                    val stamp = DevicePrefs.getDeviceStamp(this)
+                    when (which) {
+                        0 -> chosen.forEach { savePinStatusUnified(it, "pending", stamp) }
+                        1 -> chosen.forEach { savePinStatusUnified(it, "done", stamp) }
+                        2 -> chosen.forEach { savePinStatusUnified(it, "issue", stamp, "Flagged in bulk") }
+                        3 -> {
+                            DevicePrefs.addLocalSentPinIds(this, chosen.map { it.id })
+                            updateSentToggleUi()
+                            renderMapData()
+                        }
+                    }
+                    selectedPinIds.clear()
+                    selectionMode = false
+                    renderPinRows()
+                    Toast.makeText(this, "Updated ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        btnSelDelete.setOnClickListener {
+            val chosen = currentSourcePins()
+                .filter { it.id in selectedPinIds }
+                .filter { pin -> isLayerOwner(layers.find { l -> l.id == pin.layerId }) }
+            if (chosen.isEmpty()) {
+                Toast.makeText(this, "Only folder owners can delete cloud bookmarks", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val scopeMsg = if (layer != null && !LocalFolderStore.isLocalLayerId(layer.id)) {
+                "Permanently delete ${chosen.size} selected bookmark${if (chosen.size == 1) "" else "s"} from this cloud folder for all team members?"
+            } else {
+                "Delete ${chosen.size} selected bookmark${if (chosen.size == 1) "" else "s"} from this phone?"
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Delete ${chosen.size} Bookmark${if (chosen.size == 1) "" else "s"}?")
+                .setMessage(scopeMsg)
+                .setPositiveButton("Delete") { _, _ ->
+                    deletePinsUnified(chosen)
+                    selectedPinIds.clear()
+                    selectionMode = false
+                    renderPinRows()
+                    Toast.makeText(this, "Deleted ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
 
         btnSort.setOnClickListener {
@@ -7226,6 +7785,20 @@ class MainActivity : AppCompatActivity() {
         } else {
             repo.deletePin(pin.id, ::notifySyncError)
         }
+    }
+
+    private fun deletePinsUnified(pinsToDelete: List<PinItem>) {
+        if (pinsToDelete.isEmpty()) return
+        DevicePrefs.removePinReferences(this, pinsToDelete.map { it.id })
+        val localIds = pinsToDelete.filter { LocalFolderStore.isLocalLayerId(it.layerId) }.map { it.id }
+        val cloudIds = pinsToDelete.filterNot { LocalFolderStore.isLocalLayerId(it.layerId) }.map { it.id }
+        if (localIds.isNotEmpty()) {
+            LocalFolderStore.deletePins(this, localIds)
+        }
+        if (cloudIds.isNotEmpty()) {
+            repo.deletePinsBatch(cloudIds, ::notifySyncError)
+        }
+        applyMergedFoldersAndRender()
     }
 
     private fun applyExtraMapToolsVisibility() {

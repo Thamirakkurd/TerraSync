@@ -369,6 +369,13 @@ object LocalFolderStore {
         writeAll(ctx, cur.copy(pins = cur.pins.filterNot { it.id == pinId }))
     }
 
+    fun deletePins(ctx: Context, pinIds: Collection<String>) = synchronized(lock) {
+        if (pinIds.isEmpty()) return
+        val drop = pinIds.toSet()
+        val cur = loadAll(ctx)
+        writeAll(ctx, cur.copy(pins = cur.pins.filterNot { it.id in drop }))
+    }
+
     fun deleteLayer(ctx: Context, layerId: String) = synchronized(lock) {
         val cur = loadAll(ctx)
         writeAll(
