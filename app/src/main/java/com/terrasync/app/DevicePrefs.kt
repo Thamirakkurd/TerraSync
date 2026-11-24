@@ -27,6 +27,7 @@ object DevicePrefs {
     private const val KEY_PINNED_LAYERS = "pinned_layer_ids"
     private const val KEY_BETA_UPDATES = "beta_updates_enabled"
     private const val KEY_SHOW_EXTRA_MAP_TOOLS = "show_extra_map_tools"
+    private const val KEY_CACHED_LAYER_NAMES = "cached_layer_names"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -219,4 +220,20 @@ object DevicePrefs {
 
     fun isShowExtraMapTools(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, false)
     fun setShowExtraMapTools(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, show).apply()
+
+    fun getCachedLayerNames(ctx: Context): Set<String> {
+        return prefs(ctx).getStringSet(KEY_CACHED_LAYER_NAMES, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun saveCachedLayerNames(ctx: Context, names: Collection<String>) {
+        val clean = names.map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        prefs(ctx).edit().putStringSet(KEY_CACHED_LAYER_NAMES, clean).apply()
+    }
+
+    fun addCachedLayerName(ctx: Context, name: String) {
+        val c = name.trim()
+        if (c.isBlank()) return
+        val next = getCachedLayerNames(ctx).toMutableSet().apply { add(c) }
+        prefs(ctx).edit().putStringSet(KEY_CACHED_LAYER_NAMES, next).apply()
+    }
 }

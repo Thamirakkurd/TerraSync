@@ -14,9 +14,9 @@ android {
         targetSdk = 34
         val tagVer = (project.findProperty("appVersionName") as String?)
             ?: System.getenv("GITHUB_REF_NAME")?.removePrefix("v")?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+.*")) }
-            ?: "2.6.1"
+            ?: "2.7.0"
         val baseNum = tagVer.substringBefore("-").split(".").mapNotNull { it.toIntOrNull() }
-            .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20601 }
+            .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20700 }
         val preOffset = if (!tagVer.contains("-")) {
             99
         } else {

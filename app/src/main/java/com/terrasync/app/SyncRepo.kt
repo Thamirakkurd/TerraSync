@@ -22,7 +22,7 @@ class SyncRepo {
         }
     }
 
-    private val regs = mutableListOf<ListenerRegistration>()
+    private val layerRegs = mutableMapOf<String, List<ListenerRegistration>>()
     private val layerMap = mutableMapOf<String, LayerItem>()
     private val pinsByLayer = mutableMapOf<String, List<PinItem>>()
     private val tracksByLayer = mutableMapOf<String, List<TrackItem>>()
@@ -34,10 +34,14 @@ class SyncRepo {
         onUpdate: (List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit
     ) {
         listenerCallback = onUpdate
-        stopListening()
-        layerMap.clear()
-        pinsByLayer.clear()
-        tracksByLayer.clear()
+
+        val removed = layerRegs.keys - joinedLayerIds
+        removed.forEach { layerId ->
+            layerRegs.remove(layerId)?.forEach { it.remove() }
+            layerMap.remove(layerId)
+            pinsByLayer.remove(layerId)
+            tracksByLayer.remove(layerId)
+        }
 
         if (joinedLayerIds.isEmpty()) {
             connected = true
@@ -45,8 +49,10 @@ class SyncRepo {
             return
         }
 
-        joinedLayerIds.forEach { layerId ->
-            regs += db.collection("layers").document(layerId).addSnapshotListener { doc, err ->
+        val added = joinedLayerIds - layerRegs.keys
+        added.forEach { layerId ->
+            val regsForLayer = mutableListOf<ListenerRegistration>()
+            regsForLayer += db.collection("layers").document(layerId).addSnapshotListener { doc, err ->
                 if (err != null) {
                     connected = false
                     emit()
@@ -68,7 +74,7 @@ class SyncRepo {
                 emit()
             }
 
-            regs += db.collection("pins").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
+            regsForLayer += db.collection("pins").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
                 if (err != null) return@addSnapshotListener
                 connected = true
                 pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
@@ -93,7 +99,7 @@ class SyncRepo {
                 emit()
             }
 
-            regs += db.collection("tracks").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
+            regsForLayer += db.collection("tracks").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
                 if (err != null) return@addSnapshotListener
                 connected = true
                 tracksByLayer[layerId] = snap?.documents?.mapNotNull { d ->
@@ -108,6 +114,11 @@ class SyncRepo {
                 } ?: emptyList()
                 emit()
             }
+            layerRegs[layerId] = regsForLayer
+        }
+
+        if (removed.isNotEmpty() || added.isEmpty()) {
+            emit()
         }
     }
 
@@ -119,8 +130,8 @@ class SyncRepo {
     }
 
     fun stopListening() {
-        regs.forEach { it.remove() }
-        regs.clear()
+        layerRegs.values.flatten().forEach { it.remove() }
+        layerRegs.clear()
     }
 
     fun generateShareCode(): String {
@@ -177,13 +188,12 @@ class SyncRepo {
             )
         }
 
-        // Queue all chunks immediately so large imports work offline in Firestore cache without stalling
         ops.chunked(400).forEach { chunk ->
             val batch = db.batch()
             chunk.forEach { (ref, data) -> batch.set(ref, data) }
             batch.commit()
         }
-        onDone(true, "Imported ${parsed.pins.size} pins (Code: $shareCode)", shareCode)
+        onDone(true, "Imported ${parsed.pins.size} pins into \"$layerName\" (Code: $shareCode)", shareCode)
     }
 
     fun combineLayers(
@@ -364,20 +374,19 @@ class SyncRepo {
         )
     }
 
-    fun deletePinHistoryEntry(pin: PinItem, lineIndex: Int) {
+    fun deletePinHistoryEntry(pin: PinItem, lineIndex: Int): PinItem {
         val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
-        if (lineIndex !in lines.indices) return
+        if (lineIndex !in lines.indices) return pin
         lines.removeAt(lineIndex)
         val newHistory = lines.joinToString("\n")
         val now = System.currentTimeMillis()
 
-        // Recalculate live status & note from the newest remaining status entry ("→")
         val latestStatusLine = lines.firstOrNull { it.contains("→") }
         var newStatus = "pending"
         var newReason = ""
         var newEditedBy = ""
-        var newIsEdited = lines.isNotEmpty()
-        var newEditedAt = if (lines.isNotEmpty()) pin.editedAt.takeIf { it > 0L } ?: now else 0L
+        val newIsEdited = lines.isNotEmpty()
+        val newEditedAt = if (lines.isNotEmpty()) now else 0L
 
         if (latestStatusLine != null) {
             val left = latestStatusLine.substringBefore("→").trim()
@@ -406,6 +415,39 @@ class SyncRepo {
                 "editedAt" to newEditedAt,
                 "editHistory" to newHistory
             )
+        )
+        return pin.copy(
+            status = newStatus,
+            issueReason = newReason,
+            updatedAt = now,
+            isEdited = newIsEdited,
+            editedBy = newEditedBy,
+            editedAt = newEditedAt,
+            editHistory = newHistory
+        )
+    }
+
+    fun resetPinStatusToPending(pin: PinItem): PinItem {
+        val now = System.currentTimeMillis()
+        db.collection("pins").document(pin.id).update(
+            mapOf(
+                "status" to "pending",
+                "issueReason" to "",
+                "updatedAt" to now,
+                "isEdited" to false,
+                "editedBy" to "",
+                "editedAt" to 0L,
+                "editHistory" to ""
+            )
+        )
+        return pin.copy(
+            status = "pending",
+            issueReason = "",
+            updatedAt = now,
+            isEdited = false,
+            editedBy = "",
+            editedAt = 0L,
+            editHistory = ""
         )
     }
 

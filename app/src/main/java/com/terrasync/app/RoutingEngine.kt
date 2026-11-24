@@ -38,15 +38,18 @@ object RoutingEngine {
         endLng: Double,
         mode: TravelMode = TravelMode.CAR,
         startBearing: Float? = null,
+        isCancelled: () -> Boolean = { false },
         onResult: (NavRoute?, String?) -> Unit
     ) {
         Thread {
+            if (isCancelled()) return@Thread
             val ctx = appContext
             val online = isNetworkAvailable(ctx)
 
             // 1. If device is offline, go straight to local offline routing engine
             if (!online && ctx != null) {
                 val (offRoute, offErr) = OfflineRoutingEngine.routeOffline(ctx, startLat, startLng, endLat, endLng, mode)
+                if (isCancelled()) return@Thread
                 if (offRoute != null) {
                     onResult(offRoute, null)
                     return@Thread
@@ -63,7 +66,9 @@ object RoutingEngine {
             val valhallaAttempts = if (valhallaHeading != null) listOf<Int?>(valhallaHeading, null) else listOf<Int?>(null)
             var lastError = "Route request failed"
             for (heading in valhallaAttempts) {
+                if (isCancelled()) return@Thread
                 val (vRoute, vErr) = fetchValhallaRoute(startLat, startLng, endLat, endLng, mode, heading)
+                if (isCancelled()) return@Thread
                 if (vRoute != null) {
                     onResult(vRoute, null)
                     return@Thread
@@ -72,7 +77,9 @@ object RoutingEngine {
             }
 
             // 3. Secondary Online Fallback: OSRM
+            if (isCancelled()) return@Thread
             val (osrmRoute, osrmErr) = fetchOsrmRoute(startLat, startLng, endLat, endLng, mode, startBearing)
+            if (isCancelled()) return@Thread
             if (osrmRoute != null) {
                 onResult(osrmRoute, null)
                 return@Thread
@@ -80,15 +87,16 @@ object RoutingEngine {
             if (!osrmErr.isNullOrBlank()) lastError = osrmErr
 
             // 4. Local Offline Fallback if online servers failed
-            if (ctx != null && OfflineRoutingEngine.hasAnyRegion(ctx)) {
+            if (!isCancelled() && ctx != null && OfflineRoutingEngine.hasAnyRegion(ctx)) {
                 val (offRoute, _) = OfflineRoutingEngine.routeOffline(ctx, startLat, startLng, endLat, endLng, mode)
+                if (isCancelled()) return@Thread
                 if (offRoute != null) {
                     onResult(offRoute, null)
                     return@Thread
                 }
             }
 
-            onResult(null, lastError)
+            if (!isCancelled()) onResult(null, lastError)
         }.start()
     }
 
@@ -350,7 +358,7 @@ object RoutingEngine {
         endLat: Double,
         endLng: Double,
         onResult: (NavRoute?, String?) -> Unit
-    ) = fetchRoute(startLat, startLng, endLat, endLng, TravelMode.CAR, null, onResult)
+    ) = fetchRoute(startLat, startLng, endLat, endLng, TravelMode.CAR, null, { false }, onResult)
 
     private fun formatStep(type: String, modifier: String, roadName: String): Pair<String, String> {
         val onto = if (roadName.isNotBlank()) " onto $roadName" else ""

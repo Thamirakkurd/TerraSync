@@ -193,6 +193,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTabSettings: ImageButton
     private lateinit var btnTabAbout: ImageButton
     private lateinit var bottomDock: LinearLayout
+    private lateinit var mapControlsRow: LinearLayout
     private lateinit var bottomIconRow: LinearLayout
     private lateinit var speedBadge: LinearLayout
     private lateinit var tvSpeedValue: TextView
@@ -273,6 +274,7 @@ class MainActivity : AppCompatActivity() {
 
     // Route Preview & Active Turn-by-Turn Navigation State
     private var previewRoute: NavRoute? = null
+    private var routeRequestSeq: Int = 0
     private var lastRoutePillKey: String? = null
     private var pendingUpdateApkFile: java.io.File? = null
     private var activeNavRoute: NavRoute? = null
@@ -290,6 +292,7 @@ class MainActivity : AppCompatActivity() {
     // Full-screen overlay stack
     private val pageBackStack = mutableListOf<() -> Unit>()
     private var liveBookmarksRefresh: (() -> Unit)? = null
+    private var livePinListRefresh: (() -> Unit)? = null
 
     private val gpsListener = LocationListener { loc -> onNewLocation(loc) }
 
@@ -362,10 +365,12 @@ class MainActivity : AppCompatActivity() {
             (topCluster.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(10)
             (navBanner.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(10)
             (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = sys.bottom + dp(10)
+            (inScreenSheet.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(12)
             sheetContent.setPadding(dp(16), 0, dp(16), sys.bottom + dp(20))
             topCluster.requestLayout()
             navBanner.requestLayout()
             bottomDock.requestLayout()
+            inScreenSheet.requestLayout()
             map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(12), dp(14), 0)
             insets
         }
@@ -379,12 +384,14 @@ class MainActivity : AppCompatActivity() {
                     if (newState == BottomSheetBehavior.STATE_HIDDEN) {
                         clearSelectedMarker()
                         if (previewRoute != null && activeNavRoute == null) {
+                            routeRequestSeq++
                             previewRoute = null
                             renderMapData()
                         }
-                        resetMapPadding()
-                        bottomDock.animate().alpha(1f).setDuration(180).start()
-                        bottomDock.visibility = View.VISIBLE
+                        if (activeNavRoute == null) {
+                            resetMapPadding()
+                        }
+                        UiAnimations.fadeShow(bottomDock, 180L)
                     }
                 }
                 override fun onSlide(bottomSheet: View, slideOffset: Float) {}
@@ -425,6 +432,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             m.addOnMapClickListener { latLng ->
+                if (activeNavRoute != null) return@addOnMapClickListener true
                 if (isRulerMode) {
                     addRulerPoint(latLng)
                 } else if (!isLassoMode) {
@@ -434,7 +442,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             m.addOnMapLongClickListener { latLng ->
-                if (!isRulerMode && !isLassoMode) showAddPinDialog(latLng)
+                if (activeNavRoute == null && !isRulerMode && !isLassoMode) showAddPinDialog(latLng)
                 true
             }
 
@@ -482,6 +490,7 @@ class MainActivity : AppCompatActivity() {
         btnTabSettings = findViewById(R.id.btnTabSettings)
         btnTabAbout = findViewById(R.id.btnTabAbout)
         bottomDock = findViewById(R.id.bottomDock)
+        mapControlsRow = findViewById(R.id.mapControlsRow)
         bottomIconRow = findViewById(R.id.bottomIconRow)
         speedBadge = findViewById(R.id.speedBadge)
         tvSpeedValue = findViewById(R.id.tvSpeedValue)
@@ -509,22 +518,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyMapChromeTheme() {
         val night = isDarkMapUi()
-        val tileBg = Color.parseColor(if (night) "#E61E293B" else "#F7FFFFFF")
+        val tileBg = Color.parseColor(if (night) "#1E293B" else "#FFFFFF")
+        val tileStroke = Color.parseColor(if (night) "#334155" else "#E2E8F0")
         val iconTint = Color.parseColor(if (night) "#F1F5F9" else "#334155")
         val sheetBg = Color.parseColor(if (night) "#1E293B" else "#FFFFFF")
         val handleColor = Color.parseColor(if (night) "#475569" else "#CBD5E1")
         val scaleColor = Color.parseColor(if (night || mapStyleMode == MapStyleMode.SATELLITE) "#FFFFFF" else "#1E293B")
 
-        UiAnimations.styleFloatingTile(this, btnStyleToggle, tileBg, 22f, 6f)
-        UiAnimations.styleFloatingTile(this, btnStatusFilter, tileBg, 22f, 5f)
-        UiAnimations.styleFloatingTile(this, btnSyncStatus, tileBg, 20f, 5f)
+        UiAnimations.styleFloatingTile(this, btnStyleToggle, tileBg, 21f, 6f, strokeColor = tileStroke)
+        UiAnimations.styleFloatingTile(this, btnStatusFilter, tileBg, 21f, 6f, strokeColor = tileStroke)
+        UiAnimations.styleFloatingTile(this, btnSyncStatus, tileBg, 21f, 6f, strokeColor = tileStroke)
         UiAnimations.styleFloatingTile(
             this,
             btnLasso,
             if (isLassoMode) Color.parseColor("#16A34A") else tileBg,
             22f,
             6f,
-            if (isLassoMode) "#44FFFFFF" else "#3316A34A"
+            if (isLassoMode) "#44FFFFFF" else "#2616A34A",
+            if (isLassoMode) Color.TRANSPARENT else tileStroke
         )
         UiAnimations.styleFloatingTile(
             this,
@@ -532,15 +543,17 @@ class MainActivity : AppCompatActivity() {
             if (isRulerMode) Color.parseColor("#2563EB") else tileBg,
             22f,
             6f,
-            if (isRulerMode) "#44FFFFFF" else "#332563EB"
+            if (isRulerMode) "#44FFFFFF" else "#262563EB",
+            if (isRulerMode) Color.TRANSPARENT else tileStroke
         )
-        UiAnimations.styleFloatingTile(this, btnZoomIn, tileBg, 22f, 6f)
-        UiAnimations.styleFloatingTile(this, btnZoomOut, tileBg, 22f, 6f)
-        UiAnimations.styleFloatingTile(this, btnImport, Color.parseColor("#0F766E"), 22f, 6f, "#44FFFFFF")
-        UiAnimations.styleFloatingTile(this, btnLocate, tileBg, 24f, 7f)
+        UiAnimations.styleFloatingTile(this, btnZoomIn, tileBg, 22f, 6f, strokeColor = tileStroke)
+        UiAnimations.styleFloatingTile(this, btnZoomOut, tileBg, 22f, 6f, strokeColor = tileStroke)
+        UiAnimations.styleFloatingTile(this, btnImport, Color.parseColor("#0F766E"), 22f, 6f, "#44FFFFFF", Color.TRANSPARENT, 0f)
+        UiAnimations.styleFloatingTile(this, btnLocate, tileBg, 24f, 7f, strokeColor = tileStroke)
 
+        UiAnimations.styleFloatingPill(this, bottomIconRow, tileBg, 28f, 8f, tileStroke)
         listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout).forEach { btn ->
-            UiAnimations.styleFloatingTile(this, btn, tileBg, 15f, 7f)
+            UiAnimations.applyPillItemRipple(this, btn, 24f)
             btn.setColorFilter(iconTint)
         }
 
@@ -574,7 +587,7 @@ class MainActivity : AppCompatActivity() {
         tvSpeedUnit.setTextColor(Color.parseColor(if (night) "#94A3B8" else "#64748B"))
 
         routeFromBanner.background = GradientDrawable().apply {
-            setColor(Color.parseColor(if (night) "#F21E293B" else "#F7FFFFFF"))
+            setColor(Color.parseColor(if (night) "#1E293B" else "#FFFFFF"))
             cornerRadius = dp(14).toFloat()
             setStroke(dp(1), Color.parseColor("#2563EB"))
         }
@@ -854,7 +867,18 @@ class MainActivity : AppCompatActivity() {
                     }
                     return
                 }
+                if (activeNavRoute != null) {
+                    stopNavigation()
+                    return
+                }
                 if (previewRoute != null) {
+                    routeRequestSeq++
+                    previewRoute = null
+                    renderMapData()
+                    hideInScreenSheet()
+                    return
+                }
+                if (routeOriginLatLng != null) {
                     clearRouteOrigin()
                     return
                 }
@@ -1444,12 +1468,13 @@ class MainActivity : AppCompatActivity() {
         if (hideSentPins) {
             btnSentToggle.text = "Unsent Only"
             btnSentToggle.setTextColor(Color.WHITE)
-            UiAnimations.styleFloatingTile(this, btnSentToggle, Color.parseColor("#16A34A"), 20f, 5f, "#44FFFFFF")
+            UiAnimations.styleFloatingTile(this, btnSentToggle, Color.parseColor("#16A34A"), 21f, 6f, "#44FFFFFF", Color.TRANSPARENT, 0f)
         } else {
             btnSentToggle.text = "All Pins"
             btnSentToggle.setTextColor(Color.parseColor("#334155"))
-            UiAnimations.styleFloatingTile(this, btnSentToggle, Color.parseColor("#F7FFFFFF"), 20f, 5f)
+            UiAnimations.styleFloatingTile(this, btnSentToggle, Color.WHITE, 21f, 6f)
         }
+        updateFilterIconTint()
     }
 
     private fun activeLocalSentCount(): Int {
@@ -1465,7 +1490,7 @@ class MainActivity : AppCompatActivity() {
         if (enabled) {
             hideInScreenSheet()
             bottomIconRow.visibility = View.GONE
-            lassoCard.visibility = View.VISIBLE
+            UiAnimations.showSlideBottom(lassoCard)
             lassoOverlay.visibility = View.VISIBLE
             lassoOverlay.clearLoop()
             lassoPendingPinIds = emptyList()
@@ -1474,8 +1499,8 @@ class MainActivity : AppCompatActivity() {
             lassoPendingPinIds = emptyList()
             lassoOverlay.clearLoop()
             lassoOverlay.visibility = View.GONE
-            lassoCard.visibility = View.GONE
-            bottomIconRow.visibility = View.VISIBLE
+            UiAnimations.hideSlideBottom(lassoCard)
+            if (activeNavRoute == null && !isRulerMode) UiAnimations.showSlideBottom(bottomIconRow)
         }
         applyMapChromeTheme()
     }
@@ -1627,12 +1652,12 @@ class MainActivity : AppCompatActivity() {
         if (enabled) {
             hideInScreenSheet()
             bottomIconRow.visibility = View.GONE
-            rulerCard.visibility = View.VISIBLE
+            UiAnimations.showSlideBottom(rulerCard)
             updateRulerUi()
         } else {
             rulerPoints.clear()
-            rulerCard.visibility = View.GONE
-            bottomIconRow.visibility = View.VISIBLE
+            UiAnimations.hideSlideBottom(rulerCard)
+            if (activeNavRoute == null && !isLassoMode) UiAnimations.showSlideBottom(bottomIconRow)
         }
         applyMapChromeTheme()
         renderMapData()
@@ -1687,7 +1712,7 @@ class MainActivity : AppCompatActivity() {
         routeOriginLatLng = LatLng(lat, lng)
         routeOriginName = label.ifBlank { "${"%.5f".format(lat)}, ${"%.5f".format(lng)}" }
         tvRouteFromText.text = "From: $routeOriginName (tap a destination)"
-        routeFromBanner.visibility = View.VISIBLE
+        UiAnimations.showSlideTop(routeFromBanner)
         hideInScreenSheet()
         Toast.makeText(this, "Start set: $routeOriginName — tap any pin or place & choose Route To", Toast.LENGTH_LONG).show()
     }
@@ -1695,7 +1720,7 @@ class MainActivity : AppCompatActivity() {
     private fun clearRouteOrigin() {
         routeOriginLatLng = null
         routeOriginName = ""
-        routeFromBanner.visibility = View.GONE
+        UiAnimations.hideSlideTop(routeFromBanner)
     }
 
     // --- Map Tap Handling (Zero Auto-Zoom) ---
@@ -1803,11 +1828,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInScreenSheet(peekDp: Int = 250) {
-        bottomDock.animate().alpha(0f).setDuration(150).withEndAction {
-            if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
-                bottomDock.visibility = View.GONE
-            }
-        }.start()
+        UiAnimations.fadeHide(bottomDock, 140L)
         sheetBehavior.peekHeight = dp(peekDp) + navBarInsetBottom
         sheetBehavior.state = BottomSheetBehavior.STATE_COLLAPSED
     }
@@ -2318,8 +2339,11 @@ class MainActivity : AppCompatActivity() {
                                 .setTitle("Delete this edit?")
                                 .setMessage("$line\n\nOnly this edit will be removed. The pin stays on the map and its status recalculates from the remaining edits.")
                                 .setPositiveButton("Delete Edit") { _, _ ->
-                                    repo.deletePinHistoryEntry(pin, idx)
-                                    hideInScreenSheet()
+                                    val updated = repo.deletePinHistoryEntry(pin, idx)
+                                    selectedMarkerIcon = statusIconId(updated.status)
+                                    renderMapData()
+                                    fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
+                                    showPinCard(updated, animateSwap = true)
                                     Toast.makeText(this@MainActivity, "Edit deleted — pin kept", Toast.LENGTH_SHORT).show()
                                 }
                                 .setNegativeButton("Cancel", null)
@@ -2337,6 +2361,36 @@ class MainActivity : AppCompatActivity() {
                     setPadding(0, 0, 0, dp(10))
                 })
             }
+        }
+        if (isOwner && pin.editHistory.isBlank() && !pin.status.equals("pending", true)) {
+            sheetContent.addView(MaterialButton(this).apply {
+                text = "Reset Status to Pending (Keep Pin)"
+                textSize = 13f
+                isAllCaps = false
+                insetTop = 0
+                insetBottom = 0
+                setTextColor(Color.parseColor("#D97706"))
+                setBackgroundColor(Color.parseColor("#1AF59E0B"))
+                cornerRadius = dp(10)
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                    bottomMargin = dp(6)
+                }
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Reset status to Pending?")
+                        .setMessage("Clears the current status and note while keeping \"${pin.name}\" on the map.")
+                        .setPositiveButton("Reset") { _, _ ->
+                            val updated = repo.resetPinStatusToPending(pin)
+                            selectedMarkerIcon = statusIconId(updated.status)
+                            renderMapData()
+                            fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
+                            showPinCard(updated, animateSwap = true)
+                            Toast.makeText(this@MainActivity, "Status reset to Pending", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            })
         }
         if (isOwner) {
             sheetContent.addView(MaterialButton(this).apply {
@@ -2558,11 +2612,15 @@ class MainActivity : AppCompatActivity() {
 
         travelMode = modeOverride
         DevicePrefs.setTravelMode(this, modeOverride)
+        val reqId = ++routeRequestSeq
         Toast.makeText(this, "Building ${modeOverride.label.lowercase()} route...", Toast.LENGTH_SHORT).show()
 
-        RoutingEngine.fetchRoute(startLat, startLng, destLat, destLng, modeOverride, startBearing) { route, err ->
+        RoutingEngine.fetchRoute(
+            startLat, startLng, destLat, destLng, modeOverride, startBearing,
+            isCancelled = { reqId != routeRequestSeq }
+        ) { route, err ->
             runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (isFinishing || isDestroyed || reqId != routeRequestSeq) return@runOnUiThread
                 if (route == null) {
                     Toast.makeText(this, err ?: "Route failed", Toast.LENGTH_LONG).show()
                     return@runOnUiThread
@@ -2630,6 +2688,26 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
         })
+        val engColor = when {
+            route.engineLabel.contains("Offline", true) -> "#16A34A"
+            route.engineLabel.contains("Valhalla", true) -> "#2563EB"
+            else -> "#475569"
+        }
+        metaRow.addView(TextView(this).apply {
+            text = route.engineLabel
+            textSize = 11f
+            setTextColor(Color.parseColor(engColor))
+            setTypeface(null, Typeface.BOLD)
+            setPadding(dp(7), dp(2), dp(7), dp(2))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor(if (engColor == "#16A34A") "#DCFCE7" else if (engColor == "#2563EB") "#DBEAFE" else "#E2E8F0"))
+                cornerRadius = dp(8).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(8) }
+        })
         titleCol.addView(metaRow)
         titleCol.addView(TextView(this).apply {
             text = "$startLabel → $destTitle"
@@ -2648,6 +2726,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(8), dp(8), dp(8), dp(8))
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             setOnClickListener {
+                routeRequestSeq++
                 previewRoute = null
                 renderMapData()
                 hideInScreenSheet()
@@ -2772,8 +2851,7 @@ class MainActivity : AppCompatActivity() {
         lastSpokenStepIdx = -1
 
         hideInScreenSheet()
-        topCluster.visibility = View.GONE
-        navBanner.visibility = View.VISIBLE
+        applyNavigationChrome(true)
         isFollowingGps = true
         updateLocationIconTint()
         updateSpeedBadge(loc)
@@ -2823,7 +2901,7 @@ class MainActivity : AppCompatActivity() {
 
         tvNavArrow.text = step.arrow
         tvNavInstruction.text = if (isRerouting) "Recalculating route..." else step.instruction
-        tvNavMeta.text = "${route.mode.icon} In ${formatDistanceShort(distToStep)}  •  ${formatDistanceShort(remainingRoadMeters)} left (~$etaMin min)"
+        tvNavMeta.text = "${route.mode.icon} In ${formatDistanceShort(distToStep)} • ${formatDistanceShort(remainingRoadMeters)} (~$etaMin min) • ${route.engineLabel}"
 
         val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
         if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
@@ -2845,9 +2923,13 @@ class MainActivity : AppCompatActivity() {
             tvNavInstruction.text = "Recalculating route..."
             speakPrompt("Recalculating route")
             val heading = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
-            RoutingEngine.fetchRoute(loc.latitude, loc.longitude, dest.latitude, dest.longitude, route.mode, heading) { newRoute, _ ->
+            val navReqId = ++routeRequestSeq
+            RoutingEngine.fetchRoute(
+                loc.latitude, loc.longitude, dest.latitude, dest.longitude, route.mode, heading,
+                isCancelled = { activeNavRoute == null || navReqId != routeRequestSeq }
+            ) { newRoute, _ ->
                 runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (isFinishing || isDestroyed || navReqId != routeRequestSeq) return@runOnUiThread
                     isRerouting = false
                     if (activeNavRoute == null || newRoute == null) return@runOnUiThread
                     activeNavRoute = newRoute
@@ -2864,7 +2946,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyNavigationChrome(inNav: Boolean) {
+        if (inNav) {
+            if (isLassoMode) toggleLassoMode(false)
+            if (isRulerMode) toggleRulerMode(false)
+            UiAnimations.hideSlideTop(topCluster)
+            UiAnimations.showSlideTop(navBanner)
+            bottomIconRow.visibility = View.GONE
+            btnRuler.visibility = View.GONE
+            btnLasso.visibility = View.GONE
+            btnImport.visibility = View.GONE
+            UiAnimations.fadeShow(bottomDock, 180L)
+        } else {
+            UiAnimations.hideSlideTop(navBanner)
+            UiAnimations.showSlideTop(topCluster)
+            btnRuler.visibility = View.VISIBLE
+            applyExtraMapToolsVisibility()
+            if (!isRulerMode && !isLassoMode && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
+                UiAnimations.showSlideBottom(bottomIconRow)
+            }
+        }
+    }
+
     private fun stopNavigation() {
+        routeRequestSeq++
         activeNavRoute = null
         activeNavTrimmedGeom = null
         navLastSegIdx = 0
@@ -2872,8 +2977,7 @@ class MainActivity : AppCompatActivity() {
         previewRoute = null
         navDestLatLng = null
         navCurrentStepIdx = 0
-        navBanner.visibility = View.GONE
-        topCluster.visibility = View.VISIBLE
+        applyNavigationChrome(false)
         updateSpeedBadge(currentLocation)
         renderMapData()
         map?.let { m ->
@@ -3065,11 +3169,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateFilterIconTint() {
         val hex = when {
-            visibleStatuses.containsAll(ALL_STATUSES) ->
+            visibleStatuses.containsAll(ALL_STATUSES) && !hideSentPins ->
                 if (isDarkMapUi()) "#F1F5F9" else "#334155"
-            visibleStatuses == setOf("pending") -> "#F59E0B"
-            visibleStatuses == setOf("issue") -> "#EF4444"
-            visibleStatuses == setOf("done") -> "#22C55E"
+            visibleStatuses == setOf("pending") && !hideSentPins -> "#F59E0B"
+            visibleStatuses == setOf("issue") && !hideSentPins -> "#EF4444"
+            visibleStatuses == setOf("done") && !hideSentPins -> "#22C55E"
             else -> "#2563EB"
         }
         btnStatusFilter.setColorFilter(Color.parseColor(hex))
@@ -3099,6 +3203,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openFullPage(builder: () -> View) {
         liveBookmarksRefresh = null
+        livePinListRefresh = null
         pageBackStack.clear()
         pageOverlayContainer.removeAllViews()
         pageOverlayContainer.addView(builder())
@@ -3115,6 +3220,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun pushSubPage(onBack: () -> Unit, builder: () -> View) {
         liveBookmarksRefresh = null
+        livePinListRefresh = null
         pageBackStack.add(onBack)
         pageOverlayContainer.removeAllViews()
         val v = builder()
@@ -3126,6 +3232,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun closeFullPage() {
         liveBookmarksRefresh = null
+        livePinListRefresh = null
         offlineMaps.setStateListener(null)
         pageBackStack.clear()
         pageOverlayContainer.animate()
@@ -3709,7 +3816,7 @@ class MainActivity : AppCompatActivity() {
                         menu.menu.add(0, 1, 1, "Share Link & Code (${layer.shareCode})")
                         menu.menu.add(0, 2, 2, "Zoom to Folder")
                         menu.menu.add(0, 3, 3, if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder")
-                        menu.menu.add(0, 4, 4, "Copy WhatsApp Summary")
+                        menu.menu.add(0, 4, 4, "Daily Team Report (WhatsApp)")
                         menu.menu.add(0, 5, 5, "Export as KML...")
                         menu.menu.add(0, 6, 6, "Export as CSV")
                         if (isCreator) menu.menu.add(0, 7, 7, "Rename Folder")
@@ -3728,7 +3835,7 @@ class MainActivity : AppCompatActivity() {
                                     ).show()
                                     renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
                                 }
-                                4 -> copyFolderSummary(layer, layerPins)
+                                4 -> showDailyWhatsAppReportDialog(layer, layerPins, layerTracks)
                                 5 -> showExportKmlDialog(layer, layerPins, layerTracks)
                                 6 -> KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, layerPins)
                                 7 -> showRenameFolderDialog(layer)
@@ -3769,12 +3876,16 @@ class MainActivity : AppCompatActivity() {
             renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
         }
 
+        var searchRunnable: Runnable? = null
         etFolderSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 val q = s?.toString() ?: ""
                 btnClearSearch.visibility = if (q.isNotEmpty()) View.VISIBLE else View.GONE
-                renderFoldersOrSearch(q)
+                searchRunnable?.let { etFolderSearch.removeCallbacks(it) }
+                val r = Runnable { renderFoldersOrSearch(q) }
+                searchRunnable = r
+                etFolderSearch.postDelayed(r, if (q.isEmpty()) 0L else 120L)
             }
             override fun afterTextChanged(s: Editable?) {}
         })
@@ -3826,43 +3937,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun showExportKmlDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
         val sentIds = DevicePrefs.getLocalSentPinIds(this)
+        val sentInLayer = layerPins.count { it.id in sentIds }
         val unsentPins = layerPins.filter { it.id !in sentIds }
         val pendingPins = layerPins.filter { it.status.equals("pending", true) }
         val pendingUnsentPins = pendingPins.filter { it.id !in sentIds }
         val issuePins = layerPins.filter { it.status.equals("issue", true) }
         val donePins = layerPins.filter { it.status.equals("done", true) }
-        val uniqueSummary = DailyReportGenerator.buildReport(layer.name, layerPins)
 
-        val options = arrayOf(
-            "WhatsApp Team Report (${uniqueSummary.uniqueDone} Unique Done)",
-            "All Pins (${layerPins.size}) + Team Summary",
-            "Unsent Only (${unsentPins.size})",
-            "Pending Only (${pendingPins.size})",
-            "Pending & Unsent (${pendingUnsentPins.size})",
-            "Issues Only (${issuePins.size})",
-            "Done Only (${donePins.size})"
+        val entries = mutableListOf(
+            Triple("All Pins (${layerPins.size})", layerPins, ""),
+            Triple("Done Only (${donePins.size})", donePins, "Done"),
+            Triple("Pending Only (${pendingPins.size})", pendingPins, "Pending"),
+            Triple("Issues Only (${issuePins.size})", issuePins, "Issues")
         )
+        if (sentInLayer > 0) {
+            entries.add(Triple("Unsent Only (${unsentPins.size})", unsentPins, "Unsent"))
+            entries.add(Triple("Pending & Unsent (${pendingUnsentPins.size})", pendingUnsentPins, "Pending_Unsent"))
+        }
 
+        val labels = entries.map { it.first }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Export & Report: ${layer.name}")
-            .setItems(options) { _, which ->
-                if (which == 0) {
-                    showDailyWhatsAppReportDialog(layer, layerPins, layerTracks)
-                    return@setItems
-                }
-                val (subset, tracksToExport, suffix) = when (which) {
-                    1 -> Triple(layerPins, layerTracks, "")
-                    2 -> Triple(unsentPins, emptyList(), "Unsent")
-                    3 -> Triple(pendingPins, emptyList(), "Pending")
-                    4 -> Triple(pendingUnsentPins, emptyList(), "Pending_Unsent")
-                    5 -> Triple(issuePins, emptyList(), "Issues")
-                    else -> Triple(donePins, emptyList(), "Done")
-                }
+            .setTitle("Export KML: ${layer.name}")
+            .setItems(labels) { _, which ->
+                val (_, subset, suffix) = entries[which]
+                val tracksToExport = if (suffix.isEmpty()) layerTracks else emptyList()
                 if (subset.isEmpty() && tracksToExport.isEmpty()) {
                     Toast.makeText(this, "No matching pins to export", Toast.LENGTH_SHORT).show()
                 } else {
-                    val caption = DailyReportGenerator.buildReport(layer.name, subset).whatsappText
-                    KmlCsvExporter.exportAndShareKml(this, layer, subset, tracksToExport, suffix, caption)
+                    KmlCsvExporter.exportAndShareKml(this, layer, subset, tracksToExport, suffix)
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -4024,6 +4126,12 @@ class MainActivity : AppCompatActivity() {
         }
         body.addView(listCard)
 
+        fun currentSourcePins(): List<PinItem> = when {
+            layer != null -> pins.filter { it.layerId == layer.id }
+            title == "Starred" -> pins.filter { it.id in DevicePrefs.getBookmarks(this) }
+            else -> sourcePins
+        }
+
         fun renderPinRows() {
             btnSort.text = if (sortNearest) "Nearest ↓" else "A–Z ↓"
             filterBtns.forEach { (k, b) ->
@@ -4034,7 +4142,7 @@ class MainActivity : AppCompatActivity() {
 
             listCard.removeAllViews()
             val loc = currentLocation
-            val filtered = sourcePins.filter { filterKey == "all" || it.status.equals(filterKey, true) }
+            val filtered = currentSourcePins().filter { filterKey == "all" || it.status.equals(filterKey, true) }
             val ordered = if (sortNearest && loc != null) {
                 filtered.sortedBy { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
             } else {
@@ -4139,6 +4247,7 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
+        livePinListRefresh = { renderPinRows() }
         renderPinRows()
         return outer
     }
@@ -4338,10 +4447,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         renderLocalMatches("")
+        var searchPageRunnable: Runnable? = null
         etQuery.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                renderLocalMatches(s?.toString() ?: "")
+                val q = s?.toString() ?: ""
+                searchPageRunnable?.let { etQuery.removeCallbacks(it) }
+                val r = Runnable { renderLocalMatches(q) }
+                searchPageRunnable = r
+                etQuery.postDelayed(r, if (q.isEmpty()) 0L else 120L)
             }
             override fun afterTextChanged(s: Editable?) {}
         })
@@ -4465,30 +4579,39 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 0, 0, dp(12))
         }
+        val styleButtons = mutableMapOf<MapStyleMode, MaterialButton>()
+        fun syncStyleButtons() {
+            styleButtons.forEach { (m, b) ->
+                val active = m == mapStyleMode
+                b.setTextColor(if (active) Color.WHITE else txtPrimary)
+                b.setBackgroundColor(if (active) Color.parseColor("#2563EB") else chipIdle)
+            }
+        }
         MapStyleMode.entries.forEachIndexed { idx, mode ->
-            val active = mode == mapStyleMode
-            styleRow.addView(MaterialButton(this).apply {
+            val btn = MaterialButton(this).apply {
                 text = mode.label
                 textSize = 12.5f
                 isAllCaps = false
                 insetTop = 0
                 insetBottom = 0
-                setTextColor(if (active) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (active) Color.parseColor("#2563EB") else chipIdle)
                 cornerRadius = dp(10)
                 layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
                     if (idx < MapStyleMode.entries.lastIndex) marginEnd = dp(6)
                 }
                 UiAnimations.attachSpringTouch(this)
                 setOnClickListener {
+                    if (mapStyleMode == mode) return@setOnClickListener
                     mapStyleMode = mode
                     DevicePrefs.setMapStyleMode(this@MainActivity, mode)
+                    syncStyleButtons()
                     applyMapChromeTheme()
                     loadMapStyle()
-                    openFullPage(::buildSettingsPage)
                 }
-            })
+            }
+            styleButtons[mode] = btn
+            styleRow.addView(btn)
         }
+        syncStyleButtons()
         body.addView(styleRow)
 
         // 3. Default Travel Mode (Car / Bicycle / Walk)
@@ -4503,9 +4626,16 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 0, 0, dp(12))
         }
+        val travelButtons = mutableMapOf<TravelMode, MaterialButton>()
+        fun syncTravelButtons() {
+            travelButtons.forEach { (m, b) ->
+                val active = m == travelMode
+                b.setTextColor(if (active) Color.WHITE else txtPrimary)
+                b.setBackgroundColor(if (active) Color.parseColor(m.routeColorHex) else chipIdle)
+            }
+        }
         TravelMode.entries.forEachIndexed { idx, mode ->
-            val active = mode == travelMode
-            travelRow.addView(MaterialButton(this).apply {
+            val btn = MaterialButton(this).apply {
                 text = "${mode.icon} ${mode.label}"
                 textSize = 12.5f
                 isAllCaps = false
@@ -4514,20 +4644,22 @@ class MainActivity : AppCompatActivity() {
                 minWidth = 0
                 minimumWidth = 0
                 setPadding(dp(6), 0, dp(6), 0)
-                setTextColor(if (active) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (active) Color.parseColor(mode.routeColorHex) else chipIdle)
                 cornerRadius = dp(10)
                 layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
                     if (idx < TravelMode.entries.lastIndex) marginEnd = dp(6)
                 }
                 UiAnimations.attachSpringTouch(this)
                 setOnClickListener {
+                    if (travelMode == mode) return@setOnClickListener
                     travelMode = mode
                     DevicePrefs.setTravelMode(this@MainActivity, mode)
-                    openFullPage(::buildSettingsPage)
+                    syncTravelButtons()
                 }
-            })
+            }
+            travelButtons[mode] = btn
+            travelRow.addView(btn)
         }
+        syncTravelButtons()
         body.addView(travelRow)
 
         // 4. Map & Driving Toggles
@@ -4589,16 +4721,16 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
 
-        // 6. Offline Street Maps
+        // 6. Offline Maps & Embedded Turn-by-Turn Routing
         body.addView(TextView(this).apply {
-            text = "Offline Street Maps (Vector Style)"
+            text = "Offline Maps & Routing"
             textSize = 15f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#2563EB"))
             setPadding(0, dp(16), 0, dp(2))
         })
         body.addView(TextView(this).apply {
-            text = "Download a regional vector pack to use Vector Street mode offline."
+            text = "Each offline map pack automatically bundles turn-by-turn offline road routing for that area."
             textSize = 12f
             setTextColor(txtSub)
             setPadding(0, 0, 0, dp(10))
@@ -4607,7 +4739,13 @@ class MainActivity : AppCompatActivity() {
         val packUpdaters = mutableListOf<() -> Unit>()
         val pixelRatio = resources.displayMetrics.density
 
-        fun addOfflineCard(packId: String, title: String, subtitle: String, onDownload: () -> Unit) {
+        fun addOfflineCard(
+            packId: String,
+            title: String,
+            subtitle: String,
+            onDownload: () -> Unit,
+            onDownloadRoadsOnly: () -> Unit
+        ) {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -4636,6 +4774,14 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.parseColor("#0F766E"))
             }
             card.addView(tvStatus)
+
+            val tvRoadStatus = TextView(this).apply {
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#2563EB"))
+                visibility = View.GONE
+                setPadding(0, dp(2), 0, 0)
+            }
+            card.addView(tvRoadStatus)
 
             val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                 max = 100
@@ -4666,21 +4812,36 @@ class MainActivity : AppCompatActivity() {
 
             fun refreshCard() {
                 val st = offlineMaps.getState(packId)
+                val busy = st.isDownloading || st.isRoadDownloading
+                val fullyReady = st.isDownloaded && st.hasRoadGraph
                 tvStatus.text = st.statusText
-                progressBar.visibility = if (st.isDownloading) View.VISIBLE else View.GONE
-                progressBar.progress = st.progressPercent
-                btnDl.text = when {
-                    st.isDownloading -> "Pause"
-                    st.isDownloaded -> "Downloaded"
-                    else -> "Download"
+                if (st.roadStatusText.isNotBlank() && !fullyReady) {
+                    tvRoadStatus.text = st.roadStatusText
+                    tvRoadStatus.visibility = View.VISIBLE
+                } else {
+                    tvRoadStatus.visibility = View.GONE
                 }
-                btnDl.isEnabled = !st.isDownloaded || st.isDownloading
+                progressBar.visibility = if (busy) View.VISIBLE else View.GONE
+                progressBar.isIndeterminate = !st.isDownloading && st.isRoadDownloading
+                if (st.isDownloading) progressBar.progress = st.progressPercent
+
+                btnDl.text = when {
+                    busy -> "Pause"
+                    fullyReady -> "Map + Routing Ready"
+                    st.isDownloaded && !st.hasRoadGraph -> "Add Offline Roads"
+                    else -> "Download Map + Roads"
+                }
+                btnDl.isEnabled = !fullyReady || busy
                 btnDl.alpha = if (btnDl.isEnabled) 1f else 0.55f
             }
 
             btnDl.setOnClickListener {
                 val st = offlineMaps.getState(packId)
-                if (st.isDownloading) offlineMaps.pauseDownload(packId) else onDownload()
+                when {
+                    st.isDownloading || st.isRoadDownloading -> offlineMaps.pauseDownload(packId)
+                    st.isDownloaded && !st.hasRoadGraph -> onDownloadRoadsOnly()
+                    else -> onDownload()
+                }
             }
             btnDel.setOnClickListener {
                 offlineMaps.deletePack(packId) { msg ->
@@ -4698,185 +4859,37 @@ class MainActivity : AppCompatActivity() {
         }
 
         OfflineMapManager.REGIONAL_PACKS.forEach { pack ->
-            addOfflineCard(pack.id, pack.title, pack.subtitle) {
-                offlineMaps.downloadPack(pack, pixelRatio)
-            }
+            addOfflineCard(
+                pack.id,
+                pack.title,
+                pack.subtitle,
+                onDownload = { offlineMaps.downloadPack(pack, pixelRatio) },
+                onDownloadRoadsOnly = { offlineMaps.downloadRoadGraphOnly(pack) }
+            )
         }
 
         addOfflineCard(
             OfflineMapManager.CUSTOM_VIEW_ID,
-            "Current Map View (Full Street Detail)",
-            "Saves every street & alley visible on your current screen (zoom 10–14)"
-        ) {
-            val bounds = map?.projection?.visibleRegion?.latLngBounds
-            if (bounds == null) {
-                Toast.makeText(this, "Move map to desired city first", Toast.LENGTH_SHORT).show()
-            } else {
-                offlineMaps.downloadCustomBounds(bounds, pixelRatio)
-            }
-        }
-
-        // --- Offline Turn-by-Turn Road Graphs (Local Routing Engine) ---
-        val roadTxtSub = Color.parseColor(if (isDarkMapUi()) "#94A3B8" else "#64748B")
-        val roadCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(cardBg)
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(8)
-                bottomMargin = dp(12)
-            }
-        }
-        roadCard.addView(TextView(this).apply {
-            text = "Offline Routing Road Graphs"
-            textSize = 15f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(txtPrimary)
-        })
-        roadCard.addView(TextView(this).apply {
-            text = "Download road networks once so TerraSync calculates turn-by-turn routes completely offline."
-            textSize = 12f
-            setTextColor(roadTxtSub)
-            setPadding(0, dp(3), 0, dp(10))
-        })
-        val tvRoadStatus = TextView(this).apply {
-            textSize = 12f
-            setTextColor(Color.parseColor("#2563EB"))
-            visibility = View.GONE
-            setPadding(0, 0, 0, dp(8))
-        }
-        roadCard.addView(tvRoadStatus)
-        val roadListBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        fun refreshRoadGraphs() {
-            roadListBox.removeAllViews()
-            val regions = OfflineRoutingEngine.listRegions(this@MainActivity)
-            if (regions.isEmpty()) {
-                roadListBox.addView(TextView(this@MainActivity).apply {
-                    text = "No offline road graphs saved yet."
-                    textSize = 12f
-                    setTextColor(roadTxtSub)
-                    setPadding(0, 0, 0, dp(8))
-                })
-            } else {
-                regions.forEach { reg ->
-                    val rRow = LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(0, dp(4), 0, dp(4))
-                    }
-                    val kb = (reg.sizeBytes / 1024L).coerceAtLeast(1L)
-                    val sz = if (kb >= 1024L) "${"%.1f".format(kb / 1024.0)} MB" else "$kb KB"
-                    rRow.addView(TextView(this@MainActivity).apply {
-                        text = "• ${reg.name} (${reg.nodeCount} nodes • $sz)"
-                        textSize = 12.5f
-                        setTextColor(txtPrimary)
-                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    })
-                    rRow.addView(TextView(this@MainActivity).apply {
-                        text = "Delete"
-                        textSize = 12f
-                        setTextColor(Color.parseColor("#EF4444"))
-                        setPadding(dp(10), dp(4), dp(4), dp(4))
-                        setOnClickListener {
-                            OfflineRoutingEngine.deleteRegion(this@MainActivity, reg.fileName)
-                            refreshRoadGraphs()
-                            Toast.makeText(this@MainActivity, "Removed ${reg.name} roads", Toast.LENGTH_SHORT).show()
-                        }
-                    })
-                    roadListBox.addView(rRow)
-                }
-            }
-        }
-        fun startRoadDownload(name: String, sLat: Double, wLng: Double, nLat: Double, eLng: Double) {
-            tvRoadStatus.visibility = View.VISIBLE
-            tvRoadStatus.text = "Starting $name road download..."
-            OfflineRoutingEngine.downloadRoadGraph(
-                this@MainActivity,
-                name, sLat, wLng, nLat, eLng,
-                onProgress = { msg ->
-                    runOnUiThread {
-                        if (!isFinishing && !isDestroyed) tvRoadStatus.text = "$name: $msg"
-                    }
-                },
-                onDone = { reg, err ->
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        if (reg != null) {
-                            tvRoadStatus.text = "Saved ${reg.name} (${reg.nodeCount} road nodes)"
-                            refreshRoadGraphs()
-                            Toast.makeText(this@MainActivity, "Offline routing ready for ${reg.name}", Toast.LENGTH_LONG).show()
-                        } else {
-                            tvRoadStatus.text = "Failed: ${err ?: "Unknown error"}"
-                            Toast.makeText(this@MainActivity, err ?: "Road download failed", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
-            )
-        }
-        roadCard.addView(roadListBox)
-        refreshRoadGraphs()
-
-        val presets = listOf(
-            arrayOf("Akre", 36.68, 43.78, 36.82, 43.98),
-            arrayOf("Duhok", 36.78, 42.88, 36.93, 43.10),
-            arrayOf("Zakho", 37.07, 42.60, 37.21, 42.76),
-            arrayOf("Erbil", 36.11, 43.93, 36.27, 44.11)
-        )
-        val presetRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(6); bottomMargin = dp(6) }
-        }
-        presets.forEach { item ->
-            val pName = item[0] as String
-            presetRow.addView(MaterialButton(this).apply {
-                text = pName
-                textSize = 11.5f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                setPadding(dp(4), 0, dp(4), 0)
-                setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#0F766E"))
-                cornerRadius = dp(8)
-                layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(4) }
-                setOnClickListener {
-                    startRoadDownload(pName, item[1] as Double, item[2] as Double, item[3] as Double, item[4] as Double)
-                }
-            })
-        }
-        roadCard.addView(presetRow)
-
-        roadCard.addView(MaterialButton(this).apply {
-            text = "Download Current Map View Roads"
-            textSize = 12.5f
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#2563EB"))
-            cornerRadius = dp(10)
-            UiAnimations.attachSpringTouch(this)
-            setOnClickListener {
-                val b = map?.projection?.visibleRegion?.latLngBounds
-                if (b == null) {
-                    Toast.makeText(this@MainActivity, "Move map to your city first", Toast.LENGTH_SHORT).show()
-                } else if ((b.latitudeNorth - b.latitudeSouth) > 0.45 || (b.longitudeEast - b.longitudeWest) > 0.45) {
-                    Toast.makeText(this@MainActivity, "Zoom in closer (city/district size) to download roads", Toast.LENGTH_LONG).show()
+            "Current Map View (Map + Offline Routing)",
+            "Saves every street, alley & road graph visible on your current screen (zoom 10–14)",
+            onDownload = {
+                val bounds = map?.projection?.visibleRegion?.latLngBounds
+                if (bounds == null) {
+                    Toast.makeText(this, "Move map to desired city first", Toast.LENGTH_SHORT).show()
                 } else {
-                    startRoadDownload("Map View", b.latitudeSouth, b.longitudeWest, b.latitudeNorth, b.longitudeEast)
+                    offlineMaps.downloadCustomBounds(bounds, pixelRatio)
+                }
+            },
+            onDownloadRoadsOnly = {
+                val bounds = offlineMaps.getSavedBounds(OfflineMapManager.CUSTOM_VIEW_ID)
+                    ?: map?.projection?.visibleRegion?.latLngBounds
+                if (bounds == null) {
+                    Toast.makeText(this, "Move map to desired city first", Toast.LENGTH_SHORT).show()
+                } else {
+                    offlineMaps.downloadCustomRoadGraphOnly(bounds)
                 }
             }
-        })
-        body.addView(roadCard)
+        )
 
         body.addView(MaterialButton(this).apply {
             text = "Clear Temporary Map Cache"
@@ -4939,7 +4952,7 @@ class MainActivity : AppCompatActivity() {
         body.addView(hero)
 
         body.addView(TextView(this).apply {
-            text = "Field mapping with Vector Street & Satellite Hybrid styles, optional 3D buildings, unified KML bookmark folders, cross-folder search, multi-point distance ruler, Car/Bicycle/Walk routing with Route From, live speed indicator, and Android Auto support."
+            text = "Collaborative field mapping with Vector Street & Satellite Hybrid styles, Valhalla + embedded offline turn-by-turn routing, status-preserving KML round-tripping, deduplicated WhatsApp team reports, owner edit-log moderation, and Android Auto support."
             textSize = 14f
             setTextColor(txtPrimary)
             setPadding(0, 0, 0, dp(16))
@@ -5370,7 +5383,15 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "No pins or tracks found in file", Toast.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
-                repo.importLayer(layerId, makeUniqueLayerName(fileName.ifBlank { "Imported Folder" }), stamp, devId, parsed) { ok, msg, _ ->
+                val rawDocName = parsed.documentName.trim()
+                val preferredBase = when {
+                    rawDocName.isNotBlank() && !rawDocName.equals("Document", true) && !rawDocName.equals("KML", true) -> rawDocName
+                    fileName.isNotBlank() -> fileName.replace('_', ' ').trim()
+                    else -> "Imported Folder"
+                }
+                val uniqueName = makeUniqueLayerName(preferredBase)
+                DevicePrefs.addCachedLayerName(this, uniqueName)
+                repo.importLayer(layerId, uniqueName, stamp, devId, parsed) { ok, msg, _ ->
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
@@ -5396,15 +5417,23 @@ class MainActivity : AppCompatActivity() {
         if (!show && isLassoMode) toggleLassoMode(false)
     }
 
+    private fun normalizeLayerNameKey(name: String): String {
+        return name.trim().lowercase(java.util.Locale.US).replace(Regex("[_\\s-]+"), " ")
+    }
+
     private fun makeUniqueLayerName(baseName: String): String {
         val clean = baseName.trim().ifBlank { "Imported Folder" }
-        val existing = layers.map { it.name.trim().lowercase(java.util.Locale.US) }.toSet()
-        if (clean.lowercase(java.util.Locale.US) !in existing) return clean
+        val existingKeys = buildSet {
+            layers.forEach { add(normalizeLayerNameKey(it.name)) }
+            DevicePrefs.getCachedLayerNames(this@MainActivity).forEach { add(normalizeLayerNameKey(it)) }
+        }
+        if (normalizeLayerNameKey(clean) !in existingKeys) return clean
+        val stem = clean.replace(Regex("\\s*\\(\\d+\\)$"), "").trim().ifBlank { clean }
         var n = 2
-        while ("$clean ($n)".lowercase(java.util.Locale.US) in existing) {
+        while (normalizeLayerNameKey("$stem ($n)") in existingKeys) {
             n++
         }
-        return "$clean ($n)"
+        return "$stem ($n)"
     }
 
     private fun refreshJoinedSync() {
@@ -5414,10 +5443,14 @@ class MainActivity : AppCompatActivity() {
             pins = newPins
             tracks = newTracks
             isLiveConnected = connected
+            if (joined.isEmpty() || newLayers.isNotEmpty()) {
+                DevicePrefs.saveCachedLayerNames(this, newLayers.map { it.name })
+            }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 renderMapData()
                 liveBookmarksRefresh?.invoke()
+                livePinListRefresh?.invoke()
                 if (isLassoMode) updateLassoUi()
                 val waitingId = activeSharedPinId
                 if (waitingId != null) {

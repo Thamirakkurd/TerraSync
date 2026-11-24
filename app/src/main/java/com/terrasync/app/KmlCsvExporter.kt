@@ -26,6 +26,12 @@ object KmlCsvExporter {
         return "\"$clean\""
     }
 
+    private fun styleUrlForStatus(status: String): String = when (status.lowercase()) {
+        "done" -> "#placemark-green"
+        "issue" -> "#placemark-red"
+        else -> "#placemark-orange"
+    }
+
     fun exportAndShareKml(
         ctx: Context,
         layer: LayerItem,
@@ -47,12 +53,22 @@ object KmlCsvExporter {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document>\n")
         sb.append("  <name>${xmlEscape(exportTitle)}</name>\n")
+        sb.append("  <Style id=\"placemark-green\">\n")
+        sb.append("    <IconStyle><color>ff5ec522</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/grn-circle.png</href></Icon></IconStyle>\n")
+        sb.append("  </Style>\n")
+        sb.append("  <Style id=\"placemark-red\">\n")
+        sb.append("    <IconStyle><color>ff4444ef</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-circle.png</href></Icon></IconStyle>\n")
+        sb.append("  </Style>\n")
+        sb.append("  <Style id=\"placemark-orange\">\n")
+        sb.append("    <IconStyle><color>ff0b9ef5</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon></IconStyle>\n")
+        sb.append("  </Style>\n")
 
         pins.forEach { p ->
+            val normStatus = p.status.trim().lowercase().ifBlank { "pending" }
             val descParts = mutableListOf<String>()
-            descParts += "Status: ${statusLabel(p.status)}"
+            descParts += "Status: ${statusLabel(normStatus)}"
             if (p.issueReason.isNotBlank()) {
-                val noteLabel = if (p.status.equals("done", true)) "Done Note" else "Issue"
+                val noteLabel = if (normStatus == "done") "Done Note" else "Issue"
                 descParts += "$noteLabel: ${p.issueReason}"
             }
             if (p.description.isNotBlank()) descParts += p.description
@@ -60,9 +76,10 @@ object KmlCsvExporter {
 
             sb.append("  <Placemark>\n")
             sb.append("    <name>${xmlEscape(p.name)}</name>\n")
+            sb.append("    <styleUrl>${styleUrlForStatus(normStatus)}</styleUrl>\n")
             sb.append("    <description>${xmlEscape(descParts.joinToString("\n"))}</description>\n")
             sb.append("    <ExtendedData>\n")
-            sb.append("      <Data name=\"ts_status\"><value>${xmlEscape(p.status.lowercase())}</value></Data>\n")
+            sb.append("      <Data name=\"ts_status\"><value>${xmlEscape(normStatus)}</value></Data>\n")
             if (p.issueReason.isNotBlank()) {
                 sb.append("      <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
             }

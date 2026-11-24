@@ -29,7 +29,11 @@ data class OfflinePackState(
     val completedResources: Long = 0L,
     val requiredResources: Long = 0L,
     val sizeBytes: Long = 0L,
-    val statusText: String = "Not downloaded (online only)"
+    val statusText: String = "Not downloaded (online only)",
+    val hasRoadGraph: Boolean = false,
+    val isRoadDownloading: Boolean = false,
+    val roadSizeBytes: Long = 0L,
+    val roadStatusText: String = ""
 )
 
 class OfflineMapManager(private val context: Context) {
@@ -41,8 +45,8 @@ class OfflineMapManager(private val context: Context) {
         val REGIONAL_PACKS = listOf(
             OfflinePackSpec(
                 id = "duhok_akre_hd",
-                title = "Duhok & Akre HD (Street + Mosques)",
-                subtitle = "Targeted street-level pack for Duhok, Akre & surrounding feeders (zoom 10–14)",
+                title = "Duhok & Akre HD (Map + Offline Routing)",
+                subtitle = "Full street map, mosques & turn-by-turn road network for Duhok, Akre & feeders",
                 minLat = 36.65,
                 maxLat = 37.02,
                 minLng = 42.82,
@@ -53,7 +57,7 @@ class OfflineMapManager(private val context: Context) {
             OfflinePackSpec(
                 id = "kurdistan_north",
                 title = "Northern Iraq (Kurdistan Region)",
-                subtitle = "Duhok, Zakho, Akre, Erbil, Sulaymaniyah, Halabja, Kirkuk, Nineveh",
+                subtitle = "Duhok, Zakho, Akre, Erbil, Sulaymaniyah, Halabja, Kirkuk & highways",
                 minLat = 34.45,
                 maxLat = 37.38,
                 minLng = 42.35,
@@ -64,7 +68,7 @@ class OfflineMapManager(private val context: Context) {
             OfflinePackSpec(
                 id = "iraq_south",
                 title = "Central & Southern Iraq",
-                subtitle = "Baghdad, Anbar, Diyala, Karbala, Najaf, Wasit, Dhi Qar, Basra",
+                subtitle = "Baghdad, Anbar, Diyala, Karbala, Najaf, Wasit, Dhi Qar, Basra & highways",
                 minLat = 29.05,
                 maxLat = 34.45,
                 minLng = 38.75,
@@ -75,12 +79,14 @@ class OfflineMapManager(private val context: Context) {
         )
     }
 
-    private val manager: OfflineManager = OfflineManager.getInstance(context.applicationContext).apply {
+    private val appCtx: Context = context.applicationContext
+    private val manager: OfflineManager = OfflineManager.getInstance(appCtx).apply {
         setOfflineMapboxTileCountLimit(50000L)
     }
 
     private val regionHandles = mutableMapOf<String, OfflineRegion>()
     private val states = mutableMapOf<String, OfflinePackState>()
+    private val roadProgressNotes = mutableMapOf<String, String>()
     private var uiListener: (() -> Unit)? = null
 
     fun setStateListener(listener: (() -> Unit)?) {
@@ -88,7 +94,34 @@ class OfflineMapManager(private val context: Context) {
     }
 
     fun getState(packId: String): OfflinePackState {
-        return states[packId] ?: OfflinePackState()
+        return states[packId] ?: buildIdleState(packId)
+    }
+
+    fun getSavedBounds(packId: String): LatLngBounds? {
+        val reg = regionHandles[packId] ?: return null
+        return (reg.definition as? OfflineTilePyramidRegionDefinition)?.bounds
+    }
+
+    private fun buildIdleState(packId: String): OfflinePackState {
+        val road = OfflineRoutingEngine.getPackRegion(appCtx, packId)
+        val roadDl = OfflineRoutingEngine.isDownloading(packId)
+        val roadNote = roadProgressNotes[packId].orEmpty()
+        return OfflinePackState(
+            statusText = if (road != null) "Roads ready (${formatSize(road.sizeBytes)}) • Map not downloaded" else "Not downloaded (online only)",
+            hasRoadGraph = road != null,
+            isRoadDownloading = roadDl,
+            roadSizeBytes = road?.sizeBytes ?: 0L,
+            roadStatusText = when {
+                roadDl -> roadNote.ifBlank { "Downloading offline roads..." }
+                road != null -> "Offline routing ready (${formatSize(road.sizeBytes)})"
+                else -> ""
+            }
+        )
+    }
+
+    private fun formatSize(bytes: Long): String {
+        val kb = (bytes / 1024L).coerceAtLeast(1L)
+        return if (kb >= 1024L) "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB" else "$kb KB"
     }
 
     fun refreshAll(onReady: (() -> Unit)? = null) {
@@ -116,7 +149,7 @@ class OfflineMapManager(private val context: Context) {
                 known.forEach { id ->
                     if (id !in foundIds) {
                         regionHandles.remove(id)
-                        states[id] = OfflinePackState()
+                        states[id] = buildIdleState(id)
                     }
                 }
                 uiListener?.invoke()
@@ -133,13 +166,34 @@ class OfflineMapManager(private val context: Context) {
         val existing = regionHandles[pack.id]
         if (existing != null) {
             attachObserverAndStart(pack.id, existing)
-            return
+        } else {
+            val bounds = LatLngBounds.Builder()
+                .include(LatLng(pack.minLat, pack.minLng))
+                .include(LatLng(pack.maxLat, pack.maxLng))
+                .build()
+            createAndStart(pack.id, bounds, pack.minZoom, pack.maxZoom, pixelRatio)
         }
-        val bounds = LatLngBounds.Builder()
-            .include(LatLng(pack.minLat, pack.minLng))
-            .include(LatLng(pack.maxLat, pack.maxLng))
-            .build()
-        createAndStart(pack.id, bounds, pack.minZoom, pack.maxZoom, pixelRatio)
+        // Automatically bundle offline routing road graph with the map pack
+        if (OfflineRoutingEngine.getPackRegion(appCtx, pack.id) == null && !OfflineRoutingEngine.isDownloading(pack.id)) {
+            startEmbeddedRoadDownload(pack.id, pack.title.substringBefore(" ("), pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
+        }
+    }
+
+    fun downloadRoadGraphOnly(pack: OfflinePackSpec) {
+        if (OfflineRoutingEngine.isDownloading(pack.id)) return
+        startEmbeddedRoadDownload(pack.id, pack.title.substringBefore(" ("), pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
+    }
+
+    fun downloadCustomRoadGraphOnly(bounds: LatLngBounds) {
+        if (OfflineRoutingEngine.isDownloading(CUSTOM_VIEW_ID)) return
+        startEmbeddedRoadDownload(
+            CUSTOM_VIEW_ID,
+            "Custom View",
+            bounds.latitudeSouth,
+            bounds.longitudeWest,
+            bounds.latitudeNorth,
+            bounds.longitudeEast
+        )
     }
 
     fun downloadCustomBounds(bounds: LatLngBounds, pixelRatio: Float) {
@@ -153,13 +207,78 @@ class OfflineMapManager(private val context: Context) {
                 }
 
                 override fun onError(error: String) {
-                    states[CUSTOM_VIEW_ID] = OfflinePackState(statusText = "Error: $error")
+                    states[CUSTOM_VIEW_ID] = getState(CUSTOM_VIEW_ID).copy(statusText = "Error: $error")
                     uiListener?.invoke()
                 }
             })
         } else {
             createAndStart(CUSTOM_VIEW_ID, bounds, 10.0, 14.0, pixelRatio)
         }
+        // Re-download matching road graph for the new custom view bounds
+        OfflineRoutingEngine.deletePackRegion(appCtx, CUSTOM_VIEW_ID)
+        startEmbeddedRoadDownload(
+            CUSTOM_VIEW_ID,
+            "Custom View",
+            bounds.latitudeSouth,
+            bounds.longitudeWest,
+            bounds.latitudeNorth,
+            bounds.longitudeEast
+        )
+    }
+
+    private fun startEmbeddedRoadDownload(
+        packId: String,
+        label: String,
+        sLat: Double,
+        wLng: Double,
+        nLat: Double,
+        eLng: Double
+    ) {
+        roadProgressNotes[packId] = "Starting offline roads..."
+        syncRoadFields(packId)
+        OfflineRoutingEngine.downloadPackRoadGraph(
+            appCtx,
+            packId,
+            label,
+            sLat,
+            wLng,
+            nLat,
+            eLng,
+            onProgress = { msg ->
+                roadProgressNotes[packId] = msg
+                syncRoadFields(packId)
+            },
+            onDone = { reg, err ->
+                if (reg != null) {
+                    roadProgressNotes.remove(packId)
+                } else if (err != null && err != "Cancelled") {
+                    roadProgressNotes[packId] = "Roads failed: $err"
+                } else {
+                    roadProgressNotes.remove(packId)
+                }
+                syncRoadFields(packId)
+            }
+        )
+    }
+
+    private fun syncRoadFields(packId: String) {
+        val cur = states[packId] ?: buildIdleState(packId)
+        val road = OfflineRoutingEngine.getPackRegion(appCtx, packId)
+        val roadDl = OfflineRoutingEngine.isDownloading(packId)
+        val note = roadProgressNotes[packId].orEmpty()
+        val roadText = when {
+            roadDl -> note.ifBlank { "Downloading offline roads..." }
+            road != null -> "Offline routing ready (${formatSize(road.sizeBytes)})"
+            note.isNotBlank() -> note
+            else -> if (cur.isDownloaded) "Offline routing not downloaded yet" else ""
+        }
+        states[packId] = cur.copy(
+            hasRoadGraph = road != null,
+            isRoadDownloading = roadDl,
+            roadSizeBytes = road?.sizeBytes ?: 0L,
+            roadStatusText = roadText
+        )
+        uiListener?.invoke()
     }
 
     private fun createAndStart(
@@ -169,9 +288,10 @@ class OfflineMapManager(private val context: Context) {
         maxZoom: Double,
         pixelRatio: Float
     ) {
-        states[packId] = OfflinePackState(
+        val cur = getState(packId)
+        states[packId] = cur.copy(
             isDownloading = true,
-            statusText = "Starting download..."
+            statusText = "Starting map download..."
         )
         uiListener?.invoke()
 
@@ -191,7 +311,7 @@ class OfflineMapManager(private val context: Context) {
             }
 
             override fun onError(error: String) {
-                states[packId] = OfflinePackState(statusText = "Download failed: $error")
+                states[packId] = getState(packId).copy(isDownloading = false, statusText = "Download failed: $error")
                 uiListener?.invoke()
             }
         })
@@ -207,7 +327,7 @@ class OfflineMapManager(private val context: Context) {
             }
 
             override fun onError(error: OfflineRegionError) {
-                states[packId] = (states[packId] ?: OfflinePackState()).copy(
+                states[packId] = getState(packId).copy(
                     statusText = "Network notice: ${error.message}"
                 )
                 uiListener?.invoke()
@@ -215,7 +335,7 @@ class OfflineMapManager(private val context: Context) {
 
             override fun mapboxTileCountLimitExceeded(limit: Long) {
                 region.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                states[packId] = OfflinePackState(statusText = "Tile limit reached ($limit)")
+                states[packId] = getState(packId).copy(isDownloading = false, statusText = "Tile limit reached ($limit)")
                 uiListener?.invoke()
             }
         })
@@ -223,22 +343,29 @@ class OfflineMapManager(private val context: Context) {
     }
 
     fun pauseDownload(packId: String) {
-        val reg = regionHandles[packId] ?: return
-        reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
-        val cur = states[packId] ?: OfflinePackState()
+        OfflineRoutingEngine.cancelDownload(packId)
+        roadProgressNotes.remove(packId)
+        val reg = regionHandles[packId]
+        if (reg != null) {
+            reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
+        }
+        val cur = getState(packId)
         states[packId] = cur.copy(
             isDownloading = false,
-            statusText = "Paused (${cur.progressPercent}%)"
+            isRoadDownloading = false,
+            statusText = if (cur.isDownloaded) cur.statusText else "Paused (${cur.progressPercent}%)"
         )
-        uiListener?.invoke()
+        syncRoadFields(packId)
     }
 
     fun deletePack(packId: String, onDone: (String) -> Unit) {
+        val removedRoads = OfflineRoutingEngine.deletePackRegion(appCtx, packId)
+        roadProgressNotes.remove(packId)
         val reg = regionHandles[packId]
         if (reg == null) {
-            states[packId] = OfflinePackState()
+            states[packId] = buildIdleState(packId)
             uiListener?.invoke()
-            onDone("Already removed")
+            onDone(if (removedRoads) "Offline roads removed" else "Already removed")
             return
         }
         reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
@@ -246,9 +373,9 @@ class OfflineMapManager(private val context: Context) {
         reg.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
             override fun onDelete() {
                 regionHandles.remove(packId)
-                states[packId] = OfflinePackState()
+                states[packId] = buildIdleState(packId)
                 uiListener?.invoke()
-                onDone("Offline pack deleted")
+                onDone("Offline map & routing deleted")
             }
 
             override fun onError(error: String) {
@@ -270,11 +397,29 @@ class OfflineMapManager(private val context: Context) {
         val pct = if (req > 0) ((done * 100L) / req).toInt().coerceIn(0, 100) else 0
         val mb = status.completedResourceSize / (1024.0 * 1024.0)
         val active = status.downloadState == OfflineRegion.STATE_ACTIVE && !status.isComplete
+        val road = OfflineRoutingEngine.getPackRegion(appCtx, packId)
+        val roadDl = OfflineRoutingEngine.isDownloading(packId)
+        val note = roadProgressNotes[packId].orEmpty()
+
         val text = when {
-            status.isComplete -> "Downloaded • ${"%.1f".format(mb)} MB (ready offline)"
-            active -> "Downloading $pct% ($done/$req) • ${"%.1f".format(mb)} MB"
-            done > 0 -> "Paused $pct% • ${"%.1f".format(mb)} MB"
-            else -> "Not downloaded (online only)"
+            status.isComplete && road != null ->
+                "Map ${"%.1f".format(mb)} MB + Roads ${formatSize(road.sizeBytes)} (fully offline)"
+            status.isComplete && roadDl ->
+                "Map ${"%.1f".format(mb)} MB • ${note.ifBlank { "Downloading roads..." }}"
+            status.isComplete ->
+                "Map ${"%.1f".format(mb)} MB • Routing not downloaded yet"
+            active ->
+                "Downloading map $pct% ($done/$req) • ${"%.1f".format(mb)} MB"
+            done > 0 ->
+                "Paused $pct% • ${"%.1f".format(mb)} MB"
+            else ->
+                "Not downloaded (online only)"
+        }
+        val roadText = when {
+            roadDl -> note.ifBlank { "Downloading offline roads..." }
+            road != null -> "Offline routing ready (${formatSize(road.sizeBytes)})"
+            note.isNotBlank() -> note
+            else -> if (status.isComplete) "Tap 'Add Offline Roads' to enable offline routing" else ""
         }
         states[packId] = OfflinePackState(
             isDownloaded = status.isComplete,
@@ -283,7 +428,11 @@ class OfflineMapManager(private val context: Context) {
             completedResources = done,
             requiredResources = req,
             sizeBytes = status.completedResourceSize,
-            statusText = text
+            statusText = text,
+            hasRoadGraph = road != null,
+            isRoadDownloading = roadDl,
+            roadSizeBytes = road?.sizeBytes ?: 0L,
+            roadStatusText = roadText
         )
         uiListener?.invoke()
     }

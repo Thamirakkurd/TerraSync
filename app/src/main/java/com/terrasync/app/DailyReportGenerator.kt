@@ -25,6 +25,8 @@ data class DailyReportSummary(
 
 object DailyReportGenerator {
 
+    private val idCodeRegex = Regex("\\d{4,}")
+
     private fun statusPriority(status: String): Int = when (status.lowercase()) {
         "done" -> 3
         "issue" -> 2
@@ -33,19 +35,21 @@ object DailyReportGenerator {
 
     private fun dedupKey(pin: PinItem): String {
         val normName = pin.name.trim().lowercase().replace(Regex("\\s+"), " ")
-        val latKey = String.format(Locale.US, "%.5f", pin.lat)
-        val lngKey = String.format(Locale.US, "%.5f", pin.lng)
-        // If pin has a meaningful non-generic name, combine name + ~1m GPS grid;
-        // also catch identical coordinates with identical name
-        return if (normName.isNotBlank() && !normName.startsWith("pin ")) {
-            "n:$normName"
-        } else {
-            "g:$latKey,$lngKey"
+        val latGrid = String.format(Locale.US, "%.4f", pin.lat)
+        val lngGrid = String.format(Locale.US, "%.4f", pin.lng)
+        return when {
+            // Unique meter/account codes (e.g. CO-008373 - EA1558285) deduplicate cleanly by normalized ID name
+            normName.isNotBlank() && !normName.startsWith("pin ") && idCodeRegex.containsMatchIn(normName) ->
+                "id:$normName"
+            // Generic names (e.g. "Transformer", "Shop") require matching ~11m location too
+            normName.isNotBlank() && !normName.startsWith("pin ") ->
+                "n:$normName@$latGrid,$lngGrid"
+            else ->
+                "g:${String.format(Locale.US, "%.5f", pin.lat)},${String.format(Locale.US, "%.5f", pin.lng)}"
         }
     }
 
     fun deduplicatePins(pins: List<PinItem>): List<PinItem> {
-        // Deduplicate by ID first, then by normalized pin identity (keeping Done > Issue > Pending, then newest edit)
         val byKey = LinkedHashMap<String, PinItem>()
         for (p in pins) {
             val key = dedupKey(p)
@@ -77,7 +81,6 @@ object DailyReportGenerator {
             }
         }
         if (raw.isBlank()) return "Unassigned / Unknown"
-        // Prefer custom team name before "(Device • #ID)" when present
         val beforeParen = raw.substringBefore("(").trim()
         return if (raw.contains("(") && beforeParen.isNotBlank()) beforeParen else raw
     }
@@ -90,14 +93,24 @@ object DailyReportGenerator {
         var issueTotal = 0
         var pendingTotal = 0
 
+        val doneReasons = LinkedHashMap<String, Int>()
+        val issueReasons = LinkedHashMap<String, Int>()
+
         data class Acc(var done: Int = 0, var issue: Int = 0, var pending: Int = 0)
         val byTeam = LinkedHashMap<String, Acc>()
 
         for (p in unique) {
             val st = p.status.lowercase()
+            val reason = p.issueReason.trim()
             when (st) {
-                "done" -> doneTotal++
-                "issue" -> issueTotal++
+                "done" -> {
+                    doneTotal++
+                    if (reason.isNotBlank()) doneReasons[reason] = (doneReasons[reason] ?: 0) + 1
+                }
+                "issue" -> {
+                    issueTotal++
+                    if (reason.isNotBlank()) issueReasons[reason] = (issueReasons[reason] ?: 0) + 1
+                }
                 else -> pendingTotal++
             }
             val touched = p.isEdited || p.editedBy.isNotBlank() || st == "done" || st == "issue"
@@ -122,17 +135,24 @@ object DailyReportGenerator {
             )
         }.sortedWith(compareByDescending<TeamStats> { it.doneCount }.thenByDescending { it.totalSubmitted })
 
+        val pct = if (unique.isNotEmpty()) (doneTotal * 100) / unique.size else 0
         val dateStr = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US).format(Date())
         val sb = StringBuilder()
         sb.append("*TerraSync Daily Report*\n")
         sb.append("Folder: *$folderName*\n")
         sb.append("Date: $dateStr\n\n")
         sb.append("*Overall Summary (Unique Pins)*\n")
-        sb.append("• Total Pins: *${unique.size}*")
+        sb.append("• Total: *${unique.size}* ($pct% done)")
         if (duplicatesRemoved > 0) sb.append(" (_${duplicatesRemoved} duplicate${if (duplicatesRemoved == 1) "" else "s"} excluded_)")
         sb.append("\n")
-        sb.append("• Done: *$doneTotal*\n")
-        sb.append("• Issue: *$issueTotal*\n")
+        sb.append("• ✓ Done: *$doneTotal*\n")
+        doneReasons.entries.sortedByDescending { it.value }.forEach { (r, c) ->
+            sb.append("   - $r: $c\n")
+        }
+        sb.append("• ! Issue: *$issueTotal*\n")
+        issueReasons.entries.sortedByDescending { it.value }.forEach { (r, c) ->
+            sb.append("   - $r: $c\n")
+        }
         sb.append("• Pending: *$pendingTotal*\n")
 
         if (teamList.isNotEmpty()) {

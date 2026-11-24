@@ -47,8 +47,8 @@ object AppUpdater {
             } else {
                 ctx.packageManager.getPackageInfo(ctx.packageName, 0)
             }
-            (info.versionName ?: "2.6.1").trim().removePrefix("v").removePrefix("V")
-        }.getOrDefault("2.6.1")
+            (info.versionName ?: "2.7.0").trim().removePrefix("v").removePrefix("V")
+        }.getOrDefault("2.7.0")
     }
 
     fun isNewerVersion(remoteRaw: String, currentRaw: String): Boolean {

@@ -17,14 +17,14 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
-    <!-- Top Left Controls + Optional Route-From Origin Pill -->
+    <!-- Top Left Controls + Optional Route-From Origin Pill (leaves top-right clear for compass) -->
     <LinearLayout
         android:id="@+id/topCluster"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_marginStart="14dp"
-        android:layout_marginEnd="14dp"
+        android:layout_marginEnd="64dp"
         android:clipChildren="false"
         android:clipToPadding="false"
         android:orientation="vertical">
@@ -41,8 +41,8 @@
 
             <ImageButton
                 android:id="@+id/btnStyleToggle"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:contentDescription="Map Style"
                 android:padding="10dp"
                 android:scaleType="fitCenter"
@@ -50,8 +50,8 @@
 
             <ImageButton
                 android:id="@+id/btnStatusFilter"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:layout_marginStart="10dp"
                 android:contentDescription="Filter Pins"
                 android:padding="10dp"
@@ -60,23 +60,23 @@
 
             <ImageButton
                 android:id="@+id/btnSyncStatus"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
                 android:layout_marginStart="10dp"
                 android:contentDescription="Sync Status"
-                android:padding="9dp"
+                android:padding="10dp"
                 android:scaleType="fitCenter"
                 android:src="@drawable/ic_cloud_sync" />
 
             <TextView
                 android:id="@+id/btnSentToggle"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="42dp"
                 android:layout_marginStart="10dp"
                 android:gravity="center"
                 android:maxLines="1"
-                android:paddingStart="12dp"
-                android:paddingEnd="12dp"
+                android:paddingStart="13dp"
+                android:paddingEnd="13dp"
                 android:text="All Pins"
                 android:textColor="#334155"
                 android:textSize="12.5sp"
@@ -89,6 +89,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
+            android:elevation="6dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="12dp"
@@ -103,9 +104,9 @@
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
                 android:maxLines="1"
-                android:maxWidth="240dp"
+                android:maxWidth="220dp"
                 android:text="From: Custom Point"
-                android:textColor="#FFFFFF"
+                android:textColor="#0F172A"
                 android:textSize="12.5sp"
                 android:textStyle="bold" />
 
@@ -130,6 +131,7 @@
         android:layout_gravity="top"
         android:layout_marginStart="14dp"
         android:layout_marginEnd="14dp"
+        android:elevation="10dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:padding="12dp"
@@ -167,6 +169,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:maxLines="1"
                 android:textColor="#94A3B8"
                 android:textSize="12sp" />
         </LinearLayout>
@@ -192,7 +196,7 @@
             android:src="@drawable/ic_close" />
     </LinearLayout>
 
-    <!-- Bottom Controls: Speedometer + Scale Bar left, Ruler/Zoom/Import/GPS right, 4 Tabs or Ruler Card below -->
+    <!-- Bottom Controls Container -->
     <LinearLayout
         android:id="@+id/bottomDock"
         android:layout_width="match_parent"
@@ -203,9 +207,11 @@
         android:orientation="vertical"
         android:paddingStart="14dp"
         android:paddingEnd="14dp"
-        android:paddingBottom="4dp">
+        android:paddingBottom="8dp">
 
+        <!-- Speedometer + Scale Bar (left) and Map Action Stack (right) -->
         <LinearLayout
+            android:id="@+id/mapControlsRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="14dp"
@@ -260,12 +266,20 @@
                     android:id="@+id/scaleBarContainer"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:paddingStart="4dp"
+                    android:paddingTop="2dp"
+                    android:paddingEnd="4dp"
+                    android:paddingBottom="2dp">
 
                     <TextView
                         android:id="@+id/tvScaleLabel"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:shadowColor="#E6FFFFFF"
+                        android:shadowDx="0"
+                        android:shadowDy="0"
+                        android:shadowRadius="4"
                         android:text="5 km"
                         android:textColor="#1E293B"
                         android:textSize="12sp"
@@ -280,7 +294,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Right-Edge Floating Controls (Ruler, +, -, Import, My Location) -->
+            <!-- Right-Edge Floating Controls (Lasso, Ruler, +, -, Import, My Location) -->
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -556,85 +570,58 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 4 Separate Floating Rounded-Square Icons -->
+        <!-- Unified Opaque Floating Pill Dock (Zero Map Bleed-Through) -->
         <LinearLayout
             android:id="@+id/bottomIconRow"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:clipChildren="false"
-            android:clipToPadding="false"
+            android:layout_height="56dp"
+            android:layout_marginStart="6dp"
+            android:layout_marginEnd="6dp"
+            android:elevation="8dp"
             android:gravity="center"
             android:orientation="horizontal"
-            android:paddingTop="2dp"
-            android:paddingBottom="4dp">
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp">
 
-            <FrameLayout
+            <ImageButton
+                android:id="@+id/btnTabSearch"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:clipChildren="false"
-                android:clipToPadding="false">
-                <ImageButton
-                    android:id="@+id/btnTabSearch"
-                    android:layout_width="52dp"
-                    android:layout_height="52dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="Search"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_search" />
-            </FrameLayout>
+                android:contentDescription="Search"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_search" />
 
-            <FrameLayout
+            <ImageButton
+                android:id="@+id/btnTabBookmarks"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:clipChildren="false"
-                android:clipToPadding="false">
-                <ImageButton
-                    android:id="@+id/btnTabBookmarks"
-                    android:layout_width="52dp"
-                    android:layout_height="52dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="Bookmarks"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_bookmarks_list" />
-            </FrameLayout>
+                android:contentDescription="Bookmarks"
+                android:padding="15dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_bookmarks_list" />
 
-            <FrameLayout
+            <ImageButton
+                android:id="@+id/btnTabSettings"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:clipChildren="false"
-                android:clipToPadding="false">
-                <ImageButton
-                    android:id="@+id/btnTabSettings"
-                    android:layout_width="52dp"
-                    android:layout_height="52dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="Settings"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_settings" />
-            </FrameLayout>
+                android:contentDescription="Settings"
+                android:padding="16dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_settings" />
 
-            <FrameLayout
+            <ImageButton
+                android:id="@+id/btnTabAbout"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:clipChildren="false"
-                android:clipToPadding="false">
-                <ImageButton
-                    android:id="@+id/btnTabAbout"
-                    android:layout_width="52dp"
-                    android:layout_height="52dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="About"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_info" />
-            </FrameLayout>
+                android:contentDescription="About"
+                android:padding="16dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_info" />
         </LinearLayout>
     </LinearLayout>
 
@@ -643,6 +630,7 @@
         android:id="@+id/inScreenSheet"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="48dp"
         android:elevation="16dp"
         android:orientation="vertical"
         app:behavior_hideable="true"
