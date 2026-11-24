@@ -1,7 +1,11 @@
 package com.terrasync.app
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.offline.OfflineManager
@@ -40,6 +44,7 @@ class OfflineMapManager(private val context: Context) {
 
     companion object {
         const val STYLE_STREET_URL = "https://tiles.openfreemap.org/styles/liberty"
+        const val STYLE_DARK_URL = "https://tiles.openfreemap.org/styles/fiord"
         const val PACK_KURDISTAN_ID = "kurdistan_north"
         const val PACK_SOUTHERN_IRAQ_ID = "iraq_south"
 
@@ -74,10 +79,21 @@ class OfflineMapManager(private val context: Context) {
         setOfflineMapboxTileCountLimit(80000L)
     }
 
-    private val regionHandles = mutableMapOf<String, OfflineRegion>()
-    private val states = mutableMapOf<String, OfflinePackState>()
-    private val roadProgressNotes = mutableMapOf<String, String>()
-    private var uiListener: (() -> Unit)? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val regionHandles = ConcurrentHashMap<String, OfflineRegion>()
+    private val states = ConcurrentHashMap<String, OfflinePackState>()
+    private val roadProgressNotes = ConcurrentHashMap<String, String>()
+    private val pendingDownloads = ConcurrentHashMap<String, Pair<OfflinePackSpec, Float>>()
+    @Volatile private var regionsLoaded = false
+    @Volatile private var uiListener: (() -> Unit)? = null
+
+    private fun runOnMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
+    }
 
     fun setStateListener(listener: (() -> Unit)?) {
         uiListener = listener
@@ -114,20 +130,21 @@ class OfflineMapManager(private val context: Context) {
             override fun onList(offlineRegions: Array<OfflineRegion>?) {
                 val foundIds = mutableSetOf<String>()
                 val validIds = REGIONAL_PACKS.map { it.id }.toSet()
+                val matchedRegions = mutableListOf<Pair<String, OfflineRegion>>()
                 offlineRegions?.forEach { reg ->
                     val id = decodePackId(reg.metadata) ?: return@forEach
                     if (id !in validIds) return@forEach
-                    foundIds.add(id)
-                    regionHandles[id] = reg
-                    reg.getStatus(object : OfflineRegion.OfflineRegionStatusCallback {
-                        override fun onStatus(status: OfflineRegionStatus?) {
-                            if (status != null) updateStateFromStatus(id, status)
-                            onReady?.invoke()
-                        }
-                        override fun onError(error: String?) {
-                            onReady?.invoke()
-                        }
-                    })
+                    if (foundIds.add(id)) {
+                        regionHandles[id] = reg
+                        matchedRegions.add(id to reg)
+                    } else {
+                        // Remove duplicate orphaned region for the same packId
+                        reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
+                        reg.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
+                            override fun onDelete() {}
+                            override fun onError(error: String) {}
+                        })
+                    }
                 }
                 validIds.forEach { id ->
                     if (id !in foundIds) {
@@ -135,8 +152,29 @@ class OfflineMapManager(private val context: Context) {
                         states[id] = buildIdleState(id)
                     }
                 }
-                uiListener?.invoke()
-                onReady?.invoke()
+                regionsLoaded = true
+                if (pendingDownloads.isNotEmpty()) {
+                    val queued = pendingDownloads.values.toList()
+                    pendingDownloads.clear()
+                    queued.forEach { (pack, ratio) -> startTileDownload(pack, ratio) }
+                }
+                runOnMain { uiListener?.invoke() }
+                if (matchedRegions.isEmpty()) {
+                    onReady?.invoke()
+                } else {
+                    val remaining = AtomicInteger(matchedRegions.size)
+                    matchedRegions.forEach { (id, reg) ->
+                        reg.getStatus(object : OfflineRegion.OfflineRegionStatusCallback {
+                            override fun onStatus(status: OfflineRegionStatus?) {
+                                if (status != null) updateStateFromStatus(id, status)
+                                if (remaining.decrementAndGet() == 0) onReady?.invoke()
+                            }
+                            override fun onError(error: String?) {
+                                if (remaining.decrementAndGet() == 0) onReady?.invoke()
+                            }
+                        })
+                    }
+                }
             }
 
             override fun onError(error: String) {
@@ -145,7 +183,7 @@ class OfflineMapManager(private val context: Context) {
         })
     }
 
-    fun downloadPack(pack: OfflinePackSpec, pixelRatio: Float) {
+    private fun startTileDownload(pack: OfflinePackSpec, pixelRatio: Float) {
         val existing = regionHandles[pack.id]
         if (existing != null) {
             attachObserverAndStart(pack.id, existing)
@@ -155,6 +193,20 @@ class OfflineMapManager(private val context: Context) {
                 .include(LatLng(pack.maxLat, pack.maxLng))
                 .build()
             createAndStart(pack.id, bounds, pack.minZoom, pack.maxZoom, pixelRatio)
+        }
+    }
+
+    fun downloadPack(pack: OfflinePackSpec, pixelRatio: Float) {
+        if (!regionsLoaded) {
+            pendingDownloads[pack.id] = pack to pixelRatio
+            states[pack.id] = getState(pack.id).copy(
+                isDownloading = true,
+                statusText = "Preparing offline pack..."
+            )
+            runOnMain { uiListener?.invoke() }
+            refreshAll()
+        } else {
+            startTileDownload(pack, pixelRatio)
         }
         if (OfflineRoutingEngine.getPackRegion(appCtx, pack.id) == null && !OfflineRoutingEngine.isDownloading(pack.id)) {
             startEmbeddedRoadDownload(pack.id, pack.title, pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
@@ -185,18 +237,22 @@ class OfflineMapManager(private val context: Context) {
             nLat,
             eLng,
             onProgress = { msg ->
-                roadProgressNotes[packId] = msg
-                syncRoadFields(packId)
+                runOnMain {
+                    roadProgressNotes[packId] = msg
+                    syncRoadFields(packId)
+                }
             },
             onDone = { reg, err ->
-                if (reg != null) {
-                    roadProgressNotes.remove(packId)
-                } else if (err != null && err != "Cancelled") {
-                    roadProgressNotes[packId] = "Roads failed: $err"
-                } else {
-                    roadProgressNotes.remove(packId)
+                runOnMain {
+                    if (reg != null) {
+                        roadProgressNotes.remove(packId)
+                    } else if (err != null && err != "Cancelled") {
+                        roadProgressNotes[packId] = "Roads failed: $err"
+                    } else {
+                        roadProgressNotes.remove(packId)
+                    }
+                    syncRoadFields(packId)
                 }
-                syncRoadFields(packId)
             }
         )
     }
@@ -218,7 +274,7 @@ class OfflineMapManager(private val context: Context) {
             roadSizeBytes = road?.sizeBytes ?: 0L,
             roadStatusText = roadText
         )
-        uiListener?.invoke()
+        runOnMain { uiListener?.invoke() }
     }
 
     private fun createAndStart(

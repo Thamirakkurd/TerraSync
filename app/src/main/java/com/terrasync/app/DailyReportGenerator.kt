@@ -3,6 +3,7 @@ package com.terrasync.app
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 data class DailyFieldReport(
     val whatsappText: String
@@ -37,8 +38,7 @@ object DailyReportGenerator {
         isCloudLive: Boolean = false
     ): String {
         val now = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US).format(Date())
-        val total = pins.size
-        if (total == 0) {
+        if (pins.isEmpty()) {
             return buildString {
                 appendLine("*$folderName — Daily Field Report*")
                 appendLine("_${now}_")
@@ -46,6 +46,22 @@ object DailyReportGenerator {
                 appendLine("No pins in this folder.")
             }.trim()
         }
+
+        val uniquePins = pins
+            .sortedWith(
+                compareByDescending<PinItem> {
+                    when (normalizeStatus(it.status)) {
+                        "DONE" -> 2
+                        "ISSUE" -> 1
+                        else -> 0
+                    }
+                }.thenByDescending { it.updatedAt }
+            )
+            .distinctBy {
+                "${it.name.trim().lowercase(Locale.US)}|${it.description.trim().lowercase(Locale.US)}|${"%.6f".format(Locale.US, it.lat)}|${"%.6f".format(Locale.US, it.lng)}"
+            }
+        val dupSkipped = (pins.size - uniquePins.size).coerceAtLeast(0)
+        val total = uniquePins.size
 
         var doneCount = 0
         var issueCount = 0
@@ -67,7 +83,7 @@ object DailyReportGenerator {
 
         val teamMap = linkedMapOf<String, TeamStats>()
 
-        for (pin in pins) {
+        for (pin in uniquePins) {
             val status = normalizeStatus(pin.status)
             val rawReason = pin.issueReason.trim()
             val rawNote = pin.description.trim()
@@ -102,23 +118,25 @@ object DailyReportGenerator {
                 }
             }
 
-            if (status == "ISSUE" && rawReason.isNotBlank() && KNOWN_REASONS.none { it.equals(rawReason, true) }) {
+            if ((status == "ISSUE" || status == "DONE") && rawReason.isNotBlank() && KNOWN_REASONS.none { it.equals(rawReason, true) }) {
                 val prefix = teamKeyAndLabel?.second?.let { "[$it] " } ?: ""
+                val tag = if (status == "DONE") "✓ " else ""
                 val pinLabel = pin.name.ifBlank { "Pin" }
-                fieldNotes.add("$prefix$pinLabel: $rawReason")
+                fieldNotes.add("$prefix$tag$pinLabel: $rawReason")
             }
         }
 
         val pendingUntouched = (pendingTotal - pendingTouched).coerceAtLeast(0)
-        val pctDone = ((doneCount * 100.0) / total).toInt()
+        val pctDone = ((doneCount * 100.0) / total).roundToInt()
         val syncBadge = if (isCloudLive) "Live Cloud" else "Local"
 
         return buildString {
             appendLine("*$folderName — Daily Field Report*")
-            appendLine("_${now} • $syncBadge")
+            appendLine("_${now} • ${syncBadge}_")
             appendLine()
             appendLine("*Summary*")
-            appendLine("• Total Pins: *$total*")
+            val dupNote = if (dupSkipped > 0) " ($dupSkipped duplicate${if (dupSkipped == 1) "" else "s"} deduplicated)" else ""
+            appendLine("• Total Pins: *$total*$dupNote")
             appendLine("• Completion: *$pctDone%* ($doneCount / $total)")
             appendLine("• ✓ Done: *$doneCount*")
             appendLine("• ⚠ Issue: *$issueCount*")

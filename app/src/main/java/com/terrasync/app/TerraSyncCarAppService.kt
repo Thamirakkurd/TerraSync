@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
@@ -38,7 +39,30 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 
 class TerraSyncCarAppService : CarAppService() {
-    override fun createHostValidator(): HostValidator = HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
+    override fun onCreate() {
+        super.onCreate()
+        RoutingEngine.appContext = applicationContext
+        val ver = runCatching {
+            val info = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0)
+            }
+            (info.versionName ?: "2.8.0").trim().removePrefix("v").removePrefix("V")
+        }.getOrDefault("2.8.0")
+        RoutingEngine.userAgent = "TerraSync/$ver (https://github.com/Thamirakkurd/TerraSync)"
+    }
+
+    override fun createHostValidator(): HostValidator {
+        return if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
+        } else {
+            HostValidator.Builder(applicationContext)
+                .addAllowedHosts(androidx.car.app.R.array.hosts_allowlist_sample)
+                .build()
+        }
+    }
 
     override fun onCreateSession(): Session = TerraSyncCarSession()
 }
@@ -50,25 +74,30 @@ class TerraSyncCarSession : Session() {
 }
 
 private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carContext) {
-    private val repo = SyncRepo()
+    private val repo = SyncRepo(carContext.applicationContext)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var layers: List<LayerItem> = emptyList()
     private var pins: List<PinItem> = emptyList()
     private var loaded = false
+    private var destroyed = false
 
     init {
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onCreate(owner: LifecycleOwner) {
                 val joined = DevicePrefs.getJoinedLayerIds(carContext)
                 repo.syncJoinedLayers(joined) { newLayers, newPins, _, _ ->
-                    layers = newLayers
-                    pins = newPins
+                    if (destroyed) return@syncJoinedLayers
+                    val local = LocalFolderStore.loadAll(carContext)
+                    layers = (newLayers + local.layers).sortedByDescending { it.updatedAt }
+                    pins = newPins + local.pins
                     loaded = true
-                    mainHandler.post { invalidate() }
+                    mainHandler.post { if (!destroyed) invalidate() }
                 }
             }
 
             override fun onDestroy(owner: LifecycleOwner) {
+                destroyed = true
+                mainHandler.removeCallbacksAndMessages(null)
                 repo.stopListening()
             }
         })
@@ -301,7 +330,11 @@ private class TerraSyncCarPinDetailScreen(
                 .setBackgroundColor(CarColor.GREEN)
                 .setOnClickListener {
                     val stamp = DevicePrefs.getDeviceStamp(carContext)
-                    repo.updatePinStatus(pin, "done", stamp)
+                    if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
+                        LocalFolderStore.updatePinStatus(carContext, pin, "done", stamp)
+                    } else {
+                        repo.updatePinStatus(pin, "done", stamp)
+                    }
                     currentStatus = "done"
                     onMarkedDone()
                     CarToast.makeText(carContext, "Marked Done", CarToast.LENGTH_SHORT).show()

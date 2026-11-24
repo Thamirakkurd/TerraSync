@@ -15,10 +15,18 @@ object KmlCsvExporter {
     }
 
     private fun xmlEscape(s: String): String {
-        return s.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
+        val sb = StringBuilder(s.length)
+        for (ch in s) {
+            when {
+                ch == '&' -> sb.append("&amp;")
+                ch == '<' -> sb.append("&lt;")
+                ch == '>' -> sb.append("&gt;")
+                ch == '"' -> sb.append("&quot;")
+                ch == '\'' -> sb.append("&apos;")
+                ch == '\t' || ch == '\n' || ch == '\r' || ch.code >= 0x20 -> sb.append(ch)
+            }
+        }
+        return sb.toString()
     }
 
     private fun csvEscape(s: String): String {
@@ -108,11 +116,14 @@ object KmlCsvExporter {
         }
 
         tracks.forEach { t ->
-            val coordText = t.coords.split(";").joinToString(" ") { "$it,0" }
-            sb.append("  <Placemark>\n")
-            sb.append("    <name>${xmlEscape(t.name)}</name>\n")
-            sb.append("    <LineString><coordinates>$coordText</coordinates></LineString>\n")
-            sb.append("  </Placemark>\n")
+            val validPts = t.coords.split(";").map { it.trim() }.filter { it.contains(",") }
+            if (validPts.size >= 2) {
+                val coordText = validPts.joinToString(" ") { "$it,0" }
+                sb.append("  <Placemark>\n")
+                sb.append("    <name>${xmlEscape(t.name)}</name>\n")
+                sb.append("    <LineString><coordinates>$coordText</coordinates></LineString>\n")
+                sb.append("  </Placemark>\n")
+            }
         }
 
         sb.append("</Document>\n</kml>\n")
@@ -156,6 +167,10 @@ object KmlCsvExporter {
             }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        ctx.startActivity(Intent.createChooser(intent, title))
+        runCatching {
+            ctx.startActivity(Intent.createChooser(intent, title))
+        }.onFailure {
+            android.widget.Toast.makeText(ctx, "No app available to share file", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 }

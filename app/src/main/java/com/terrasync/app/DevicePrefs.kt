@@ -27,6 +27,7 @@ object DevicePrefs {
     private const val KEY_PINNED_LAYERS = "pinned_layer_ids"
     private const val KEY_SHOW_EXTRA_MAP_TOOLS = "show_extra_map_tools"
     private const val KEY_CACHED_LAYER_NAMES = "cached_layer_names"
+    private const val KEY_THEME_MODE = "ui_theme_mode"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -36,7 +37,7 @@ object DevicePrefs {
         val p = prefs(ctx)
         var id = p.getString(KEY_DEVICE_ID, null)
         if (id.isNullOrBlank()) {
-            id = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
+            id = UUID.randomUUID().toString().replace("-", "").take(12).uppercase()
             p.edit().putString(KEY_DEVICE_ID, id).apply()
         }
         return id
@@ -188,6 +189,17 @@ object DevicePrefs {
         return nowSent
     }
 
+    fun removePinReferences(ctx: Context, pinIds: Collection<String>) {
+        if (pinIds.isEmpty()) return
+        val drop = pinIds.toSet()
+        val nextBookmarks = getBookmarks(ctx).toMutableSet().apply { removeAll(drop) }
+        val nextSent = getLocalSentPinIds(ctx).toMutableSet().apply { removeAll(drop) }
+        prefs(ctx).edit()
+            .putStringSet(KEY_BOOKMARKS, nextBookmarks)
+            .putStringSet(KEY_LOCAL_SENT_PINS, nextSent)
+            .apply()
+    }
+
     fun clearLocalSentPins(ctx: Context) {
         prefs(ctx).edit().putStringSet(KEY_LOCAL_SENT_PINS, emptySet()).apply()
     }
@@ -214,6 +226,9 @@ object DevicePrefs {
         return nowPinned
     }
 
+
+    fun getThemeMode(ctx: Context): String = prefs(ctx).getString(KEY_THEME_MODE, "day") ?: "day"
+    fun setThemeMode(ctx: Context, mode: String) = prefs(ctx).edit().putString(KEY_THEME_MODE, mode).apply()
 
     fun isShowExtraMapTools(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, false)
     fun setShowExtraMapTools(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, show).apply()

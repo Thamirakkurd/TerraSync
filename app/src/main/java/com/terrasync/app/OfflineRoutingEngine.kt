@@ -64,9 +64,12 @@ object OfflineRoutingEngine {
         val edgeSpeed: FloatArray,
         val edgeFlags: ByteArray,
         val edgeNameIdx: IntArray,
+        val nodeOutFlags: ByteArray,
+        val nodeInFlags: ByteArray,
         val names: Array<String>
     )
 
+    private val graphCacheLock = Any()
     @Volatile private var cachedGraph: RoadGraph? = null
     private val activeDownloads = ConcurrentHashMap<String, AtomicBoolean>()
 
@@ -101,7 +104,9 @@ object OfflineRoutingEngine {
 
     fun deleteRegion(ctx: Context, fileName: String): Boolean {
         val f = File(dir(ctx), fileName)
-        if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+        synchronized(graphCacheLock) {
+            if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+        }
         return f.exists() && f.delete()
     }
 
@@ -139,7 +144,7 @@ object OfflineRoutingEngine {
         }.getOrNull()
     }
 
-    private fun loadGraph(ctx: Context, fileName: String): RoadGraph? {
+    private fun loadGraph(ctx: Context, fileName: String): RoadGraph? = synchronized(graphCacheLock) {
         cachedGraph?.let { if (it.meta.fileName == fileName) return it }
         val file = File(dir(ctx), fileName)
         if (!file.exists()) return null
@@ -172,6 +177,8 @@ object OfflineRoutingEngine {
                 val edgeSpeed = FloatArray(edgeCount)
                 val edgeFlags = ByteArray(edgeCount)
                 val edgeNameIdx = IntArray(edgeCount)
+                val nodeOutFlags = ByteArray(nodeCount)
+                val nodeInFlags = ByteArray(nodeCount)
 
                 for (e in 0 until edgeCount) {
                     val from = dis.readInt()
@@ -187,6 +194,8 @@ object OfflineRoutingEngine {
                     edgeNameIdx[e] = nIdx
                     edgeNext[e] = adjHead[from]
                     adjHead[from] = e
+                    nodeOutFlags[from] = (nodeOutFlags[from].toInt() or flg.toInt()).toByte()
+                    nodeInFlags[to] = (nodeInFlags[to].toInt() or flg.toInt()).toByte()
                 }
 
                 val meta = OfflineRoadRegion(
@@ -201,7 +210,10 @@ object OfflineRoutingEngine {
                     sizeBytes = file.length(),
                     downloadedAt = downloadedAt
                 )
-                RoadGraph(meta, lats, lngs, adjHead, edgeTo, edgeNext, edgeDist, edgeSpeed, edgeFlags, edgeNameIdx, names).also {
+                RoadGraph(
+                    meta, lats, lngs, adjHead, edgeTo, edgeNext, edgeDist, edgeSpeed,
+                    edgeFlags, edgeNameIdx, nodeOutFlags, nodeInFlags, names
+                ).also {
                     cachedGraph = it
                 }
             }
@@ -220,19 +232,6 @@ object OfflineRoutingEngine {
         onDone: (OfflineRoadRegion?, String?) -> Unit
     ) {
         downloadRoadGraphInternal(ctx, packId, regionName, minLat, minLng, maxLat, maxLng, onProgress, onDone)
-    }
-
-    fun downloadRoadGraph(
-        ctx: Context,
-        regionName: String,
-        minLat: Double,
-        minLng: Double,
-        maxLat: Double,
-        maxLng: Double,
-        onProgress: (String) -> Unit,
-        onDone: (OfflineRoadRegion?, String?) -> Unit
-    ) {
-        downloadRoadGraphInternal(ctx, null, regionName, minLat, minLng, maxLat, maxLng, onProgress, onDone)
     }
 
     private fun downloadRoadGraphInternal(
@@ -294,9 +293,17 @@ object OfflineRoutingEngine {
                     "https://lz4.overpass-api.de/api/interpreter"
                 )
 
-                val osmNodes = HashMap<Long, Pair<Float, Float>>(65536)
-                val ways = ArrayList<JSONObject>(16384)
                 val seenWayIds = HashSet<Long>(16384)
+                val nodeIndexMap = HashMap<Long, Int>(65536)
+                val lats = ArrayList<Float>(65536)
+                val lngs = ArrayList<Float>(65536)
+                val nameToIdx = LinkedHashMap<String, Int>()
+                nameToIdx[""] = 0
+                fun nameIdx(name: String): Int = nameToIdx.getOrPut(name) { nameToIdx.size }
+
+                class TmpEdge(val from: Int, val to: Int, val dist: Float, val speed: Float, val flags: Byte, val nIdx: Int)
+                val edges = ArrayList<TmpEdge>(65536)
+
                 var fetchedAny = false
                 var lastErr = "Could not download road data"
 
@@ -306,7 +313,7 @@ object OfflineRoutingEngine {
                         onDone(null, "Cancelled")
                         return@Thread
                     }
-                    var chunkJson: String? = null
+                    var elems: org.json.JSONArray? = null
                     for (ep in endpoints) {
                         if (cancelFlag.get()) {
                             onDone(null, "Cancelled")
@@ -327,8 +334,14 @@ object OfflineRoutingEngine {
                                 w.write("data=" + URLEncoder.encode(query, "UTF-8"))
                             }
                             if (conn.responseCode == 200) {
-                                chunkJson = conn.inputStream.bufferedReader().use { it.readText() }
-                                break
+                                val rawBody = conn.inputStream.bufferedReader().use { it.readText() }
+                                val parsedArr = JSONObject(rawBody).optJSONArray("elements")
+                                if (parsedArr != null) {
+                                    elems = parsedArr
+                                    break
+                                } else {
+                                    lastErr = "Overpass returned empty response"
+                                }
                             } else {
                                 lastErr = "Overpass server HTTP ${conn.responseCode}"
                             }
@@ -339,120 +352,96 @@ object OfflineRoutingEngine {
                         }
                     }
 
-                    if (!chunkJson.isNullOrBlank()) {
-                        val elems = JSONObject(chunkJson).optJSONArray("elements")
-                        if (elems != null) {
-                            fetchedAny = true
-                            for (i in 0 until elems.length()) {
-                                val el = elems.getJSONObject(i)
-                                when (el.optString("type")) {
-                                    "node" -> {
-                                        val id = el.optLong("id")
-                                        osmNodes[id] = el.optDouble("lat").toFloat() to el.optDouble("lon").toFloat()
-                                    }
-                                    "way" -> {
-                                        val wid = el.optLong("id")
-                                        if (seenWayIds.add(wid)) ways.add(el)
-                                    }
-                                }
-                            }
+                    val chunkElems = elems ?: continue
+                    fetchedAny = true
+                    val chunkNodes = HashMap<Long, Pair<Float, Float>>(16384)
+                    for (i in 0 until chunkElems.length()) {
+                        val el = chunkElems.getJSONObject(i)
+                        if (el.optString("type") == "node") {
+                            val id = el.optLong("id")
+                            chunkNodes[id] = el.optDouble("lat").toFloat() to el.optDouble("lon").toFloat()
                         }
                     }
+
+                    fun getIdx(osmId: Long): Int {
+                        val existing = nodeIndexMap[osmId]
+                        if (existing != null) return existing
+                        val pt = chunkNodes[osmId] ?: return -1
+                        val idx = lats.size
+                        nodeIndexMap[osmId] = idx
+                        lats.add(pt.first)
+                        lngs.add(pt.second)
+                        return idx
+                    }
+
+                    for (i in 0 until chunkElems.length()) {
+                        val way = chunkElems.getJSONObject(i)
+                        if (way.optString("type") != "way") continue
+                        val wid = way.optLong("id")
+                        if (!seenWayIds.add(wid)) continue
+                        val tags = way.optJSONObject("tags") ?: continue
+                        val hw = tags.optString("highway", "")
+                        val access = tags.optString("access", "")
+                        if (access == "private" || access == "no") continue
+
+                        val roadName = tags.optString("name", "").trim()
+                        val nIdx = nameIdx(roadName)
+                        val onewayTag = tags.optString("oneway", "")
+                        val junction = tags.optString("junction", "")
+                        val isOneWayFwd = onewayTag == "yes" || onewayTag == "true" || onewayTag == "1" ||
+                            junction == "roundabout" || hw == "motorway" || hw == "motorway_link"
+                        val isOneWayRev = onewayTag == "-1"
+
+                        val (carOk, bikeOk, walkOk, carSpeed) = when (hw) {
+                            "motorway", "motorway_link" -> Quad(true, false, false, 95f)
+                            "trunk", "trunk_link" -> Quad(true, true, true, 80f)
+                            "primary", "primary_link" -> Quad(true, true, true, 65f)
+                            "secondary", "secondary_link" -> Quad(true, true, true, 55f)
+                            "tertiary", "tertiary_link" -> Quad(true, true, true, 45f)
+                            "unclassified", "road" -> Quad(true, true, true, 40f)
+                            "residential" -> Quad(true, true, true, 30f)
+                            "living_street", "service" -> Quad(true, true, true, 20f)
+                            "track" -> Quad(true, true, true, 16f)
+                            "cycleway" -> Quad(false, true, true, 15f)
+                            "path", "footway" -> Quad(false, true, true, 10f)
+                            else -> Quad(false, false, false, 15f)
+                        }
+
+                        val fwdFlags = ((if (carOk && !isOneWayRev) FLAG_CAR else 0) or
+                            (if (bikeOk && !isOneWayRev) FLAG_BIKE else 0) or
+                            (if (walkOk) FLAG_WALK else 0)).toByte()
+                        val revFlags = ((if (carOk && !isOneWayFwd) FLAG_CAR else 0) or
+                            (if (bikeOk && !isOneWayFwd) FLAG_BIKE else 0) or
+                            (if (walkOk) FLAG_WALK else 0)).toByte()
+
+                        val nds = way.optJSONArray("nodes") ?: continue
+                        var prev = -1
+                        for (j in 0 until nds.length()) {
+                            val curr = getIdx(nds.optLong(j))
+                            if (prev >= 0 && curr >= 0 && prev != curr) {
+                                val d = RoutingEngine.haversineMeters(
+                                    lats[prev].toDouble(), lngs[prev].toDouble(),
+                                    lats[curr].toDouble(), lngs[curr].toDouble()
+                                ).toFloat().coerceAtLeast(0.5f)
+                                if (fwdFlags.toInt() != 0) edges.add(TmpEdge(prev, curr, d, carSpeed, fwdFlags, nIdx))
+                                if (revFlags.toInt() != 0) edges.add(TmpEdge(curr, prev, d, carSpeed, revFlags, nIdx))
+                            }
+                            if (curr >= 0) prev = curr
+                        }
+                    }
+                    chunkNodes.clear()
                 }
 
                 if (cancelFlag.get()) {
                     onDone(null, "Cancelled")
                     return@Thread
                 }
-                if (!fetchedAny || ways.isEmpty()) {
-                    onDone(null, lastErr)
+                if (!fetchedAny || edges.isEmpty() || lats.isEmpty()) {
+                    onDone(null, if (!fetchedAny) lastErr else "No routable roads found in this area")
                     return@Thread
                 }
 
                 onProgress("Building offline road graph...")
-
-                if (cancelFlag.get()) {
-                    onDone(null, "Cancelled")
-                    return@Thread
-                }
-
-                val nodeIndexMap = HashMap<Long, Int>()
-                val lats = ArrayList<Float>()
-                val lngs = ArrayList<Float>()
-                fun getIdx(osmId: Long): Int {
-                    val existing = nodeIndexMap[osmId]
-                    if (existing != null) return existing
-                    val pt = osmNodes[osmId] ?: return -1
-                    val idx = lats.size
-                    nodeIndexMap[osmId] = idx
-                    lats.add(pt.first)
-                    lngs.add(pt.second)
-                    return idx
-                }
-
-                val nameToIdx = LinkedHashMap<String, Int>()
-                nameToIdx[""] = 0
-                fun nameIdx(name: String): Int = nameToIdx.getOrPut(name) { nameToIdx.size }
-
-                class TmpEdge(val from: Int, val to: Int, val dist: Float, val speed: Float, val flags: Byte, val nIdx: Int)
-                val edges = ArrayList<TmpEdge>(ways.size * 4)
-
-                for (way in ways) {
-                    val tags = way.optJSONObject("tags") ?: continue
-                    val hw = tags.optString("highway", "")
-                    val access = tags.optString("access", "")
-                    if (access == "private" || access == "no") continue
-
-                    val roadName = tags.optString("name", "").trim()
-                    val nIdx = nameIdx(roadName)
-                    val onewayTag = tags.optString("oneway", "")
-                    val junction = tags.optString("junction", "")
-                    val isOneWayFwd = onewayTag == "yes" || onewayTag == "true" || onewayTag == "1" ||
-                        junction == "roundabout" || hw == "motorway" || hw == "motorway_link"
-                    val isOneWayRev = onewayTag == "-1"
-
-                    val (carOk, bikeOk, walkOk, carSpeed) = when (hw) {
-                        "motorway", "motorway_link" -> Quad(true, false, false, 95f)
-                        "trunk", "trunk_link" -> Quad(true, true, true, 80f)
-                        "primary", "primary_link" -> Quad(true, true, true, 65f)
-                        "secondary", "secondary_link" -> Quad(true, true, true, 55f)
-                        "tertiary", "tertiary_link" -> Quad(true, true, true, 45f)
-                        "unclassified", "road" -> Quad(true, true, true, 40f)
-                        "residential" -> Quad(true, true, true, 30f)
-                        "living_street", "service" -> Quad(true, true, true, 20f)
-                        "track" -> Quad(true, true, true, 16f)
-                        "cycleway" -> Quad(false, true, true, 15f)
-                        "path", "footway" -> Quad(false, true, true, 10f)
-                        else -> Quad(false, false, false, 15f)
-                    }
-
-                    val fwdFlags = ((if (carOk && !isOneWayRev) FLAG_CAR else 0) or
-                        (if (bikeOk && !isOneWayRev) FLAG_BIKE else 0) or
-                        (if (walkOk) FLAG_WALK else 0)).toByte()
-                    val revFlags = ((if (carOk && !isOneWayFwd) FLAG_CAR else 0) or
-                        (if (bikeOk && !isOneWayFwd) FLAG_BIKE else 0) or
-                        (if (walkOk) FLAG_WALK else 0)).toByte()
-
-                    val nds = way.optJSONArray("nodes") ?: continue
-                    var prev = -1
-                    for (j in 0 until nds.length()) {
-                        val curr = getIdx(nds.optLong(j))
-                        if (prev >= 0 && curr >= 0 && prev != curr) {
-                            val d = RoutingEngine.haversineMeters(
-                                lats[prev].toDouble(), lngs[prev].toDouble(),
-                                lats[curr].toDouble(), lngs[curr].toDouble()
-                            ).toFloat().coerceAtLeast(0.5f)
-                            if (fwdFlags.toInt() != 0) edges.add(TmpEdge(prev, curr, d, carSpeed, fwdFlags, nIdx))
-                            if (revFlags.toInt() != 0) edges.add(TmpEdge(curr, prev, d, carSpeed, revFlags, nIdx))
-                        }
-                        if (curr >= 0) prev = curr
-                    }
-                }
-
-                if (lats.isEmpty() || edges.isEmpty()) {
-                    onDone(null, "No routable roads found in this area")
-                    return@Thread
-                }
 
                 onProgress("Saving offline roads (${lats.size} nodes)...")
                 val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}_${System.currentTimeMillis() % 10000}.tsr"
@@ -506,7 +495,9 @@ object OfflineRoutingEngine {
                     sizeBytes = outFile.length(),
                     downloadedAt = now
                 )
-                if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                synchronized(graphCacheLock) {
+                    if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                }
                 onDone(meta, null)
             } catch (e: Exception) {
                 onDone(null, e.message ?: "Failed to compile offline graph")
@@ -563,8 +554,8 @@ object OfflineRoutingEngine {
         mode: TravelMode,
         modeFlag: Int
     ): Pair<NavRoute?, String?> {
-        val startNode = findNearestNode(g, startLat, startLng, modeFlag)
-        val endNode = findNearestNode(g, endLat, endLng, modeFlag)
+        val startNode = findNearestNode(g, startLat, startLng, modeFlag, needIncoming = false)
+        val endNode = findNearestNode(g, endLat, endLng, modeFlag, needIncoming = true)
         if (startNode < 0 || endNode < 0) {
             return null to "No nearby road in offline map"
         }
@@ -655,9 +646,24 @@ object OfflineRoutingEngine {
         }
         geom.add(endLng to endLat)
 
-        var totalDist = 0.0
-        var totalDur = 0.0
+        val approachSpeedMps = when (mode) {
+            TravelMode.CAR -> 25.0 / 3.6
+            TravelMode.BICYCLE -> 14.0 / 3.6
+            TravelMode.WALKING -> 4.8 / 3.6
+        }
+        val firstNode = pathNodes.first()
+        val lastNode = pathNodes.last()
+        val startApproach = RoutingEngine.haversineMeters(
+            startLat, startLng, g.lats[firstNode].toDouble(), g.lngs[firstNode].toDouble()
+        )
+        val endApproach = RoutingEngine.haversineMeters(
+            g.lats[lastNode].toDouble(), g.lngs[lastNode].toDouble(), endLat, endLng
+        )
+
+        var totalDist = startApproach
+        var totalDur = startApproach / approachSpeedMps
         val cumDists = DoubleArray(pathNodes.size)
+        cumDists[0] = startApproach
         for (i in pathEdges.indices) {
             val e = pathEdges[i]
             val d = g.edgeDist[e].toDouble()
@@ -670,35 +676,27 @@ object OfflineRoutingEngine {
             totalDur += d / (spdKmh / 3.6)
             cumDists[i + 1] = totalDist
         }
+        totalDist += endApproach
+        totalDur += endApproach / approachSpeedMps
 
         val steps = buildOfflineSteps(g, pathNodes, pathEdges, cumDists, totalDist, endLat, endLng)
         return NavRoute(geom, totalDist, totalDur, steps, mode, "Offline") to null
     }
 
-    private fun findNearestNode(g: RoadGraph, lat: Double, lng: Double, modeFlag: Int): Int {
+    private fun findNearestNode(g: RoadGraph, lat: Double, lng: Double, modeFlag: Int, needIncoming: Boolean = false): Int {
         var bestIdx = -1
         var bestDistSq = 3500.0 * 3500.0
         val cosLat = cos(Math.toRadians(lat))
         val mPerDegLng = 111320.0 * cosLat
+        val flagsArr = if (needIncoming) g.nodeInFlags else g.nodeOutFlags
         for (i in g.lats.indices) {
+            if ((flagsArr[i].toInt() and modeFlag) == 0) continue
             val dLat = (g.lats[i] - lat) * 111132.0
             val dLatSq = dLat * dLat
             if (dLatSq >= bestDistSq) continue
             val dLng = (g.lngs[i] - lng) * mPerDegLng
             val dSq = dLatSq + dLng * dLng
-            if (dSq >= bestDistSq) continue
-
-            // Check mode accessibility only when node beats current best distance
-            var e = g.adjHead[i]
-            var ok = false
-            while (e != -1) {
-                if ((g.edgeFlags[e].toInt() and modeFlag) != 0) {
-                    ok = true
-                    break
-                }
-                e = g.edgeNext[e]
-            }
-            if (ok) {
+            if (dSq < bestDistSq) {
                 bestDistSq = dSq
                 bestIdx = i
             }

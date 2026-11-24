@@ -8,6 +8,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
 
 data class LocalStoreSnapshot(
     val layers: List<LayerItem>,
@@ -19,6 +20,8 @@ object LocalFolderStore {
 
     private const val FILE_NAME = "local_folders_v1.json"
     private val lock = Any()
+    private val ioExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var cachedSnapshot: LocalStoreSnapshot? = null
 
     fun isLocalLayerId(layerId: String): Boolean = layerId.startsWith("local_")
 
@@ -26,114 +29,130 @@ object LocalFolderStore {
 
     private fun storeFile(ctx: Context): File = File(ctx.filesDir, FILE_NAME)
 
-    fun loadAll(ctx: Context): LocalStoreSnapshot = synchronized(lock) {
-        val f = storeFile(ctx)
-        if (!f.exists()) return LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
-        return runCatching {
-            val root = JSONObject(f.readText(Charsets.UTF_8))
-            val layers = mutableListOf<LayerItem>()
-            val pins = mutableListOf<PinItem>()
-            val tracks = mutableListOf<TrackItem>()
+    fun loadAll(ctx: Context): LocalStoreSnapshot {
+        cachedSnapshot?.let { return it }
+        return synchronized(lock) {
+            cachedSnapshot?.let { return it }
+            val f = storeFile(ctx)
+            val loaded = if (!f.exists()) {
+                LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
+            } else {
+                runCatching {
+                    val root = JSONObject(f.readText(Charsets.UTF_8))
+                    val layers = mutableListOf<LayerItem>()
+                    val pins = mutableListOf<PinItem>()
+                    val tracks = mutableListOf<TrackItem>()
 
-            val lArr = root.optJSONArray("layers") ?: JSONArray()
-            for (i in 0 until lArr.length()) {
-                val o = lArr.getJSONObject(i)
-                layers += LayerItem(
-                    id = o.optString("id"),
-                    name = o.optString("name", "Local Folder"),
-                    shareCode = "",
-                    createdBy = o.optString("createdBy"),
-                    creatorDeviceId = o.optString("creatorDeviceId"),
-                    updatedAt = o.optLong("updatedAt", 0L)
-                )
-            }
+                    val lArr = root.optJSONArray("layers") ?: JSONArray()
+                    for (i in 0 until lArr.length()) {
+                        val o = lArr.getJSONObject(i)
+                        layers += LayerItem(
+                            id = o.optString("id"),
+                            name = o.optString("name", "Local Folder"),
+                            shareCode = "",
+                            createdBy = o.optString("createdBy"),
+                            creatorDeviceId = o.optString("creatorDeviceId"),
+                            updatedAt = o.optLong("updatedAt", 0L)
+                        )
+                    }
 
-            val pArr = root.optJSONArray("pins") ?: JSONArray()
-            for (i in 0 until pArr.length()) {
-                val o = pArr.getJSONObject(i)
-                pins += PinItem(
-                    id = o.optString("id"),
-                    layerId = o.optString("layerId"),
-                    name = o.optString("name", "Pin"),
-                    description = o.optString("description"),
-                    lat = o.optDouble("lat"),
-                    lng = o.optDouble("lng"),
-                    status = o.optString("status", "pending"),
-                    issueReason = o.optString("issueReason"),
-                    updatedAt = o.optLong("updatedAt", 0L),
-                    isEdited = o.optBoolean("isEdited", false),
-                    editedBy = o.optString("editedBy"),
-                    editedAt = o.optLong("editedAt", 0L),
-                    editHistory = o.optString("editHistory")
-                )
-            }
+                    val pArr = root.optJSONArray("pins") ?: JSONArray()
+                    for (i in 0 until pArr.length()) {
+                        val o = pArr.getJSONObject(i)
+                        pins += PinItem(
+                            id = o.optString("id"),
+                            layerId = o.optString("layerId"),
+                            name = o.optString("name", "Pin"),
+                            description = o.optString("description"),
+                            lat = o.optDouble("lat"),
+                            lng = o.optDouble("lng"),
+                            status = o.optString("status", "pending"),
+                            issueReason = o.optString("issueReason"),
+                            updatedAt = o.optLong("updatedAt", 0L),
+                            isEdited = o.optBoolean("isEdited", false),
+                            editedBy = o.optString("editedBy"),
+                            editedAt = o.optLong("editedAt", 0L),
+                            editHistory = o.optString("editHistory")
+                        )
+                    }
 
-            val tArr = root.optJSONArray("tracks") ?: JSONArray()
-            for (i in 0 until tArr.length()) {
-                val o = tArr.getJSONObject(i)
-                tracks += TrackItem(
-                    id = o.optString("id"),
-                    layerId = o.optString("layerId"),
-                    name = o.optString("name", "Track"),
-                    coords = o.optString("coords"),
-                    updatedAt = o.optLong("updatedAt", 0L)
-                )
+                    val tArr = root.optJSONArray("tracks") ?: JSONArray()
+                    for (i in 0 until tArr.length()) {
+                        val o = tArr.getJSONObject(i)
+                        tracks += TrackItem(
+                            id = o.optString("id"),
+                            layerId = o.optString("layerId"),
+                            name = o.optString("name", "Track"),
+                            coords = o.optString("coords"),
+                            updatedAt = o.optLong("updatedAt", 0L)
+                        )
+                    }
+                    LocalStoreSnapshot(layers.sortedByDescending { it.updatedAt }, pins, tracks)
+                }.getOrElse {
+                    LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
+                }
             }
-            LocalStoreSnapshot(layers.sortedByDescending { it.updatedAt }, pins, tracks)
-        }.getOrElse {
-            LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
+            cachedSnapshot = loaded
+            loaded
         }
     }
 
     private fun writeAll(ctx: Context, snap: LocalStoreSnapshot) {
-        val root = JSONObject()
-        val lArr = JSONArray()
-        snap.layers.forEach { l ->
-            lArr.put(JSONObject().apply {
-                put("id", l.id)
-                put("name", l.name)
-                put("createdBy", l.createdBy)
-                put("creatorDeviceId", l.creatorDeviceId)
-                put("updatedAt", l.updatedAt)
-            })
-        }
-        val pArr = JSONArray()
-        snap.pins.forEach { p ->
-            pArr.put(JSONObject().apply {
-                put("id", p.id)
-                put("layerId", p.layerId)
-                put("name", p.name)
-                put("description", p.description)
-                put("lat", p.lat)
-                put("lng", p.lng)
-                put("status", p.status)
-                put("issueReason", p.issueReason)
-                put("updatedAt", p.updatedAt)
-                put("isEdited", p.isEdited)
-                put("editedBy", p.editedBy)
-                put("editedAt", p.editedAt)
-                put("editHistory", p.editHistory)
-            })
-        }
-        val tArr = JSONArray()
-        snap.tracks.forEach { t ->
-            tArr.put(JSONObject().apply {
-                put("id", t.id)
-                put("layerId", t.layerId)
-                put("name", t.name)
-                put("coords", t.coords)
-                put("updatedAt", t.updatedAt)
-            })
-        }
-        root.put("layers", lArr)
-        root.put("pins", pArr)
-        root.put("tracks", tArr)
-        val tmp = File(ctx.filesDir, "$FILE_NAME.tmp")
-        tmp.writeText(root.toString(), Charsets.UTF_8)
-        val dst = storeFile(ctx)
-        if (!tmp.renameTo(dst)) {
-            tmp.copyTo(dst, overwrite = true)
-            tmp.delete()
+        val sortedSnap = snap.copy(layers = snap.layers.sortedByDescending { it.updatedAt })
+        cachedSnapshot = sortedSnap
+        val appCtx = ctx.applicationContext
+        ioExecutor.execute {
+            runCatching {
+                val root = JSONObject()
+                val lArr = JSONArray()
+                sortedSnap.layers.forEach { l ->
+                    lArr.put(JSONObject().apply {
+                        put("id", l.id)
+                        put("name", l.name)
+                        put("createdBy", l.createdBy)
+                        put("creatorDeviceId", l.creatorDeviceId)
+                        put("updatedAt", l.updatedAt)
+                    })
+                }
+                val pArr = JSONArray()
+                sortedSnap.pins.forEach { p ->
+                    pArr.put(JSONObject().apply {
+                        put("id", p.id)
+                        put("layerId", p.layerId)
+                        put("name", p.name)
+                        put("description", p.description)
+                        put("lat", p.lat)
+                        put("lng", p.lng)
+                        put("status", p.status)
+                        put("issueReason", p.issueReason)
+                        put("updatedAt", p.updatedAt)
+                        put("isEdited", p.isEdited)
+                        put("editedBy", p.editedBy)
+                        put("editedAt", p.editedAt)
+                        put("editHistory", p.editHistory)
+                    })
+                }
+                val tArr = JSONArray()
+                sortedSnap.tracks.forEach { t ->
+                    tArr.put(JSONObject().apply {
+                        put("id", t.id)
+                        put("layerId", t.layerId)
+                        put("name", t.name)
+                        put("coords", t.coords)
+                        put("updatedAt", t.updatedAt)
+                    })
+                }
+                root.put("layers", lArr)
+                root.put("pins", pArr)
+                root.put("tracks", tArr)
+                val tmp = File(appCtx.filesDir, "$FILE_NAME.tmp")
+                tmp.writeText(root.toString(), Charsets.UTF_8)
+                val dst = storeFile(appCtx)
+                if (!tmp.renameTo(dst)) {
+                    tmp.copyTo(dst, overwrite = true)
+                    tmp.delete()
+                }
+            }
         }
     }
 
@@ -190,9 +209,12 @@ object LocalFolderStore {
     ): PinItem = synchronized(lock) {
         val cur = loadAll(ctx)
         val now = System.currentTimeMillis()
-        val cleanReason = if (status.equals("issue", true) || status.equals("done", true)) issueReason.trim() else ""
+        val cleanReason = if (status.equals("issue", true) || status.equals("done", true)) {
+            sanitizeHistoryToken(issueReason)
+        } else ""
+        val safeStamp = sanitizeHistoryToken(deviceStamp)
         val detail = if (cleanReason.isNotBlank()) "${statusLabel(status)}: $cleanReason" else statusLabel(status)
-        val line = "${formatTime(now)} • $deviceStamp → $detail"
+        val line = "${formatTime(now)} • $safeStamp → $detail"
         val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
         val updated = pin.copy(
             status = status,
@@ -216,7 +238,7 @@ object LocalFolderStore {
     ): PinItem = synchronized(lock) {
         val cur = loadAll(ctx)
         val now = System.currentTimeMillis()
-        val line = "${formatTime(now)} • $deviceStamp edited text"
+        val line = "${formatTime(now)} • ${sanitizeHistoryToken(deviceStamp)} edited text"
         val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
         val updated = pin.copy(
             name = newName.ifBlank { pin.name },
@@ -315,6 +337,10 @@ object LocalFolderStore {
                 tracks = cur.tracks.filterNot { it.layerId == layerId }
             )
         )
+    }
+
+    private fun sanitizeHistoryToken(raw: String): String {
+        return raw.replace(Regex("[\\r\\n]+"), " ").replace("→", "-").trim()
     }
 
     private fun formatTime(ts: Long): String = SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(ts))

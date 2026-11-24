@@ -24,15 +24,15 @@ object MapBitmaps {
 
         val cx = w / 2f
         val headR = 6.8f * d
-        val headY = 8.6f * d
-        val tipY = h - 2.4f * d
+        val headY = 8.8f * d
+        val tipY = h - 1.2f * d
 
         // Subtle ground shadow
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#380F172A")
         }
         c.drawOval(
-            RectF(cx - 4.2f * d, tipY - 1.3f * d, cx + 4.2f * d, tipY + 1.5f * d),
+            RectF(cx - 4.0f * d, tipY - 0.9f * d, cx + 4.0f * d, tipY + 1.1f * d),
             shadowPaint
         )
 

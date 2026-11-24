@@ -13,8 +13,11 @@ import android.view.animation.OvershootInterpolator
 
 object UiAnimations {
 
+    private val springAttached = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
     @SuppressLint("ClickableViewAccessibility")
     fun attachSpringTouch(view: View) {
+        if (!springAttached.add(view)) return
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -26,7 +29,7 @@ object UiAnimations {
                         .setInterpolator(DecelerateInterpolator())
                         .start()
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_OUTSIDE -> {
                     v.animate().cancel()
                     v.animate()
                         .scaleX(1f)
@@ -67,39 +70,10 @@ object UiAnimations {
         attachSpringTouch(view)
     }
 
-    fun styleFloatingPill(
-        ctx: Context,
-        view: View,
-        bgColor: Int = Color.WHITE,
-        radiusDp: Float = 28f,
-        elevationDp: Float = 8f,
-        strokeColor: Int = Color.parseColor("#E2E8F0")
-    ) {
-        val d = ctx.resources.displayMetrics.density
-        view.background = GradientDrawable().apply {
-            setColor(bgColor)
-            cornerRadius = radiusDp * d
-            setStroke((1f * d).toInt().coerceAtLeast(1), strokeColor)
-        }
-        view.elevation = elevationDp * d
-        view.clipToOutline = true
-    }
-
     fun applyRowRipple(ctx: Context, view: View, isDark: Boolean = false) {
         val rippleColor = Color.parseColor(if (isDark) "#28FFFFFF" else "#1A0F172A")
         val mask = GradientDrawable().apply { setColor(Color.WHITE) }
         view.background = RippleDrawable(ColorStateList.valueOf(rippleColor), null, mask)
-    }
-
-    fun applyPillItemRipple(ctx: Context, view: View, radiusDp: Float = 24f) {
-        val d = ctx.resources.displayMetrics.density
-        val rippleColor = Color.parseColor("#222563EB")
-        val mask = GradientDrawable().apply {
-            setColor(Color.WHITE)
-            cornerRadius = radiusDp * d
-        }
-        view.background = RippleDrawable(ColorStateList.valueOf(rippleColor), null, mask)
-        attachSpringTouch(view)
     }
 
     fun showSlideTop(view: View, durationMs: Long = 220L) {

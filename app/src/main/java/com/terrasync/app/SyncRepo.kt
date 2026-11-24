@@ -5,11 +5,14 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.PersistentCacheSettings
+import com.google.firebase.firestore.SetOptions
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,7 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
-class SyncRepo {
+class SyncRepo(context: Context? = null) {
+    private val appCtx: Context? = context?.applicationContext
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance().apply {
         runCatching {
             firestoreSettings = FirebaseFirestoreSettings.Builder()
@@ -31,6 +35,7 @@ class SyncRepo {
         }
     }
 
+    private val auth: FirebaseAuth? = runCatching { FirebaseAuth.getInstance() }.getOrNull()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val layerRegs = mutableMapOf<String, List<ListenerRegistration>>()
     private val layerMap = mutableMapOf<String, LayerItem>()
@@ -39,8 +44,34 @@ class SyncRepo {
     private var connected: Boolean = false
     private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
 
+    init {
+        ensureAuthenticated()
+    }
+
+    fun currentUid(): String? = runCatching { auth?.currentUser?.uid }.getOrNull()
+
+    fun ensureAuthenticated(onReady: ((String?) -> Unit)? = null) {
+        val a = auth
+        if (a == null) {
+            onReady?.invoke(null)
+            return
+        }
+        val existing = a.currentUser
+        if (existing != null) {
+            onReady?.invoke(existing.uid)
+            return
+        }
+        runCatching {
+            a.signInAnonymously()
+                .addOnSuccessListener { res -> onReady?.invoke(res.user?.uid) }
+                .addOnFailureListener { onReady?.invoke(null) }
+        }.onFailure {
+            onReady?.invoke(null)
+        }
+    }
+
     private fun isOnline(): Boolean {
-        val ctx = RoutingEngine.appContext ?: return true
+        val ctx = appCtx ?: RoutingEngine.appContext ?: return true
         return runCatching {
             val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val net = cm.activeNetwork ?: return false
@@ -53,7 +84,8 @@ class SyncRepo {
         ops: List<Pair<DocumentReference, Map<String, Any>>>,
         successMsg: String,
         shareCode: String,
-        onDone: (Boolean, String, String) -> Unit
+        onDone: (Boolean, String, String) -> Unit,
+        requireServerCommit: Boolean = false
     ) {
         val chunks = ops.chunked(400)
         if (chunks.isEmpty()) {
@@ -62,6 +94,11 @@ class SyncRepo {
         }
 
         val online = isOnline()
+        if (requireServerCommit && !online) {
+            onDone(false, "Internet connection required to upload to cloud — local copy kept safely", "")
+            return
+        }
+
         val remaining = AtomicInteger(chunks.size)
         val firstError = AtomicReference<String?>(null)
         val finished = AtomicBoolean(false)
@@ -71,13 +108,15 @@ class SyncRepo {
                 val err = firstError.get()
                 if (err != null) {
                     onDone(false, "Sync error: $err", shareCode)
+                } else if (requireServerCommit) {
+                    onDone(false, "Upload timed out — local copy kept safely", "")
                 } else {
                     onDone(true, "$successMsg (saved locally — syncing)", shareCode)
                 }
             }
         }
         if (online) {
-            mainHandler.postDelayed(timeoutRunnable, 12_000L)
+            mainHandler.postDelayed(timeoutRunnable, if (requireServerCommit) 25_000L else 12_000L)
         }
 
         chunks.forEach { chunk ->
@@ -120,7 +159,7 @@ class SyncRepo {
         }
 
         if (joinedLayerIds.isEmpty()) {
-            connected = true
+            connected = isOnline()
             emit()
             return
         }
@@ -134,7 +173,7 @@ class SyncRepo {
                     emit()
                     return@addSnapshotListener
                 }
-                connected = true
+                connected = isOnline() && (doc?.metadata?.isFromCache != true)
                 if (doc != null && doc.exists()) {
                     layerMap[layerId] = LayerItem(
                         id = doc.id,
@@ -142,17 +181,24 @@ class SyncRepo {
                         shareCode = doc.getString("shareCode") ?: "",
                         createdBy = doc.getString("createdBy") ?: "",
                         creatorDeviceId = doc.getString("creatorDeviceId") ?: "",
+                        creatorUid = doc.getString("creatorUid") ?: "",
                         updatedAt = doc.getLong("updatedAt") ?: 0L
                     )
                 } else {
                     layerMap.remove(layerId)
+                    pinsByLayer.remove(layerId)
+                    tracksByLayer.remove(layerId)
                 }
                 emit()
             }
 
             regsForLayer += db.collection("pins").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
-                if (err != null) return@addSnapshotListener
-                connected = true
+                if (err != null) {
+                    connected = false
+                    emit()
+                    return@addSnapshotListener
+                }
+                connected = isOnline() && (snap?.metadata?.isFromCache != true)
                 pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
                     val lat = d.getDouble("lat") ?: return@mapNotNull null
                     val lng = d.getDouble("lng") ?: return@mapNotNull null
@@ -176,8 +222,12 @@ class SyncRepo {
             }
 
             regsForLayer += db.collection("tracks").whereEqualTo("layerId", layerId).addSnapshotListener { snap, err ->
-                if (err != null) return@addSnapshotListener
-                connected = true
+                if (err != null) {
+                    connected = false
+                    emit()
+                    return@addSnapshotListener
+                }
+                connected = isOnline() && (snap?.metadata?.isFromCache != true)
                 tracksByLayer[layerId] = snap?.documents?.mapNotNull { d ->
                     val coords = d.getString("coords") ?: return@mapNotNull null
                     TrackItem(
@@ -208,6 +258,8 @@ class SyncRepo {
     fun stopListening() {
         layerRegs.values.flatten().forEach { it.remove() }
         layerRegs.clear()
+        listenerCallback = null
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     fun generateShareCode(): String {
@@ -221,6 +273,7 @@ class SyncRepo {
         createdBy: String,
         creatorDeviceId: String,
         parsed: ParsedKml,
+        requireServerCommit: Boolean = false,
         onDone: (Boolean, String, String) -> Unit
     ) {
         val now = System.currentTimeMillis()
@@ -233,6 +286,7 @@ class SyncRepo {
             "shareCode" to shareCode,
             "createdBy" to createdBy,
             "creatorDeviceId" to creatorDeviceId,
+            "creatorUid" to (currentUid() ?: ""),
             "updatedAt" to now
         )
 
@@ -268,7 +322,8 @@ class SyncRepo {
             ops,
             "Imported ${parsed.pins.size} pins into \"$layerName\" (Code: $shareCode)",
             shareCode,
-            onDone
+            onDone,
+            requireServerCommit = requireServerCommit
         )
     }
 
@@ -340,6 +395,7 @@ class SyncRepo {
             "shareCode" to shareCode,
             "createdBy" to createdBy,
             "creatorDeviceId" to creatorDeviceId,
+            "creatorUid" to (currentUid() ?: ""),
             "updatedAt" to now
         )
 
@@ -405,39 +461,97 @@ class SyncRepo {
             }
     }
 
-    fun updatePinStatus(pin: PinItem, status: String, deviceStamp: String, issueReason: String = "") {
+    private fun sanitizeHistoryToken(raw: String): String {
+        return raw.replace(Regex("[\\r\\n]+"), " ").replace("→", "-").trim()
+    }
+
+    private fun buildHistory(newLine: String, existingHistory: String): String {
+        return listOf(newLine, existingHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
+    }
+
+    private fun updatePinWithHistory(
+        pinId: String,
+        newHistoryLine: String,
+        fallbackHistory: String,
+        baseFields: Map<String, Any>,
+        onError: ((String) -> Unit)?
+    ) {
+        val docRef = db.collection("pins").document(pinId)
+        val fallbackPayload = baseFields + ("editHistory" to buildHistory(newHistoryLine, fallbackHistory))
+        if (!isOnline()) {
+            docRef.update(fallbackPayload)
+                .addOnFailureListener { e -> onError?.invoke(e.message ?: "Failed to save pin update") }
+            return
+        }
+        db.runTransaction { tx ->
+            val snap = tx.get(docRef)
+            val liveHistory = snap.getString("editHistory") ?: fallbackHistory
+            val mergedHistory = buildHistory(newHistoryLine, liveHistory)
+            tx.update(docRef, baseFields + ("editHistory" to mergedHistory))
+            null
+        }.addOnFailureListener { e ->
+            val code = (e as? FirebaseFirestoreException)?.code
+            if (code == FirebaseFirestoreException.Code.UNAVAILABLE || code == FirebaseFirestoreException.Code.DEADLINE_EXCEEDED) {
+                docRef.update(fallbackPayload)
+                    .addOnFailureListener { err -> onError?.invoke(err.message ?: "Failed to save pin update") }
+            } else {
+                onError?.invoke(e.message ?: "Failed to save pin update")
+            }
+        }
+    }
+
+    fun updatePinStatus(
+        pin: PinItem,
+        status: String,
+        deviceStamp: String,
+        issueReason: String = "",
+        onError: ((String) -> Unit)? = null
+    ) {
         val now = System.currentTimeMillis()
-        val cleanReason = if (status.equals("issue", ignoreCase = true) || status.equals("done", ignoreCase = true)) issueReason.trim() else ""
+        val cleanReason = if (status.equals("issue", ignoreCase = true) || status.equals("done", ignoreCase = true)) {
+            sanitizeHistoryToken(issueReason)
+        } else ""
+        val safeStamp = sanitizeHistoryToken(deviceStamp)
         val detail = if (cleanReason.isNotBlank()) "${statusLabel(status)}: $cleanReason" else statusLabel(status)
-        val line = "${formatTime(now)} • $deviceStamp → $detail"
-        val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
-        db.collection("pins").document(pin.id).update(
-            mapOf(
+        val line = "${formatTime(now)} • $safeStamp → $detail"
+        updatePinWithHistory(
+            pinId = pin.id,
+            newHistoryLine = line,
+            fallbackHistory = pin.editHistory,
+            baseFields = mapOf(
                 "status" to status,
                 "issueReason" to cleanReason,
                 "updatedAt" to now,
                 "isEdited" to true,
                 "editedBy" to deviceStamp,
-                "editedAt" to now,
-                "editHistory" to history
-            )
+                "editedAt" to now
+            ),
+            onError = onError
         )
     }
 
-    fun updatePinText(pin: PinItem, newName: String, newDesc: String, deviceStamp: String) {
+    fun updatePinText(
+        pin: PinItem,
+        newName: String,
+        newDesc: String,
+        deviceStamp: String,
+        onError: ((String) -> Unit)? = null
+    ) {
         val now = System.currentTimeMillis()
-        val line = "${formatTime(now)} • $deviceStamp edited text"
-        val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
-        db.collection("pins").document(pin.id).update(
-            mapOf(
+        val line = "${formatTime(now)} • ${sanitizeHistoryToken(deviceStamp)} edited text"
+        updatePinWithHistory(
+            pinId = pin.id,
+            newHistoryLine = line,
+            fallbackHistory = pin.editHistory,
+            baseFields = mapOf(
                 "name" to newName.ifBlank { pin.name },
                 "description" to newDesc,
                 "updatedAt" to now,
                 "isEdited" to true,
                 "editedBy" to deviceStamp,
-                "editedAt" to now,
-                "editHistory" to history
-            )
+                "editedAt" to now
+            ),
+            onError = onError
         )
     }
 
@@ -447,48 +561,80 @@ class SyncRepo {
         lat: Double,
         lng: Double,
         deviceStamp: String,
-        deviceId: String
+        deviceId: String,
+        onError: ((String) -> Unit)? = null
     ): String {
         val now = System.currentTimeMillis()
         val cleanId = deviceId.filter { it.isLetterOrDigit() }.uppercase().ifBlank { "LOCAL" }
         val layerId = "manual_$cleanId"
-        val shareCode = "FP$cleanId".take(6)
+        val shareCode = generateShareCode()
         val id = UUID.randomUUID().toString()
-        val batch = db.batch()
-        batch.set(
-            db.collection("layers").document(layerId),
-            mapOf(
-                "id" to layerId,
-                "name" to "My Field Pins",
-                "shareCode" to shareCode,
-                "createdBy" to deviceStamp,
-                "creatorDeviceId" to cleanId,
-                "updatedAt" to now
-            )
+        val layerRef = db.collection("layers").document(layerId)
+        val pinRef = db.collection("pins").document(id)
+        val newLayerData = mapOf(
+            "id" to layerId,
+            "name" to "My Field Pins",
+            "shareCode" to shareCode,
+            "createdBy" to deviceStamp,
+            "creatorDeviceId" to cleanId,
+            "creatorUid" to (currentUid() ?: ""),
+            "updatedAt" to now
         )
-        batch.set(
-            db.collection("pins").document(id),
-            mapOf(
-                "id" to id,
-                "layerId" to layerId,
-                "name" to name.ifBlank { "New Pin" },
-                "description" to description,
-                "lat" to lat,
-                "lng" to lng,
-                "status" to "pending",
-                "issueReason" to "",
-                "updatedAt" to now,
-                "isEdited" to false,
-                "editedBy" to deviceStamp,
-                "editedAt" to now,
-                "editHistory" to ""
-            )
+        val pinData = mapOf(
+            "id" to id,
+            "layerId" to layerId,
+            "name" to name.ifBlank { "New Pin" },
+            "description" to description,
+            "lat" to lat,
+            "lng" to lng,
+            "status" to "pending",
+            "issueReason" to "",
+            "updatedAt" to now,
+            "isEdited" to false,
+            "editedBy" to deviceStamp,
+            "editedAt" to now,
+            "editHistory" to ""
         )
-        batch.commit()
+
+        fun commitOfflineFallback() {
+            val batch = db.batch()
+            if (layerMap.containsKey(layerId)) {
+                batch.set(layerRef, mapOf("updatedAt" to now), SetOptions.merge())
+            } else {
+                batch.set(layerRef, newLayerData, SetOptions.merge())
+            }
+            batch.set(pinRef, pinData)
+            batch.commit().addOnFailureListener { e ->
+                onError?.invoke(e.message ?: "Failed to save pin")
+            }
+        }
+
+        if (!isOnline()) {
+            commitOfflineFallback()
+            return layerId
+        }
+
+        db.runTransaction { tx ->
+            val layerSnap = tx.get(layerRef)
+            if (layerSnap.exists()) {
+                tx.update(layerRef, "updatedAt", now)
+            } else {
+                tx.set(layerRef, newLayerData)
+            }
+            tx.set(pinRef, pinData)
+            null
+        }.addOnFailureListener { e ->
+            val code = (e as? FirebaseFirestoreException)?.code
+            if (code == FirebaseFirestoreException.Code.UNAVAILABLE || code == FirebaseFirestoreException.Code.DEADLINE_EXCEEDED) {
+                commitOfflineFallback()
+            } else {
+                onError?.invoke(e.message ?: "Failed to save pin")
+            }
+        }
         return layerId
     }
 
-    fun renameLayer(layerId: String, newName: String) {
+    fun renameLayer(layerId: String, newName: String, onError: ((String) -> Unit)? = null) {
         val clean = newName.trim()
         if (clean.isBlank()) return
         db.collection("layers").document(layerId).update(
@@ -496,16 +642,13 @@ class SyncRepo {
                 "name" to clean,
                 "updatedAt" to System.currentTimeMillis()
             )
-        )
+        ).addOnFailureListener { e ->
+            onError?.invoke(e.message ?: "Failed to rename folder")
+        }
     }
 
-    fun deletePinHistoryEntry(pin: PinItem, lineIndex: Int): PinItem {
-        val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
-        if (lineIndex !in lines.indices) return pin
-        lines.removeAt(lineIndex)
+    private fun recomputeHistoryFields(lines: List<String>, now: Long): Map<String, Any> {
         val newHistory = lines.joinToString("\n")
-        val now = System.currentTimeMillis()
-
         val latestStatusLine = lines.firstOrNull { it.contains("→") }
         var newStatus = "pending"
         var newReason = ""
@@ -530,29 +673,64 @@ class SyncRepo {
             newEditedBy = first.substringAfter("•", first).substringBefore(" edited text").trim()
         }
 
-        db.collection("pins").document(pin.id).update(
-            mapOf(
-                "status" to newStatus,
-                "issueReason" to newReason,
-                "updatedAt" to now,
-                "isEdited" to newIsEdited,
-                "editedBy" to newEditedBy,
-                "editedAt" to newEditedAt,
-                "editHistory" to newHistory
-            )
-        )
-        return pin.copy(
-            status = newStatus,
-            issueReason = newReason,
-            updatedAt = now,
-            isEdited = newIsEdited,
-            editedBy = newEditedBy,
-            editedAt = newEditedAt,
-            editHistory = newHistory
+        return mapOf(
+            "status" to newStatus,
+            "issueReason" to newReason,
+            "updatedAt" to now,
+            "isEdited" to newIsEdited,
+            "editedBy" to newEditedBy,
+            "editedAt" to newEditedAt,
+            "editHistory" to newHistory
         )
     }
 
-    fun resetPinStatusToPending(pin: PinItem): PinItem {
+    fun deletePinHistoryEntry(pin: PinItem, lineIndex: Int, onError: ((String) -> Unit)? = null): PinItem {
+        val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
+        if (lineIndex !in lines.indices) return pin
+        val targetLine = lines.removeAt(lineIndex)
+        val now = System.currentTimeMillis()
+        val optimisticFields = recomputeHistoryFields(lines, now)
+        val docRef = db.collection("pins").document(pin.id)
+
+        if (!isOnline()) {
+            docRef.update(optimisticFields)
+                .addOnFailureListener { e -> onError?.invoke(e.message ?: "Failed to delete edit") }
+        } else {
+            db.runTransaction { tx ->
+                val snap = tx.get(docRef)
+                val liveLines = (snap.getString("editHistory") ?: pin.editHistory)
+                    .lines().map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
+                val liveIdx = liveLines.indexOf(targetLine)
+                if (liveIdx >= 0) {
+                    liveLines.removeAt(liveIdx)
+                } else if (lineIndex in liveLines.indices) {
+                    liveLines.removeAt(lineIndex)
+                }
+                tx.update(docRef, recomputeHistoryFields(liveLines, now))
+                null
+            }.addOnFailureListener { e ->
+                val code = (e as? FirebaseFirestoreException)?.code
+                if (code == FirebaseFirestoreException.Code.UNAVAILABLE || code == FirebaseFirestoreException.Code.DEADLINE_EXCEEDED) {
+                    docRef.update(optimisticFields)
+                        .addOnFailureListener { err -> onError?.invoke(err.message ?: "Failed to delete edit") }
+                } else {
+                    onError?.invoke(e.message ?: "Failed to delete edit")
+                }
+            }
+        }
+
+        return pin.copy(
+            status = optimisticFields["status"] as String,
+            issueReason = optimisticFields["issueReason"] as String,
+            updatedAt = now,
+            isEdited = optimisticFields["isEdited"] as Boolean,
+            editedBy = optimisticFields["editedBy"] as String,
+            editedAt = optimisticFields["editedAt"] as Long,
+            editHistory = optimisticFields["editHistory"] as String
+        )
+    }
+
+    fun resetPinStatusToPending(pin: PinItem, onError: ((String) -> Unit)? = null): PinItem {
         val now = System.currentTimeMillis()
         db.collection("pins").document(pin.id).update(
             mapOf(
@@ -564,7 +742,9 @@ class SyncRepo {
                 "editedAt" to 0L,
                 "editHistory" to ""
             )
-        )
+        ).addOnFailureListener { e ->
+            onError?.invoke(e.message ?: "Failed to reset pin status")
+        }
         return pin.copy(
             status = "pending",
             issueReason = "",
@@ -576,18 +756,24 @@ class SyncRepo {
         )
     }
 
-    fun deletePin(pinId: String) {
+    fun deletePin(pinId: String, onError: ((String) -> Unit)? = null) {
         db.collection("pins").document(pinId).delete()
+            .addOnFailureListener { e -> onError?.invoke(e.message ?: "Failed to delete pin") }
     }
 
-    fun deleteLayer(layerId: String, pinIds: List<String>, trackIds: List<String>) {
+    fun deleteLayer(layerId: String, pinIds: List<String>, trackIds: List<String>, onError: ((String) -> Unit)? = null) {
         val refs = mutableListOf(db.collection("layers").document(layerId))
         pinIds.forEach { refs += db.collection("pins").document(it) }
         trackIds.forEach { refs += db.collection("tracks").document(it) }
+        val reported = AtomicBoolean(false)
         refs.chunked(400).forEach { chunk ->
             val batch = db.batch()
             chunk.forEach { batch.delete(it) }
-            batch.commit()
+            batch.commit().addOnFailureListener { e ->
+                if (reported.compareAndSet(false, true)) {
+                    onError?.invoke(e.message ?: "Failed to delete folder from cloud")
+                }
+            }
         }
     }
 

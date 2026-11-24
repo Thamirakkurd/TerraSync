@@ -36,20 +36,43 @@ android {
         versionName = tagVer
     }
 
+    val relStoreFile = (project.findProperty("RELEASE_STORE_FILE") as String?)
+        ?: System.getenv("RELEASE_STORE_FILE")
+    val relStorePassword = (project.findProperty("RELEASE_STORE_PASSWORD") as String?)
+        ?: System.getenv("RELEASE_STORE_PASSWORD")
+    val relKeyAlias = (project.findProperty("RELEASE_KEY_ALIAS") as String?)
+        ?: System.getenv("RELEASE_KEY_ALIAS")
+    val relKeyPassword = (project.findProperty("RELEASE_KEY_PASSWORD") as String?)
+        ?: System.getenv("RELEASE_KEY_PASSWORD")
+    val hasReleaseSigning = !relStoreFile.isNullOrBlank() &&
+        !relStorePassword.isNullOrBlank() &&
+        !relKeyAlias.isNullOrBlank() &&
+        !relKeyPassword.isNullOrBlank() &&
+        file(relStoreFile).exists()
+
     signingConfigs {
-        create("release") {
-            storeFile = file("terrasync-release.p12")
-            storeType = "PKCS12"
-            storePassword = "TerraSync2026"
-            keyAlias = "terrasync"
-            keyPassword = "TerraSync2026"
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(relStoreFile!!)
+                storeType = "PKCS12"
+                storePassword = relStorePassword
+                keyAlias = relKeyAlias
+                keyPassword = relKeyPassword
+            }
         }
     }
 
     buildTypes {
         getByName("release") {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -71,5 +94,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.car.app:app:1.4.0")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
 }

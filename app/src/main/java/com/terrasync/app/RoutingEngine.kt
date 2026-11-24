@@ -4,11 +4,13 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.Executors
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -18,8 +20,21 @@ import kotlin.math.sqrt
 
 object RoutingEngine {
 
-    @Volatile var userAgent: String = "TerraSync/2.7.0 (https://github.com/Thamirakkurd/TerraSync)"
+    @Volatile var userAgent: String = "TerraSync/2.8.0 (https://github.com/Thamirakkurd/TerraSync)"
     @Volatile var appContext: Context? = null
+
+    val ioExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(3)
+
+    val sharedOkHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request().newBuilder()
+                    .header("User-Agent", userAgent)
+                    .build()
+                chain.proceed(req)
+            }
+            .build()
+    }
 
     private fun isNetworkAvailable(ctx: Context?): Boolean {
         if (ctx == null) return true
@@ -41,21 +56,21 @@ object RoutingEngine {
         isCancelled: () -> Boolean = { false },
         onResult: (NavRoute?, String?) -> Unit
     ) {
-        Thread {
-            if (isCancelled()) return@Thread
+        ioExecutor.execute {
+            if (isCancelled()) return@execute
             val ctx = appContext
             val online = isNetworkAvailable(ctx)
 
             // 1. If device is offline, go straight to local offline routing engine
             if (!online && ctx != null) {
                 val (offRoute, offErr) = OfflineRoutingEngine.routeOffline(ctx, startLat, startLng, endLat, endLng, mode)
-                if (isCancelled()) return@Thread
+                if (isCancelled()) return@execute
                 if (offRoute != null) {
                     onResult(offRoute, null)
-                    return@Thread
+                    return@execute
                 }
                 onResult(null, offErr ?: "Offline and no local road graph found")
-                return@Thread
+                return@execute
             }
 
             // 2. Primary Online Engine: Valhalla (valhalla1.openstreetmap.de)
@@ -66,38 +81,38 @@ object RoutingEngine {
             val valhallaAttempts = if (valhallaHeading != null) listOf<Int?>(valhallaHeading, null) else listOf<Int?>(null)
             var lastError = "Route request failed"
             for (heading in valhallaAttempts) {
-                if (isCancelled()) return@Thread
+                if (isCancelled()) return@execute
                 val (vRoute, vErr) = fetchValhallaRoute(startLat, startLng, endLat, endLng, mode, heading)
-                if (isCancelled()) return@Thread
+                if (isCancelled()) return@execute
                 if (vRoute != null) {
                     onResult(vRoute, null)
-                    return@Thread
+                    return@execute
                 }
                 if (!vErr.isNullOrBlank()) lastError = vErr
             }
 
             // 3. Secondary Online Fallback: OSRM
-            if (isCancelled()) return@Thread
+            if (isCancelled()) return@execute
             val (osrmRoute, osrmErr) = fetchOsrmRoute(startLat, startLng, endLat, endLng, mode, startBearing)
-            if (isCancelled()) return@Thread
+            if (isCancelled()) return@execute
             if (osrmRoute != null) {
                 onResult(osrmRoute, null)
-                return@Thread
+                return@execute
             }
             if (!osrmErr.isNullOrBlank()) lastError = osrmErr
 
             // 4. Local Offline Fallback if online servers failed
             if (!isCancelled() && ctx != null && OfflineRoutingEngine.hasAnyRegion(ctx)) {
                 val (offRoute, _) = OfflineRoutingEngine.routeOffline(ctx, startLat, startLng, endLat, endLng, mode)
-                if (isCancelled()) return@Thread
+                if (isCancelled()) return@execute
                 if (offRoute != null) {
                     onResult(offRoute, null)
-                    return@Thread
+                    return@execute
                 }
             }
 
             if (!isCancelled()) onResult(null, lastError)
-        }.start()
+        }
     }
 
     private fun fetchValhallaRoute(
@@ -224,6 +239,7 @@ object RoutingEngine {
             val dlat = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
             lat += dlat
 
+            if (index >= len) break
             shift = 0
             result = 0
             do {
@@ -352,14 +368,6 @@ object RoutingEngine {
         return null to lastError
     }
 
-    fun fetchDrivingRoute(
-        startLat: Double,
-        startLng: Double,
-        endLat: Double,
-        endLng: Double,
-        onResult: (NavRoute?, String?) -> Unit
-    ) = fetchRoute(startLat, startLng, endLat, endLng, TravelMode.CAR, null, { false }, onResult)
-
     private fun formatStep(type: String, modifier: String, roadName: String): Pair<String, String> {
         val onto = if (roadName.isNotBlank()) " onto $roadName" else ""
         return when (type) {
@@ -382,12 +390,29 @@ object RoutingEngine {
         }
     }
 
-    fun searchPlaces(query: String, onResult: (List<PlaceResult>) -> Unit) {
-        Thread {
+    fun searchPlaces(
+        query: String,
+        biasLat: Double? = null,
+        biasLng: Double? = null,
+        onResult: (List<PlaceResult>, String?) -> Unit
+    ) {
+        ioExecutor.execute {
             val out = mutableListOf<PlaceResult>()
-            runCatching {
+            var errMsg: String? = null
+            if (!isNetworkAvailable(appContext)) {
+                onResult(emptyList(), "Offline — web place search requires internet")
+                return@execute
+            }
+            try {
                 val q = Uri.encode(query)
-                val urlStr = "https://nominatim.openstreetmap.org/search?q=$q&format=json&limit=8&countrycodes=iq"
+                val biasPart = if (biasLat != null && biasLng != null) {
+                    val left = (biasLng - 1.5).coerceAtLeast(-180.0)
+                    val right = (biasLng + 1.5).coerceAtMost(180.0)
+                    val top = (biasLat + 1.5).coerceAtMost(90.0)
+                    val bottom = (biasLat - 1.5).coerceAtLeast(-90.0)
+                    "&viewbox=$left,$top,$right,$bottom"
+                } else ""
+                val urlStr = "https://nominatim.openstreetmap.org/search?q=$q&format=json&limit=8$biasPart"
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
@@ -408,17 +433,21 @@ object RoutingEngine {
                                 out.add(PlaceResult(title, sub, lat, lng))
                             }
                         }
+                    } else {
+                        errMsg = "Search server error (HTTP ${conn.responseCode})"
                     }
                 } finally {
                     conn.disconnect()
                 }
+            } catch (e: Exception) {
+                errMsg = e.message ?: "Search request failed"
             }
-            onResult(out)
-        }.start()
+            onResult(out, errMsg)
+        }
     }
 
     fun reverseGeocode(lat: Double, lng: Double, onResult: (PlaceResult?) -> Unit) {
-        Thread {
+        ioExecutor.execute {
             val result = runCatching {
                 val urlStr = "https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=json&zoom=18&addressdetails=1"
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
@@ -441,7 +470,7 @@ object RoutingEngine {
                 }
             }.getOrNull()
             onResult(result)
-        }.start()
+        }
     }
 
     fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
@@ -456,16 +485,22 @@ object RoutingEngine {
     fun trackRouteProgress(
         lat: Double,
         lng: Double,
+        route: NavRoute,
+        lastSegIdx: Int = 0
+    ): RouteProgress {
+        val (segLens, cumLens) = route.segmentMetrics
+        return trackRouteProgressInternal(lat, lng, route.geometry, segLens, cumLens, lastSegIdx)
+    }
+
+    fun trackRouteProgress(
+        lat: Double,
+        lng: Double,
         geom: List<Pair<Double, Double>>,
         lastSegIdx: Int = 0
     ): RouteProgress {
         if (geom.size < 2) {
             return RouteProgress(0.0, 0.0, 0.0, lat, lng, 0, geom)
         }
-        val cosLat = cos(Math.toRadians(lat))
-        val mPerDegLat = 111132.0
-        val mPerDegLng = 111320.0 * cosLat
-
         val segCount = geom.size - 1
         val segLens = DoubleArray(segCount)
         val cumLens = DoubleArray(geom.size)
@@ -474,6 +509,24 @@ object RoutingEngine {
             segLens[i] = len
             cumLens[i + 1] = cumLens[i] + len
         }
+        return trackRouteProgressInternal(lat, lng, geom, segLens, cumLens, lastSegIdx)
+    }
+
+    private fun trackRouteProgressInternal(
+        lat: Double,
+        lng: Double,
+        geom: List<Pair<Double, Double>>,
+        segLens: DoubleArray,
+        cumLens: DoubleArray,
+        lastSegIdx: Int
+    ): RouteProgress {
+        if (geom.size < 2) {
+            return RouteProgress(0.0, 0.0, 0.0, lat, lng, 0, geom)
+        }
+        val cosLat = cos(Math.toRadians(lat))
+        val mPerDegLat = 111132.0
+        val mPerDegLng = 111320.0 * cosLat
+        val segCount = geom.size - 1
 
         fun scanRange(startIdx: Int, endIdx: Int): Triple<Int, Double, Double> {
             var bestIdx = startIdx
@@ -548,10 +601,5 @@ object RoutingEngine {
             segmentIndex = bestSegIdx,
             remainingGeometry = remGeom
         )
-    }
-
-    fun measureAlongRoute(lat: Double, lng: Double, geom: List<Pair<Double, Double>>): Pair<Double, Double> {
-        val p = trackRouteProgress(lat, lng, geom, 0)
-        return p.offRouteMeters to p.remainingMeters
     }
 }

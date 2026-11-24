@@ -17,9 +17,9 @@
 * **Cross-Folder Search & Filtering:** Search across all joined folders, filter by pin status, and cycle cleanly through stacked pins at identical coordinates.
 
 ### Maps, Navigation & Offline Support
-* **Vector & Satellite Maps:** Switch between crisp vector street maps and satellite hybrid imagery with optional 3D buildings, terrain hillshading, and day/night UI themes.
+* **Vector & Satellite Maps:** Switch between crisp vector street maps and satellite hybrid imagery with optional 3D buildings, terrain hillshading, and Day/Night/Auto UI themes.
 * **Valhalla + Local Offline Routing:** Turn-by-turn routing for **Car**, **Bicycle**, and **Walk** modes powered by Valhalla (with OSRM fallback) and a built-in **on-device A\* offline routing engine** using downloadable regional road graphs.
-* **Offline Map Packs:** Download regional packs or your current map view for full offline field use.
+* **Offline Map Packs:** Download regional packs (Kurdistan & Southern Iraq) with bundled offline road routing for full offline field use.
 * **Field Utilities:** Live GPS speed indicator, multi-point distance ruler, local lasso selection for tracking sent pins, customizable map buttons, and Android Auto support.
 
 ### KML/KMZ Round-Trip & Reporting
@@ -34,7 +34,7 @@
 1. Open the **[Releases](https://github.com/Thamirakkurd/TerraSync/releases)** page on your Android device.
 2. Download the latest signed `.apk` under **Assets**.
 3. Install the APK (enable *Install unknown apps* if prompted).
-4. **In-App Updates:** TerraSync checks GitHub Releases automatically. Stable builds roll out by default; opt into pre-releases anytime under **Settings → Beta Updates Channel**.
+4. **Releases & Updates:** Check **About → Releases & Updates** anytime to download new stable or pre-release builds from GitHub Releases.
 
 ---
 

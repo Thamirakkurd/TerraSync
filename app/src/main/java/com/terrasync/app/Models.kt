@@ -31,6 +31,7 @@ data class LayerItem(
     val shareCode: String = "",
     val createdBy: String = "",
     val creatorDeviceId: String = "",
+    val creatorUid: String = "",
     val updatedAt: Long = 0L
 )
 
@@ -74,7 +75,22 @@ data class NavRoute(
     val steps: List<NavStep>,
     val mode: TravelMode = TravelMode.CAR,
     val engineLabel: String = "Valhalla"
-)
+) {
+    val segmentMetrics: Pair<DoubleArray, DoubleArray> by lazy {
+        val segCount = (geometry.size - 1).coerceAtLeast(0)
+        val segLens = DoubleArray(segCount)
+        val cumLens = DoubleArray(geometry.size)
+        for (i in 0 until segCount) {
+            val len = RoutingEngine.haversineMeters(
+                geometry[i].second, geometry[i].first,
+                geometry[i + 1].second, geometry[i + 1].first
+            )
+            segLens[i] = len
+            cumLens[i + 1] = cumLens[i] + len
+        }
+        segLens to cumLens
+    }
+}
 
 data class RouteProgress(
     val offRouteMeters: Double,

@@ -3,6 +3,7 @@ package com.terrasync.app
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.util.UUID
 import java.util.zip.ZipInputStream
@@ -15,8 +16,24 @@ data class ParsedKml(
 
 object KmlParser {
 
+    private const val MAX_KML_BYTES = 25 * 1024 * 1024
+
+    private fun readBoundedBytes(input: InputStream, maxBytes: Int = MAX_KML_BYTES): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            total += n
+            if (total > maxBytes) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
     fun parse(inputStream: InputStream, layerId: String): ParsedKml {
-        val raw = inputStream.readBytes()
+        val raw = readBoundedBytes(inputStream) ?: return ParsedKml(emptyList(), emptyList(), "")
         val kmlBytes = if (raw.size >= 2 && raw[0] == 0x50.toByte() && raw[1] == 0x4B.toByte()) {
             extractKmlFromKmz(raw) ?: return ParsedKml(emptyList(), emptyList(), "")
         } else {
@@ -26,16 +43,22 @@ object KmlParser {
     }
 
     private fun extractKmlFromKmz(bytes: ByteArray): ByteArray? {
+        var fallbackKml: ByteArray? = null
         ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory && entry.name.lowercase().endsWith(".kml")) {
-                    return zis.readBytes()
+                    val base = entry.name.substringAfterLast('/').lowercase()
+                    val data = readBoundedBytes(zis)
+                    if (data != null) {
+                        if (base == "doc.kml") return data
+                        if (fallbackKml == null) fallbackKml = data
+                    }
                 }
                 entry = zis.nextEntry
             }
         }
-        return null
+        return fallbackKml
     }
 
     private fun normalizeStatus(raw: String): String? {
@@ -43,7 +66,8 @@ object KmlParser {
         if (clean.isBlank()) return null
         return when {
             clean == "done" || clean.startsWith("done:") || clean.startsWith("done ") ||
-                clean == "completed" || clean == "complete" || clean == "finished" -> "done"
+                clean == "completed" || clean == "complete" || clean == "finished" ||
+                clean == "meter linked" || clean == "inaccessible" || clean == "no bill" -> "done"
             clean == "issue" || clean.startsWith("issue:") || clean.startsWith("issue ") ||
                 clean == "problem" || clean == "error" ||
                 clean == "need electricity" ||
@@ -54,6 +78,25 @@ object KmlParser {
             clean == "pending" || clean.startsWith("pending:") || clean.startsWith("pending ") ||
                 clean == "todo" || clean == "open" -> "pending"
             else -> null
+        }
+    }
+
+    private fun extractImplicitReasonFromStatus(raw: String?): String {
+        val trimmed = raw?.trim().orEmpty()
+        val low = trimmed.lowercase()
+        return when {
+            low.startsWith("done:") || low.startsWith("issue:") -> trimmed.substringAfter(":").trim()
+            low in setOf(
+                "meter linked",
+                "inaccessible",
+                "no bill",
+                "need electricity",
+                "customer refused / no access",
+                "wrong location / coordinates",
+                "closed / nobody home",
+                "safety hazard / network fault"
+            ) -> trimmed
+            else -> ""
         }
     }
 
@@ -117,11 +160,13 @@ object KmlParser {
         var inPlacemark = false
         var inStyle = false
         var inPoint = false
-        var inLine = false
+        var lineDepth = 0
+        var inDescription = false
         var inExtendedData = false
         var currentDataKey = ""
         var activeTag = ""
         val textBuf = StringBuilder()
+        val descBuf = StringBuilder()
 
         var pmName = ""
         var pmDesc = ""
@@ -137,36 +182,50 @@ object KmlParser {
             when (event) {
                 XmlPullParser.START_TAG -> {
                     val tag = parser.name.substringAfterLast(':').lowercase()
-                    activeTag = tag
-                    textBuf.setLength(0)
-                    when (tag) {
-                        "style", "stylemap" -> inStyle = true
-                        "placemark" -> {
-                            inPlacemark = true
-                            inPoint = false
-                            inLine = false
-                            inExtendedData = false
-                            currentDataKey = ""
-                            pmName = ""
-                            pmDesc = ""
-                            pmStyleUrl = ""
-                            pmExtra.clear()
-                            pmMeta.clear()
-                            pmGeneric.clear()
-                            pmPoints.clear()
-                            pmLines.clear()
+                    if (inDescription) {
+                        if (tag == "br" || tag == "p" || tag == "div" || tag == "li" || tag == "tr") {
+                            descBuf.append("\n")
                         }
-                        "point" -> inPoint = true
-                        "linestring", "polygon", "linearring" -> inLine = true
-                        "extendeddata" -> inExtendedData = true
-                        "data", "simpledata" -> if (inPlacemark) {
-                            currentDataKey = getAttrIgnoreCase(parser, "name")
+                    } else {
+                        activeTag = tag
+                        textBuf.setLength(0)
+                        when (tag) {
+                            "style", "stylemap" -> inStyle = true
+                            "placemark" -> {
+                                inPlacemark = true
+                                inPoint = false
+                                lineDepth = 0
+                                inDescription = false
+                                inExtendedData = false
+                                currentDataKey = ""
+                                pmName = ""
+                                pmDesc = ""
+                                pmStyleUrl = ""
+                                descBuf.setLength(0)
+                                pmExtra.clear()
+                                pmMeta.clear()
+                                pmGeneric.clear()
+                                pmPoints.clear()
+                                pmLines.clear()
+                            }
+                            "description" -> if (inPlacemark && !inExtendedData) {
+                                inDescription = true
+                                descBuf.setLength(0)
+                            }
+                            "point" -> inPoint = true
+                            "linestring", "polygon", "linearring" -> lineDepth++
+                            "extendeddata" -> inExtendedData = true
+                            "data", "simpledata" -> if (inPlacemark) {
+                                currentDataKey = getAttrIgnoreCase(parser, "name")
+                            }
                         }
                     }
                 }
                 XmlPullParser.TEXT, XmlPullParser.CDSECT -> {
-                    if ((!inPlacemark && !inStyle && activeTag == "name") ||
-                        (inPlacemark && (activeTag == "name" || activeTag == "description" || activeTag == "styleurl" ||
+                    if (inDescription) {
+                        descBuf.append(parser.text ?: "")
+                    } else if ((!inPlacemark && !inStyle && activeTag == "name") ||
+                        (inPlacemark && (activeTag == "name" || activeTag == "styleurl" ||
                             activeTag == "coordinates" || activeTag == "value" || activeTag == "simpledata"))
                     ) {
                         textBuf.append(parser.text ?: "")
@@ -174,14 +233,21 @@ object KmlParser {
                 }
                 XmlPullParser.END_TAG -> {
                     val tag = parser.name.substringAfterLast(':').lowercase()
-                    if (tag == "style" || tag == "stylemap") {
+                    if (inDescription) {
+                        if (tag == "description") {
+                            inDescription = false
+                            if (pmDesc.isBlank()) pmDesc = descBuf.toString().trim()
+                            activeTag = ""
+                        } else if (tag == "p" || tag == "div" || tag == "li" || tag == "tr") {
+                            descBuf.append("\n")
+                        }
+                    } else if (tag == "style" || tag == "stylemap") {
                         inStyle = false
                     } else if (!inPlacemark && !inStyle && tag == "name" && docName.isBlank()) {
                         docName = textBuf.toString().trim()
                     } else if (inPlacemark) {
                         when (tag) {
                             "name" -> if (!inExtendedData && pmName.isBlank()) pmName = textBuf.toString().trim()
-                            "description" -> if (!inExtendedData && pmDesc.isBlank()) pmDesc = textBuf.toString().trim()
                             "styleurl" -> if (!inExtendedData && pmStyleUrl.isBlank()) pmStyleUrl = textBuf.toString().trim()
                             "value", "simpledata" -> {
                                 val v = textBuf.toString().trim()
@@ -207,23 +273,24 @@ object KmlParser {
                                 val pts = parseCoordinates(textBuf.toString())
                                 if (inPoint && pts.isNotEmpty()) {
                                     pmPoints.add(pts.first())
-                                } else if (inLine && pts.size >= 2) {
+                                } else if (lineDepth > 0 && pts.size >= 2) {
                                     pmLines.add(pts)
                                 }
                             }
                             "point" -> inPoint = false
-                            "linestring", "polygon", "linearring" -> inLine = false
+                            "linestring", "polygon", "linearring" -> lineDepth = (lineDepth - 1).coerceAtLeast(0)
                             "placemark" -> {
-                                var restoredStatus = pmMeta["ts_status"]?.let { normalizeStatus(it) }
-                                    ?: pmGeneric["status"]?.let { normalizeStatus(it) }
-                                    ?: pmGeneric["pin_status"]?.let { normalizeStatus(it) }
+                                val rawStatusField = pmMeta["ts_status"]
+                                    ?: pmGeneric["status"]
+                                    ?: pmGeneric["pin_status"]
+                                var restoredStatus = rawStatusField?.let { normalizeStatus(it) }
 
                                 var restoredReason = pmMeta["ts_issue_reason"]
                                     ?: pmGeneric["done_note"]
                                     ?: pmGeneric["issue_reason"]
                                     ?: pmGeneric["status_note"]
                                     ?: pmGeneric["issue"]
-                                    ?: ""
+                                    ?: extractImplicitReasonFromStatus(rawStatusField)
 
                                 if (restoredStatus == null) {
                                     restoredStatus = when {
@@ -338,13 +405,14 @@ object KmlParser {
                                 }
                                 inPlacemark = false
                                 inPoint = false
-                                inLine = false
+                                lineDepth = 0
+                                inDescription = false
                                 inExtendedData = false
                                 currentDataKey = ""
                             }
                         }
                     }
-                    activeTag = ""
+                    if (!inDescription) activeTag = ""
                 }
             }
             event = parser.next()
