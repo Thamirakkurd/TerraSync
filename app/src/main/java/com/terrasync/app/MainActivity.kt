@@ -182,6 +182,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLassoRedraw: TextView
     private lateinit var btnLassoUndo: TextView
     private lateinit var btnLassoReset: TextView
+    private lateinit var btnLassoModeToggle: TextView
     private lateinit var btnLassoClose: ImageButton
     private lateinit var btnZoomIn: ImageButton
     private lateinit var btnZoomOut: ImageButton
@@ -243,6 +244,7 @@ class MainActivity : AppCompatActivity() {
     // Local-only Sent Tracking & Circle-Select State
     private var hideSentPins = false
     private var isLassoMode = false
+    private var lassoMoveMapMode = false
     private var lassoPendingPinIds: List<String> = emptyList()
     private val sentUndoStack = mutableListOf<List<String>>()
 
@@ -270,6 +272,8 @@ class MainActivity : AppCompatActivity() {
 
     // Route Preview & Active Turn-by-Turn Navigation State
     private var previewRoute: NavRoute? = null
+    private var lastRoutePillKey: String? = null
+    private var pendingUpdateApkFile: java.io.File? = null
     private var activeNavRoute: NavRoute? = null
     private var navDestLatLng: LatLng? = null
     private var navDestName: String = ""
@@ -281,6 +285,7 @@ class MainActivity : AppCompatActivity() {
 
     // Full-screen overlay stack
     private val pageBackStack = mutableListOf<() -> Unit>()
+    private var liveBookmarksRefresh: (() -> Unit)? = null
 
     private val gpsListener = LocationListener { loc -> onNewLocation(loc) }
 
@@ -309,12 +314,17 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        val installedVer = AppUpdater.getInstalledVersionName(this)
+        val appUserAgent = "TerraSync/$installedVer (https://github.com/Thamirakkurd/TerraSync)"
+        RoutingEngine.userAgent = appUserAgent
+        AppUpdater.cleanupOldApks(this)
+
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(
             OkHttpClient.Builder()
                 .addInterceptor { chain ->
                     val req = chain.request().newBuilder()
-                        .header("User-Agent", "TerraSync/2.5.0 (https://github.com/Thamirakkurd/TerraSync)")
+                        .header("User-Agent", appUserAgent)
                         .build()
                     chain.proceed(req)
                 }
@@ -395,7 +405,12 @@ class MainActivity : AppCompatActivity() {
             loadMapStyle()
             updateScaleBar()
 
-            m.addOnCameraMoveListener { updateScaleBar() }
+            m.addOnCameraMoveListener {
+                updateScaleBar()
+                if (isLassoMode && lassoPendingPinIds.isNotEmpty()) {
+                    clearLassoSelection()
+                }
+            }
 
             m.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE && isFollowingGps) {
@@ -407,14 +422,14 @@ class MainActivity : AppCompatActivity() {
             m.addOnMapClickListener { latLng ->
                 if (isRulerMode) {
                     addRulerPoint(latLng)
-                } else {
+                } else if (!isLassoMode) {
                     handleMapTap(m, latLng)
                 }
                 true
             }
 
             m.addOnMapLongClickListener { latLng ->
-                if (!isRulerMode) showAddPinDialog(latLng)
+                if (!isRulerMode && !isLassoMode) showAddPinDialog(latLng)
                 true
             }
 
@@ -426,6 +441,7 @@ class MainActivity : AppCompatActivity() {
 
         refreshJoinedSync()
         handleDeepLinkIntent(intent)
+        checkForAppUpdate(silent = true)
     }
 
     private fun bindViews() {
@@ -449,6 +465,7 @@ class MainActivity : AppCompatActivity() {
         btnLassoRedraw = findViewById(R.id.btnLassoRedraw)
         btnLassoUndo = findViewById(R.id.btnLassoUndo)
         btnLassoReset = findViewById(R.id.btnLassoReset)
+        btnLassoModeToggle = findViewById(R.id.btnLassoModeToggle)
         btnLassoClose = findViewById(R.id.btnLassoClose)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
@@ -636,7 +653,7 @@ class MainActivity : AppCompatActivity() {
             DevicePrefs.setHideSentPins(this, hideSentPins)
             updateSentToggleUi()
             renderMapData()
-            val sentCount = DevicePrefs.getLocalSentPinIds(this).size
+            val sentCount = activeLocalSentCount()
             val msg = if (hideSentPins) {
                 if (sentCount > 0) "Showing unsent pins only ($sentCount sent hidden)" else "Unsent Only mode (no pins marked sent yet)"
             } else {
@@ -645,6 +662,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
         btnLasso.setOnClickListener { toggleLassoMode(!isLassoMode) }
+        btnLassoModeToggle.setOnClickListener { toggleLassoMoveMapMode() }
         btnLassoMarkSent.setOnClickListener { confirmLassoMarkSent() }
         btnLassoRedraw.setOnClickListener { clearLassoSelection() }
         btnLassoUndo.setOnClickListener { undoLastLassoMark() }
@@ -791,7 +809,7 @@ class MainActivity : AppCompatActivity() {
                 bottomMargin = dp(6)
             }
         })
-        val sentCount = DevicePrefs.getLocalSentPinIds(this).size
+        val sentCount = activeLocalSentCount()
         box.addView(CheckBox(this).apply {
             text = "Unsent Only (hide $sentCount sent on this phone)"
             textSize = 14f
@@ -886,6 +904,9 @@ class MainActivity : AppCompatActivity() {
         val matched = if (target.pinId.isNotBlank()) pins.find { it.id == target.pinId } else null
         if (matched != null) {
             activeSharedPinId = null
+            if (!DevicePrefs.isLayerVisible(this, matched.layerId)) {
+                DevicePrefs.setLayerVisible(this, matched.layerId, true)
+            }
             selectPinAndOpenCard(matched, zoomIfFar = true)
             return
         }
@@ -907,6 +928,7 @@ class MainActivity : AppCompatActivity() {
             MapStyleMode.VECTOR -> Style.Builder().fromUri(OfflineMapManager.STYLE_STREET_URL)
         }
         m.setStyle(builder) { style ->
+            lastRoutePillKey = null
             apply3dBuildingsToggle(style)
             registerMapBitmaps(style)
             enhanceVectorStyleForField(style)
@@ -1287,7 +1309,11 @@ class MainActivity : AppCompatActivity() {
         val pillFeatures = if (pillRoute != null && pillRoute.geometry.size >= 2) {
             val etaMin = (pillRoute.totalDurationSeconds / 60.0).toInt().coerceAtLeast(1)
             val pillLabel = if (etaMin >= 60) "${etaMin / 60}h ${etaMin % 60}m" else "$etaMin min"
-            style.addImage(ROUTE_PILL_ICON, MapBitmaps.createRoutePill(this, pillLabel, pillRoute.mode.routeColorHex))
+            val pillKey = "$pillLabel|${pillRoute.mode.routeColorHex}"
+            if (lastRoutePillKey != pillKey) {
+                style.addImage(ROUTE_PILL_ICON, MapBitmaps.createRoutePill(this, pillLabel, pillRoute.mode.routeColorHex))
+                lastRoutePillKey = pillKey
+            }
             val (midLng, midLat) = routeMidpoint(pillRoute.geometry)
             listOf(Feature.fromGeometry(Point.fromLngLat(midLng, midLat)))
         } else emptyList()
@@ -1398,9 +1424,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun activeLocalSentCount(): Int {
+        val sentIds = DevicePrefs.getLocalSentPinIds(this)
+        if (sentIds.isEmpty()) return 0
+        return pins.count { it.id in sentIds }
+    }
+
     private fun toggleLassoMode(enabled: Boolean) {
         if (enabled && isRulerMode) toggleRulerMode(false)
         isLassoMode = enabled
+        lassoMoveMapMode = false
         if (enabled) {
             hideInScreenSheet()
             bottomIconRow.visibility = View.GONE
@@ -1417,6 +1450,19 @@ class MainActivity : AppCompatActivity() {
             bottomIconRow.visibility = View.VISIBLE
         }
         applyMapChromeTheme()
+    }
+
+    private fun toggleLassoMoveMapMode() {
+        if (!isLassoMode) return
+        lassoMoveMapMode = !lassoMoveMapMode
+        if (lassoMoveMapMode) {
+            lassoPendingPinIds = emptyList()
+            lassoOverlay.clearLoop()
+            lassoOverlay.visibility = View.GONE
+        } else {
+            lassoOverlay.visibility = View.VISIBLE
+        }
+        updateLassoUi()
     }
 
     private fun clearLassoSelection() {
@@ -1477,14 +1523,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmResetAllSentPins() {
-        val total = DevicePrefs.getLocalSentPinIds(this).size
-        if (total == 0) {
+        val active = activeLocalSentCount()
+        val stored = DevicePrefs.getLocalSentPinIds(this).size
+        if (active == 0 && stored == 0) {
             Toast.makeText(this, "No sent pins to reset", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (active == 0) {
+            DevicePrefs.clearLocalSentPins(this)
+            sentUndoStack.clear()
+            updateLassoUi()
+            Toast.makeText(this, "Cleared old sent marks", Toast.LENGTH_SHORT).show()
             return
         }
         AlertDialog.Builder(this)
             .setTitle("Reset Sent Marks?")
-            .setMessage("Clear all $total local sent marks on this phone? All pins remain safely in your folders.")
+            .setMessage("Clear all $active local sent marks on this phone? All pins remain safely in your folders.")
             .setPositiveButton("Reset") { _, _ ->
                 DevicePrefs.clearLocalSentPins(this)
                 sentUndoStack.clear()
@@ -1501,19 +1555,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateLassoUi() {
         val sel = lassoPendingPinIds.size
-        val totalSent = DevicePrefs.getLocalSentPinIds(this).size
-        if (sel > 0) {
-            tvLassoTitle.text = "$sel pin${if (sel == 1) "" else "s"} selected"
-            tvLassoSubtitle.text = "Tap Mark Sent (local only • $totalSent sent total)"
-            btnLassoMarkSent.text = "Mark Sent ($sel)"
-            btnLassoMarkSent.alpha = 1f
-            btnLassoRedraw.alpha = 1f
-        } else {
-            tvLassoTitle.text = "Draw circle around sent pins"
-            tvLassoSubtitle.text = if (totalSent > 0) "$totalSent marked sent on this phone" else "Local to this phone only"
+        val totalSent = activeLocalSentCount()
+        if (lassoMoveMapMode) {
+            btnLassoModeToggle.text = "Draw"
+            btnLassoModeToggle.setTextColor(Color.WHITE)
+            btnLassoModeToggle.background = GradientDrawable().apply {
+                setColor(Color.parseColor("#16A34A"))
+                cornerRadius = dp(10).toFloat()
+            }
+            tvLassoTitle.text = "Move or zoom the map"
+            tvLassoSubtitle.text = "Tap Draw when ready to circle pins"
             btnLassoMarkSent.text = "Mark Sent"
             btnLassoMarkSent.alpha = 0.45f
             btnLassoRedraw.alpha = 0.45f
+        } else {
+            btnLassoModeToggle.text = "Move Map"
+            btnLassoModeToggle.setTextColor(Color.parseColor("#1D4ED8"))
+            btnLassoModeToggle.background = GradientDrawable().apply {
+                setColor(Color.parseColor("#EFF6FF"))
+                cornerRadius = dp(10).toFloat()
+            }
+            if (sel > 0) {
+                tvLassoTitle.text = "$sel pin${if (sel == 1) "" else "s"} selected"
+                tvLassoSubtitle.text = "Tap Mark Sent (local only • $totalSent sent total)"
+                btnLassoMarkSent.text = "Mark Sent ($sel)"
+                btnLassoMarkSent.alpha = 1f
+                btnLassoRedraw.alpha = 1f
+            } else {
+                tvLassoTitle.text = "Draw circle around sent pins"
+                tvLassoSubtitle.text = if (totalSent > 0) "$totalSent marked sent on this phone" else "Local to this phone only"
+                btnLassoMarkSent.text = "Mark Sent"
+                btnLassoMarkSent.alpha = 0.45f
+                btnLassoRedraw.alpha = 0.45f
+            }
         }
         btnLassoUndo.alpha = if (sentUndoStack.isNotEmpty()) 1f else 0.4f
         btnLassoReset.alpha = if (totalSent > 0) 1f else 0.4f
@@ -2860,6 +2934,7 @@ class MainActivity : AppCompatActivity() {
     // --- Full-Screen Overlay Page Host ---
 
     private fun openFullPage(builder: () -> View) {
+        liveBookmarksRefresh = null
         pageBackStack.clear()
         pageOverlayContainer.removeAllViews()
         pageOverlayContainer.addView(builder())
@@ -2875,6 +2950,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pushSubPage(onBack: () -> Unit, builder: () -> View) {
+        liveBookmarksRefresh = null
         pageBackStack.add(onBack)
         pageOverlayContainer.removeAllViews()
         val v = builder()
@@ -2885,6 +2961,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun closeFullPage() {
+        liveBookmarksRefresh = null
         offlineMaps.setStateListener(null)
         pageBackStack.clear()
         pageOverlayContainer.animate()
@@ -3096,11 +3173,12 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
         })
-        showAllCol.addView(TextView(this).apply {
+        val tvTotalBookmarksCount = TextView(this).apply {
             text = "${pins.size} bookmarks"
             textSize = 12.5f
             setTextColor(txtSub)
-        })
+        }
+        showAllCol.addView(tvTotalBookmarksCount)
         rowShowAll.addView(showAllCol)
         rowShowAll.addView(swShowAll)
         footer.addView(rowShowAll)
@@ -3127,7 +3205,6 @@ class MainActivity : AppCompatActivity() {
         footer.addView(rowShowTitles)
         outer.addView(footer)
 
-        val folderNameById = layers.associate { it.id to it.name }
         val myDevId = DevicePrefs.getDeviceId(this)
 
         fun syncMasterVisibilitySwitch() {
@@ -3138,6 +3215,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun renderFoldersOrSearch(query: String) {
+            val folderNameById = layers.associate { it.id to it.name }
+            tvTotalBookmarksCount.text = "${pins.size} bookmarks"
             body.removeAllViews()
             val trimmed = query.trim()
 
@@ -3341,11 +3420,13 @@ class MainActivity : AppCompatActivity() {
                 listCard.addView(starRow)
             }
 
-            layers.forEach { layer ->
+            val orderedLayers = layers.sortedByDescending { DevicePrefs.isLayerPinned(this, it.id) }
+            orderedLayers.forEach { layer ->
                 addDividerIfNeeded()
                 val layerPins = pins.filter { it.layerId == layer.id }
                 val layerTracks = tracks.filter { it.layerId == layer.id }
                 val visible = DevicePrefs.isLayerVisible(this, layer.id)
+                val isPinned = DevicePrefs.isLayerPinned(this, layer.id)
                 val isCreator = layer.creatorDeviceId.isBlank() || layer.creatorDeviceId.equals(myDevId, ignoreCase = true)
 
                 val doneCnt = layerPins.count { it.status.equals("done", true) }
@@ -3387,14 +3468,37 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-                infoCol.addView(TextView(this).apply {
+                val titleRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                titleRow.addView(TextView(this).apply {
                     text = layer.name
                     textSize = 15.5f
                     setTypeface(null, Typeface.BOLD)
                     setTextColor(txtPrimary)
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.MIDDLE
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
+                if (isPinned) {
+                    titleRow.addView(TextView(this).apply {
+                        text = "📌 PINNED"
+                        textSize = 10f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(Color.parseColor("#B45309"))
+                        setPadding(dp(6), dp(2), dp(6), dp(2))
+                        background = GradientDrawable().apply {
+                            setColor(Color.parseColor("#FEF3C7"))
+                            cornerRadius = dp(6).toFloat()
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { marginStart = dp(6) }
+                    })
+                }
+                infoCol.addView(titleRow)
                 infoCol.addView(TextView(this).apply {
                     val trackStr = if (layerTracks.isNotEmpty()) " • ${layerTracks.size} tracks" else ""
                     text = "${layerPins.size} bookmarks$trackStr   ✓$doneCnt  •$pendingCnt  !$issueCnt"
@@ -3439,33 +3543,43 @@ class MainActivity : AppCompatActivity() {
                         val menu = PopupMenu(this@MainActivity, anchor)
                         menu.menu.add(0, 1, 1, "Share Link & Code (${layer.shareCode})")
                         menu.menu.add(0, 2, 2, "Zoom to Folder")
-                        menu.menu.add(0, 3, 3, "Export as KML")
-                        menu.menu.add(0, 4, 4, "Export as CSV")
-                        menu.menu.add(0, 5, 5, "Leave Folder (This Phone)")
-                        if (isCreator) menu.menu.add(0, 6, 6, "Delete from Cloud (All Users)")
+                        menu.menu.add(0, 3, 3, if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder")
+                        menu.menu.add(0, 4, 4, "Copy WhatsApp Summary")
+                        menu.menu.add(0, 5, 5, "Export as KML...")
+                        menu.menu.add(0, 6, 6, "Export as CSV")
+                        if (isCreator) menu.menu.add(0, 7, 7, "Rename Folder")
+                        menu.menu.add(0, 8, 8, if (isPinned) "🔒 Leave Folder (Pinned)" else "Leave Folder (This Phone)")
+                        if (isCreator) menu.menu.add(0, 9, 9, if (isPinned) "🔒 Delete from Cloud (Pinned)" else "Delete from Cloud (All Users)")
                         menu.setOnMenuItemClickListener { item ->
                             when (item.itemId) {
                                 1 -> shareLayerLink(layer)
                                 2 -> { closeFullPage(); zoomToPoints(layerPins.map { LatLng(it.lat, it.lng) }) }
-                                3 -> KmlCsvExporter.exportAndShareKml(this@MainActivity, layer, layerPins, layerTracks)
-                                4 -> KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, layerPins)
-                                5 -> {
-                                    DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
-                                    refreshJoinedSync()
-                                    openFullPage(::buildBookmarksAndTracksPage)
+                                3 -> {
+                                    val nowPinned = DevicePrefs.toggleLayerPinned(this@MainActivity, layer.id)
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        if (nowPinned) "Pinned & protected \"${layer.name}\"" else "Unpinned \"${layer.name}\"",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
                                 }
-                                6 -> {
-                                    AlertDialog.Builder(this@MainActivity)
-                                        .setTitle("Delete \"${layer.name}\" from Cloud?")
-                                        .setMessage("This permanently removes all bookmarks for every team member.")
-                                        .setPositiveButton("Delete Cloud") { _, _ ->
-                                            DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
-                                            repo.deleteLayer(layer.id, layerPins.map { it.id }, layerTracks.map { it.id })
-                                            refreshJoinedSync()
-                                            openFullPage(::buildBookmarksAndTracksPage)
-                                        }
-                                        .setNegativeButton("Cancel", null)
-                                        .show()
+                                4 -> copyFolderSummary(layer, layerPins)
+                                5 -> showExportKmlDialog(layer, layerPins, layerTracks)
+                                6 -> KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, layerPins)
+                                7 -> showRenameFolderDialog(layer)
+                                8 -> {
+                                    if (isPinned) {
+                                        Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to leave.", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        showLeaveFolderDialog(layer)
+                                    }
+                                }
+                                9 -> {
+                                    if (isPinned) {
+                                        Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        showDeleteCloudDialog(layer, layerPins, layerTracks)
+                                    }
                                 }
                             }
                             true
@@ -3498,8 +3612,171 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s: Editable?) {}
         })
 
+        liveBookmarksRefresh = {
+            syncMasterVisibilitySwitch()
+            renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
+        }
         renderFoldersOrSearch("")
         return outer
+    }
+
+    private fun copyFolderSummary(layer: LayerItem, layerPins: List<PinItem>) {
+        val total = layerPins.size
+        val donePins = layerPins.filter { it.status.equals("done", true) }
+        val issuePins = layerPins.filter { it.status.equals("issue", true) }
+        val pendingCnt = (total - donePins.size - issuePins.size).coerceAtLeast(0)
+        val pct = if (total > 0) (donePins.size * 100) / total else 0
+
+        val doneBreakdown = donePins
+            .mapNotNull { it.issueReason.trim().takeIf { r -> r.isNotBlank() } }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+
+        val issueBreakdown = issuePins
+            .mapNotNull { it.issueReason.trim().takeIf { r -> r.isNotBlank() } }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+
+        val summary = buildString {
+            append("*${layer.name}*\n")
+            append("Total: $total pins ($pct% done)\n")
+            append("✓ Done: ${donePins.size}")
+            if (doneBreakdown.isNotEmpty()) {
+                doneBreakdown.forEach { (reason, cnt) -> append("\n   - $reason: $cnt") }
+            }
+            append("\n• Pending: $pendingCnt")
+            append("\n! Issue: ${issuePins.size}")
+            if (issueBreakdown.isNotEmpty()) {
+                issueBreakdown.forEach { (reason, cnt) -> append("\n   - $reason: $cnt") }
+            }
+        }
+        copyToClipboard("Folder Summary", summary)
+    }
+
+    private fun showExportKmlDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
+        val sentIds = DevicePrefs.getLocalSentPinIds(this)
+        val unsentPins = layerPins.filter { it.id !in sentIds }
+        val pendingPins = layerPins.filter { it.status.equals("pending", true) }
+        val pendingUnsentPins = pendingPins.filter { it.id !in sentIds }
+        val issuePins = layerPins.filter { it.status.equals("issue", true) }
+        val donePins = layerPins.filter { it.status.equals("done", true) }
+
+        val options = arrayOf(
+            "All Pins (${layerPins.size})",
+            "Unsent Only (${unsentPins.size})",
+            "Pending Only (${pendingPins.size})",
+            "Pending & Unsent (${pendingUnsentPins.size})",
+            "Issues Only (${issuePins.size})",
+            "Done Only (${donePins.size})"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Export KML: ${layer.name}")
+            .setItems(options) { _, which ->
+                val (subset, tracksToExport, suffix) = when (which) {
+                    0 -> Triple(layerPins, layerTracks, "")
+                    1 -> Triple(unsentPins, emptyList(), "Unsent")
+                    2 -> Triple(pendingPins, emptyList(), "Pending")
+                    3 -> Triple(pendingUnsentPins, emptyList(), "Pending_Unsent")
+                    4 -> Triple(issuePins, emptyList(), "Issues")
+                    else -> Triple(donePins, emptyList(), "Done")
+                }
+                if (subset.isEmpty() && tracksToExport.isEmpty()) {
+                    Toast.makeText(this, "No matching pins to export", Toast.LENGTH_SHORT).show()
+                } else {
+                    KmlCsvExporter.exportAndShareKml(this, layer, subset, tracksToExport, suffix)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showRenameFolderDialog(layer: LayerItem) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        val etName = EditText(this).apply {
+            hint = "Folder name"
+            setText(layer.name)
+            setSingleLine(true)
+            setSelection(layer.name.length)
+        }
+        box.addView(etName)
+
+        AlertDialog.Builder(this)
+            .setTitle("Rename Folder")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val next = etName.text.toString().trim()
+                if (next.isBlank()) {
+                    Toast.makeText(this, "Folder name cannot be empty", Toast.LENGTH_SHORT).show()
+                } else {
+                    repo.renameLayer(layer.id, next)
+                    Toast.makeText(this, "Renamed to \"$next\"", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showLeaveFolderDialog(layer: LayerItem) {
+        AlertDialog.Builder(this)
+            .setTitle("Leave \"${layer.name}\"?")
+            .setMessage("Remove this folder from this phone only? Other team members keep it, and you can rejoin later with code ${layer.shareCode}.")
+            .setPositiveButton("Leave") { _, _ ->
+                DevicePrefs.removeJoinedLayerId(this, layer.id)
+                refreshJoinedSync()
+                Toast.makeText(this, "Left \"${layer.name}\"", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showDeleteCloudDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+        }
+        box.addView(TextView(this).apply {
+            text = "This permanently deletes \"${layer.name}\" (${layerPins.size} pins) for EVERY team member.\n\nType DELETE below to confirm:"
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#334155"))
+            setPadding(0, 0, 0, dp(10))
+        })
+        val etConfirm = EditText(this).apply {
+            hint = "Type DELETE"
+            setSingleLine(true)
+        }
+        box.addView(etConfirm)
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Delete Folder from Cloud?")
+            .setView(box)
+            .setPositiveButton("Delete Cloud", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        dlg.setOnShowListener {
+            val posBtn = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
+            posBtn.setTextColor(Color.parseColor("#DC2626"))
+            posBtn.setOnClickListener {
+                if (!etConfirm.text.toString().trim().equals("DELETE", ignoreCase = true)) {
+                    Toast.makeText(this, "Type DELETE to confirm permanent cloud deletion", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                DevicePrefs.removeJoinedLayerId(this, layer.id)
+                repo.deleteLayer(layer.id, layerPins.map { it.id }, layerTracks.map { it.id })
+                refreshJoinedSync()
+                Toast.makeText(this, "Deleted \"${layer.name}\" from cloud", Toast.LENGTH_SHORT).show()
+                dlg.dismiss()
+            }
+        }
+        dlg.show()
     }
 
     // --- Subpage: Folder Bookmarks List ---
@@ -3627,6 +3904,10 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(14), dp(12), dp(14), dp(12))
                     UiAnimations.applyRowRipple(this@MainActivity, this, night)
                     setOnClickListener {
+                        if (!DevicePrefs.isLayerVisible(this@MainActivity, pin.layerId)) {
+                            DevicePrefs.setLayerVisible(this@MainActivity, pin.layerId, true)
+                            renderMapData()
+                        }
                         closeFullPage()
                         selectPinAndOpenCard(pin, zoomIfFar = true)
                     }
@@ -3711,10 +3992,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val hidden = DevicePrefs.getHiddenLayerIds(this)
-        val pending = pins.filter { it.layerId !in hidden && it.status.equals("pending", true) }
+        val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
+        val pending = pins.filter { it.layerId !in hidden && it.status.equals("pending", true) && it.id !in sentIds }
         val nearest = pending.minByOrNull { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
         if (nearest == null) {
-            Toast.makeText(this, "No pending pins in visible folders!", Toast.LENGTH_SHORT).show()
+            val msg = if (hideSentPins) "No unsent pending pins in visible folders!" else "No pending pins in visible folders!"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
             return
         }
         closeFullPage()
@@ -4309,7 +4592,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         heroText.addView(TextView(this).apply {
-            text = "Version 2.5.0 • Kotlin + MapLibre GL"
+            text = "Version ${AppUpdater.getInstalledVersionName(this@MainActivity)} • Kotlin + MapLibre GL"
             textSize = 13f
             setTextColor(Color.parseColor("#0F766E"))
             setTypeface(null, Typeface.BOLD)
@@ -4353,6 +4636,20 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtSub)
         })
         body.addView(devCard)
+
+        body.addView(MaterialButton(this).apply {
+            text = "Check for Updates"
+            textSize = 13.5f
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#16A34A"))
+            cornerRadius = dp(12)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                bottomMargin = dp(10)
+            }
+            UiAnimations.attachSpringTouch(this)
+            setOnClickListener { checkForAppUpdate(silent = false) }
+        })
 
         listOf(
             Triple("GitHub Profile (@Thamirakkurd)", "https://github.com/Thamirakkurd", "#1E293B"),
@@ -4706,7 +5003,6 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                             refreshJoinedSync()
-                            openFullPage(::buildBookmarksAndTracksPage)
                         }
                     }
                 }
@@ -4731,12 +5027,14 @@ class MainActivity : AppCompatActivity() {
             }.getOrNull()
 
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 if (parsed == null || (parsed.pins.isEmpty() && parsed.tracks.isEmpty())) {
                     Toast.makeText(this, "No pins or tracks found in file", Toast.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
                 repo.importLayer(layerId, fileName.ifBlank { "Imported Folder" }, stamp, devId, parsed) { ok, msg, _ ->
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         if (ok) {
                             DevicePrefs.addJoinedLayerId(this, layerId)
@@ -4761,6 +5059,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 renderMapData()
+                liveBookmarksRefresh?.invoke()
+                if (isLassoMode) updateLassoUi()
                 val waitingId = activeSharedPinId
                 if (waitingId != null) {
                     val matched = pins.find { it.id == waitingId }
@@ -4782,14 +5082,12 @@ class MainActivity : AppCompatActivity() {
     private fun joinShareCode(rawCode: String) {
         repo.joinLayerByCode(rawCode) { ok, msg, layerId ->
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 if (ok && layerId != null) {
                     DevicePrefs.addJoinedLayerId(this, layerId)
                     hasAutoZoomedInitial = false
                     refreshJoinedSync()
-                    if (pageOverlayContainer.visibility == View.VISIBLE) {
-                        openFullPage(::buildBookmarksAndTracksPage)
-                    }
                 }
             }
         }
@@ -4835,10 +5133,152 @@ class MainActivity : AppCompatActivity() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     override fun onStart() { super.onStart(); mapView.onStart() }
+    // --- In-App GitHub Updater ---
+
+    private fun checkForAppUpdate(silent: Boolean) {
+        if (!silent) {
+            Toast.makeText(this, "Checking for updates...", Toast.LENGTH_SHORT).show()
+        }
+        AppUpdater.checkForUpdate(this) { info, err ->
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (info != null) {
+                    showUpdateAvailableDialog(info)
+                } else if (!silent) {
+                    val msg = err ?: "You are on the latest version (v${AppUpdater.getInstalledVersionName(this)})"
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun showUpdateAvailableDialog(info: UpdateInfo) {
+        val currentVer = AppUpdater.getInstalledVersionName(this)
+        val sizeStr = if (info.sizeBytes > 0L) {
+            " • ${"%.1f".format(Locale.US, info.sizeBytes / (1024.0 * 1024.0))} MB"
+        } else ""
+        val notes = info.releaseNotes.ifBlank { "Bug fixes and field workflow improvements." }
+
+        val scroll = ScrollView(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        box.addView(TextView(this).apply {
+            text = "Installed: v$currentVer  →  New: v${info.versionName}$sizeStr"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#0F766E"))
+            setPadding(0, 0, 0, dp(10))
+        })
+        box.addView(TextView(this).apply {
+            text = notes.take(1500)
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#334155"))
+        })
+        scroll.addView(box)
+
+        AlertDialog.Builder(this)
+            .setTitle("Update Available (v${info.versionName})")
+            .setView(scroll)
+            .setPositiveButton("Update Now") { _, _ -> startApkUpdateDownload(info) }
+            .setNeutralButton("GitHub") { _, _ ->
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.htmlUrl))) }
+            }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    private fun startApkUpdateDownload(info: UpdateInfo) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(16), dp(22), dp(10))
+        }
+        val tvStatus = TextView(this).apply {
+            text = "Downloading ${info.apkName}..."
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#0F172A"))
+            setPadding(0, 0, 0, dp(10))
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            isIndeterminate = true
+        }
+        box.addView(tvStatus)
+        box.addView(progressBar)
+
+        var cancelDownload: (() -> Unit)? = null
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Downloading v${info.versionName}")
+            .setView(box)
+            .setCancelable(false)
+            .setNegativeButton("Cancel") { _, _ -> cancelDownload?.invoke() }
+            .create()
+        dlg.show()
+
+        cancelDownload = AppUpdater.downloadApk(
+            this,
+            info,
+            onProgress = { pct, dlMb, totalMb ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || !dlg.isShowing) return@runOnUiThread
+                    if (pct >= 0) {
+                        progressBar.isIndeterminate = false
+                        progressBar.progress = pct
+                        tvStatus.text = if (totalMb > 0.0) {
+                            "$pct%  •  ${"%.1f".format(Locale.US, dlMb)} / ${"%.1f".format(Locale.US, totalMb)} MB"
+                        } else {
+                            "$pct%  •  ${"%.1f".format(Locale.US, dlMb)} MB"
+                        }
+                    } else {
+                        tvStatus.text = "Downloaded ${"%.1f".format(Locale.US, dlMb)} MB..."
+                    }
+                }
+            },
+            onDone = { file, err ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (dlg.isShowing) dlg.dismiss()
+                    if (file != null) {
+                        tryInstallDownloadedApk(file)
+                    } else if (err != null && err != "Download cancelled") {
+                        Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        )
+    }
+
+    private fun tryInstallDownloadedApk(apkFile: java.io.File) {
+        if (AppUpdater.canInstallApks(this)) {
+            pendingUpdateApkFile = null
+            runCatching {
+                AppUpdater.launchApkInstaller(this, apkFile)
+            }.onFailure {
+                Toast.makeText(this, "Could not start installer: ${it.message}", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            pendingUpdateApkFile = apkFile
+            AlertDialog.Builder(this)
+                .setTitle("Allow App Updates")
+                .setMessage("Enable \"Install unknown apps\" for TerraSync in Settings, then return here to install the update.")
+                .setPositiveButton("Open Settings") { _, _ ->
+                    AppUpdater.openInstallPermissionSettings(this)
+                }
+                .setNegativeButton("Cancel") { _, _ -> pendingUpdateApkFile = null }
+                .show()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         mapView.onResume()
         if (hasLocationPermission()) startLiveGpsUpdates()
+        val pendingApk = pendingUpdateApkFile
+        if (pendingApk != null && pendingApk.exists() && AppUpdater.canInstallApks(this)) {
+            pendingUpdateApkFile = null
+            runCatching { AppUpdater.launchApkInstaller(this, pendingApk) }
+        }
     }
     override fun onPause() {
         if (activeNavRoute == null) stopLiveGpsUpdates()

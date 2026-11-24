@@ -12,8 +12,14 @@ android {
         applicationId = "com.terrasync.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 8
-        versionName = "2.5.0"
+        val tagVer = (project.findProperty("appVersionName") as String?)
+            ?: System.getenv("GITHUB_REF_NAME")?.removePrefix("v")?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+.*")) }
+            ?: "2.6.0"
+        val computedCode = (project.findProperty("appVersionCode") as String?)?.toIntOrNull()
+            ?: tagVer.substringBefore("-").split(".").mapNotNull { it.toIntOrNull() }
+                .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20600 }
+        versionCode = computedCode
+        versionName = tagVer
     }
 
     signingConfigs {

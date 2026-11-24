@@ -42,9 +42,18 @@ object KmlParser {
         val tracks = mutableListOf<TrackItem>()
         val now = System.currentTimeMillis()
 
+        val cleanBytes = if (bytes.size >= 3 &&
+            bytes[0] == 0xEF.toByte() &&
+            bytes[1] == 0xBB.toByte() &&
+            bytes[2] == 0xBF.toByte()
+        ) {
+            bytes.copyOfRange(3, bytes.size)
+        } else {
+            bytes
+        }
         val parser = Xml.newPullParser()
         parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
-        parser.setInput(ByteArrayInputStream(bytes), "UTF-8")
+        parser.setInput(ByteArrayInputStream(cleanBytes), null)
 
         var inPlacemark = false
         var inPoint = false

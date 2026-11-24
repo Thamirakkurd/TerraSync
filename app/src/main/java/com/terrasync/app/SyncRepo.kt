@@ -353,6 +353,17 @@ class SyncRepo {
         return layerId
     }
 
+    fun renameLayer(layerId: String, newName: String) {
+        val clean = newName.trim()
+        if (clean.isBlank()) return
+        db.collection("layers").document(layerId).update(
+            mapOf(
+                "name" to clean,
+                "updatedAt" to System.currentTimeMillis()
+            )
+        )
+    }
+
     fun deletePin(pinId: String) {
         db.collection("pins").document(pinId).delete()
     }

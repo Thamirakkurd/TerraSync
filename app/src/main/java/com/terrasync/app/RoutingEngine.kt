@@ -13,7 +13,7 @@ import kotlin.math.sqrt
 
 object RoutingEngine {
 
-    private const val USER_AGENT = "TerraSync/2.5.0 (https://github.com/Thamirakkurd/TerraSync)"
+    @Volatile var userAgent: String = "TerraSync/2.6.0 (https://github.com/Thamirakkurd/TerraSync)"
 
     fun fetchRoute(
         startLat: Double,
@@ -48,7 +48,7 @@ object RoutingEngine {
                     conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 10000
                         readTimeout = 12000
-                        setRequestProperty("User-Agent", USER_AGENT)
+                        setRequestProperty("User-Agent", userAgent)
                     }
                     if (conn.responseCode != 200) {
                         lastError = "Routing server error (${conn.responseCode})"
@@ -150,7 +150,7 @@ object RoutingEngine {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
-                    setRequestProperty("User-Agent", USER_AGENT)
+                    setRequestProperty("User-Agent", userAgent)
                 }
                 try {
                     if (conn.responseCode == 200) {
@@ -183,7 +183,7 @@ object RoutingEngine {
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 6000
                     readTimeout = 6000
-                    setRequestProperty("User-Agent", USER_AGENT)
+                    setRequestProperty("User-Agent", userAgent)
                 }
                 try {
                     if (conn.responseCode == 200) {

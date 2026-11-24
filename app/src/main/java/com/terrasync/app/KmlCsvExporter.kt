@@ -26,13 +26,26 @@ object KmlCsvExporter {
         return "\"$clean\""
     }
 
-    fun exportAndShareKml(ctx: Context, layer: LayerItem, pins: List<PinItem>, tracks: List<TrackItem>) {
+    fun exportAndShareKml(
+        ctx: Context,
+        layer: LayerItem,
+        pins: List<PinItem>,
+        tracks: List<TrackItem>,
+        filterSuffix: String = ""
+    ) {
         val dir = File(ctx.cacheDir, "exports").apply { mkdirs() }
-        val file = File(dir, "${safeFileName(layer.name)}.kml")
+        val suffixClean = filterSuffix.trim()
+        val exportTitle = if (suffixClean.isNotBlank()) "${layer.name} ($suffixClean)" else layer.name
+        val baseName = if (suffixClean.isNotBlank()) {
+            "${safeFileName(layer.name)}_${safeFileName(suffixClean)}"
+        } else {
+            safeFileName(layer.name)
+        }
+        val file = File(dir, "$baseName.kml")
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document>\n")
-        sb.append("  <name>${xmlEscape(layer.name)}</name>\n")
+        sb.append("  <name>${xmlEscape(exportTitle)}</name>\n")
 
         pins.forEach { p ->
             val descParts = mutableListOf<String>()
@@ -60,7 +73,7 @@ object KmlCsvExporter {
 
         sb.append("</Document>\n</kml>\n")
         file.writeText(sb.toString(), Charsets.UTF_8)
-        shareFile(ctx, file, "application/vnd.google-earth.kml+xml", "Export KML: ${layer.name}")
+        shareFile(ctx, file, "application/vnd.google-earth.kml+xml", "Export KML: $exportTitle")
     }
 
     fun exportAndShareCsv(ctx: Context, layer: LayerItem, pins: List<PinItem>) {

@@ -24,6 +24,7 @@ object DevicePrefs {
     private const val KEY_SPEED_INDICATOR = "speed_indicator_enabled"
     private const val KEY_LOCAL_SENT_PINS = "local_sent_pin_ids"
     private const val KEY_HIDE_SENT_PINS = "hide_sent_pins"
+    private const val KEY_PINNED_LAYERS = "pinned_layer_ids"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -65,7 +66,13 @@ object DevicePrefs {
 
     fun removeJoinedLayerId(ctx: Context, layerId: String) {
         val next = getJoinedLayerIds(ctx).toMutableSet().apply { remove(layerId) }
-        prefs(ctx).edit().putStringSet(KEY_JOINED_LAYERS, next).apply()
+        val nextHidden = getHiddenLayerIds(ctx).toMutableSet().apply { remove(layerId) }
+        val nextPinned = getPinnedLayerIds(ctx).toMutableSet().apply { remove(layerId) }
+        prefs(ctx).edit()
+            .putStringSet(KEY_JOINED_LAYERS, next)
+            .putStringSet(KEY_HIDDEN_LAYERS, nextHidden)
+            .putStringSet(KEY_PINNED_LAYERS, nextPinned)
+            .apply()
     }
 
     fun getHiddenLayerIds(ctx: Context): Set<String> {
@@ -185,4 +192,23 @@ object DevicePrefs {
 
     fun isHideSentPins(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HIDE_SENT_PINS, false)
     fun setHideSentPins(ctx: Context, hide: Boolean) = prefs(ctx).edit().putBoolean(KEY_HIDE_SENT_PINS, hide).apply()
+
+    fun getPinnedLayerIds(ctx: Context): Set<String> {
+        return prefs(ctx).getStringSet(KEY_PINNED_LAYERS, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun isLayerPinned(ctx: Context, layerId: String): Boolean = getPinnedLayerIds(ctx).contains(layerId)
+
+    fun toggleLayerPinned(ctx: Context, layerId: String): Boolean {
+        val next = getPinnedLayerIds(ctx).toMutableSet()
+        val nowPinned = if (next.contains(layerId)) {
+            next.remove(layerId)
+            false
+        } else {
+            next.add(layerId)
+            true
+        }
+        prefs(ctx).edit().putStringSet(KEY_PINNED_LAYERS, next).apply()
+        return nowPinned
+    }
 }
