@@ -88,7 +88,7 @@ object AppUpdater {
             lower.startsWith("alpha") -> 100
             else -> 10
         }
-        val num = Regex("\d+").find(lower)?.value?.toIntOrNull()?.coerceIn(0, 99) ?: 0
+        val num = Regex("\\d+").find(lower)?.value?.toIntOrNull()?.coerceIn(0, 99) ?: 0
         return tier + num
     }
 
