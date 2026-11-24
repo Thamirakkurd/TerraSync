@@ -115,7 +115,7 @@ object DailyReportGenerator {
 
         return buildString {
             appendLine("*$folderName — Daily Field Report*")
-            appendLine("_${now} • $syncBadge_")
+            appendLine("_${now} • $syncBadge")
             appendLine()
             appendLine("*Summary*")
             appendLine("• Total Pins: *$total*")
