@@ -4829,14 +4829,241 @@ class MainActivity : AppCompatActivity() {
         return outer
     }
 
-    // --- Page 3: Settings Page (Organic Maps Grouped Rounded-Card Overhaul) ---
+    // --- Page 3: Settings Menu + Dedicated Section Sub-Pages (Organic Maps Style) ---
+
+    private enum class SettingsSection {
+        MAP_SHADERS,
+        LANGUAGE_LABELS,
+        NAVIGATION_ROUTING,
+        FIELD_DATA_SYNC,
+        OFFLINE_CACHE,
+        ABOUT_BUILD
+    }
+
+    private fun openSettingsSection(section: SettingsSection) {
+        pushSubPage({ openFullPage(::buildSettingsPage) }) {
+            buildSettingsSubPage(section)
+        }
+    }
+
+    private fun reopenSettingsSection(section: SettingsSection) {
+        pageOverlayContainer.animate().cancel()
+        activePageCleanup?.invoke()
+        activePageCleanup = null
+        liveBookmarksRefresh = null
+        livePinListRefresh = null
+        offlineMaps.setStateListener(null)
+        hideSoftKeyboard()
+        pageBackStack.clear()
+        pageBackStack.add { openFullPage(::buildSettingsPage) }
+        pageOverlayContainer.removeAllViews()
+        pageOverlayContainer.addView(buildSettingsSubPage(section))
+        updateSystemBarContrast(forFullPage = true)
+    }
 
     private fun buildSettingsPage(): View {
+        val p = currentPalette()
+        val night = p.isDark
+        val txtPrimary = p.textPrimary
+        val txtSub = p.textSecondary
+        val isRtl = AppStrings.isRtl(this)
+
+        val (outer, body) = makePageFrame(AppStrings.settings(this), { closeFullPage() })
+
+        fun addMenuRow(
+            card: LinearLayout,
+            iconRes: Int,
+            iconColor: Int,
+            title: String,
+            summary: String,
+            onClick: () -> Unit
+        ) {
+            if (card.childCount > 0) {
+                card.addView(DesignSystem.createHairlineDivider(this, p, insetStartDp = 54, insetEndDp = 14))
+            }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(62)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                setOnClickListener { onClick() }
+            }
+            val iconWrap = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                    marginEnd = dp(12)
+                }
+                background = GradientDrawable().apply {
+                    setColor(if (night) Color.parseColor("#252A34") else Color.parseColor("#E6E6EC"))
+                    cornerRadius = dp(10).toFloat()
+                }
+            }
+            iconWrap.addView(ImageView(this).apply {
+                setImageResource(iconRes)
+                setColorFilter(iconColor)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
+            })
+            row.addView(iconWrap)
+
+            val textCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(8)
+                }
+            }
+            textCol.addView(TextView(this).apply {
+                text = title
+                textSize = 15.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(txtPrimary)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            textCol.addView(TextView(this).apply {
+                text = summary
+                textSize = 12.5f
+                setTextColor(txtSub)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                DesignSystem.applyTabularNumerals(this)
+                setPadding(0, dp(2), 0, 0)
+            })
+            row.addView(textCol)
+
+            row.addView(TextView(this).apply {
+                text = if (isRtl) "‹" else "›"
+                textSize = 22f
+                setTextColor(p.iconMuted)
+                gravity = Gravity.CENTER
+                setPadding(dp(4), 0, dp(2), 0)
+            })
+            card.addView(row)
+        }
+
+        // Live concise summaries for each menu section
+        val themeLabel = when (DevicePrefs.getThemeMode(this)) {
+            "night" -> "Night"
+            "auto" -> "Auto"
+            else -> "Day"
+        }
+        val mapSummary = buildList {
+            add(mapStyleMode.label)
+            add(themeLabel)
+            if (DevicePrefs.isHillshadeEnabled(this@MainActivity)) add("Hillshade")
+            if (DevicePrefs.isContoursEnabled(this@MainActivity)) add("Contours")
+        }.joinToString(" • ")
+
+        val langSummary = listOf(
+            DevicePrefs.getAppLanguage(this).label,
+            DevicePrefs.getMapLabelLanguage(this).label,
+            DevicePrefs.getPoiLabelBehavior(this).label
+        ).joinToString(" • ")
+
+        val navSummary = buildList {
+            add(travelMode.label)
+            add(DevicePrefs.getSpeedUnit(this@MainActivity).speedSuffix)
+            if (DevicePrefs.isSpeedIndicatorEnabled(this@MainActivity)) add("Speed HUD")
+            if (DevicePrefs.isVoiceNav(this@MainActivity)) add("Voice")
+        }.joinToString(" • ")
+
+        val localCount = layers.count { LocalFolderStore.isLocalLayerId(it.id) }
+        val cloudCount = layers.size - localCount
+        val syncSummary = "${if (isLiveConnected) "Cloud live" else "Offline cache"} • $localCount local, $cloudCount cloud • ${pins.size} pins"
+
+        val downloadedPacks = OfflineMapManager.REGIONAL_PACKS.count { offlineMaps.getState(it.id).isDownloaded }
+        val offlineSummary = if (downloadedPacks > 0) {
+            "$downloadedPacks of ${OfflineMapManager.REGIONAL_PACKS.size} regions downloaded"
+        } else {
+            "Kurdistan & Southern Iraq • Embedded roads"
+        }
+
+        val aboutSummary = "v${getInstalledVersionName()} • Device #${DevicePrefs.getDeviceId(this)}"
+
+        // Primary grouped menu card (5 functional settings categories)
+        body.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
+        })
+        val mainMenuCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 14)
+
+        addMenuRow(
+            mainMenuCard,
+            R.drawable.ic_layers,
+            p.green,
+            AppStrings.secMapShaders(this),
+            mapSummary
+        ) { openSettingsSection(SettingsSection.MAP_SHADERS) }
+
+        addMenuRow(
+            mainMenuCard,
+            R.drawable.ic_map,
+            p.accent,
+            AppStrings.secLanguageLabels(this),
+            langSummary
+        ) { openSettingsSection(SettingsSection.LANGUAGE_LABELS) }
+
+        addMenuRow(
+            mainMenuCard,
+            R.drawable.ic_my_location,
+            p.accent,
+            AppStrings.secNavigationRouting(this),
+            navSummary
+        ) { openSettingsSection(SettingsSection.NAVIGATION_ROUTING) }
+
+        addMenuRow(
+            mainMenuCard,
+            R.drawable.ic_cloud_sync,
+            if (isLiveConnected) p.green else p.amber,
+            AppStrings.secFieldDataSync(this),
+            syncSummary
+        ) { openSettingsSection(SettingsSection.FIELD_DATA_SYNC) }
+
+        addMenuRow(
+            mainMenuCard,
+            R.drawable.ic_import_file,
+            p.iconTint,
+            AppStrings.secOfflineCache(this),
+            offlineSummary
+        ) { openSettingsSection(SettingsSection.OFFLINE_CACHE) }
+
+        body.addView(mainMenuCard)
+
+        // Secondary grouped menu card (About & Build)
+        val metaMenuCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 12)
+        addMenuRow(
+            metaMenuCard,
+            R.drawable.ic_info,
+            p.iconTint,
+            AppStrings.secAboutBuild(this),
+            aboutSummary
+        ) { openSettingsSection(SettingsSection.ABOUT_BUILD) }
+        body.addView(metaMenuCard)
+
+        UiAnimations.staggerRevealChildren(body)
+        return outer
+    }
+
+    private fun buildSettingsSubPage(section: SettingsSection): View {
         val p = currentPalette()
         val txtPrimary = p.textPrimary
         val txtSub = p.textSecondary
 
-        val (outer, body) = makePageFrame(AppStrings.settings(this), { closeFullPage() })
+        val pageTitle = when (section) {
+            SettingsSection.MAP_SHADERS -> AppStrings.secMapShaders(this)
+            SettingsSection.LANGUAGE_LABELS -> AppStrings.secLanguageLabels(this)
+            SettingsSection.NAVIGATION_ROUTING -> AppStrings.secNavigationRouting(this)
+            SettingsSection.FIELD_DATA_SYNC -> AppStrings.secFieldDataSync(this)
+            SettingsSection.OFFLINE_CACHE -> AppStrings.secOfflineCache(this)
+            SettingsSection.ABOUT_BUILD -> AppStrings.secAboutBuild(this)
+        }
+
+        val (outer, body) = makePageFrame(pageTitle, {
+            if (pageBackStack.isNotEmpty()) {
+                pageBackStack.removeAt(pageBackStack.lastIndex).invoke()
+            } else {
+                openFullPage(::buildSettingsPage)
+            }
+        })
 
         fun addSegmentedBlock(
             card: LinearLayout,
@@ -4913,663 +5140,657 @@ class MainActivity : AppCompatActivity() {
             card.addView(DesignSystem.createSettingsSwitchRow(this, title, subtitle, checked, p, onChange))
         }
 
-        // =========================================================================
-        // 1. MAP & SHADERS
-        // =========================================================================
-        body.addView(DesignSystem.createSectionHeader(this, AppStrings.secMapShaders(this), p))
-        val mapCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
-
-        addSegmentedBlock(
-            mapCard,
-            title = "Map Style",
-            subtitle = "Crisp vector street grid or satellite hybrid imagery",
-            options = MapStyleMode.entries.map { it.id.toString() to it.label },
-            selectedId = mapStyleMode.id.toString(),
-            activeColor = { id -> if (id == MapStyleMode.VECTOR.id.toString()) p.green else p.accent }
-        ) { chosenId ->
-            val mode = MapStyleMode.fromId(chosenId.toIntOrNull() ?: MapStyleMode.VECTOR.id)
-            if (mapStyleMode != mode) {
-                mapStyleMode = mode
-                DevicePrefs.setMapStyleMode(this, mode)
-                applyMapChromeTheme()
-                loadMapStyle()
-            }
-        }
-
-        mapCard.addView(DesignSystem.createHairlineDivider(this, p))
-        addSegmentedBlock(
-            mapCard,
-            title = "Appearance Theme",
-            subtitle = "Automatically adapts map canvas and system bars",
-            options = listOf("day" to "Day", "night" to "Night", "auto" to "Auto"),
-            selectedId = DevicePrefs.getThemeMode(this)
-        ) { key ->
-            if (DevicePrefs.getThemeMode(this) != key) {
-                DevicePrefs.setThemeMode(this, key)
-                applyMapChromeTheme()
-                if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
-                openFullPage(::buildSettingsPage)
-            }
-        }
-
-        addCardSwitch(
-            mapCard,
-            title = "Mountain Hillshading",
-            subtitle = "Organic green terrain relief shading (Vector Street)",
-            checked = DevicePrefs.isHillshadeEnabled(this)
-        ) { enabled ->
-            DevicePrefs.setHillshadeEnabled(this, enabled)
-            map?.style?.let { st -> if (st.isFullyLoaded) applyHillshadeSettings(st) }
-        }
-
-        mapCard.addView(DesignSystem.createHairlineDivider(this, p))
-        addSegmentedBlock(
-            mapCard,
-            title = "Hillshading Intensity",
-            subtitle = "Adjust relief depth for sunlight readability",
-            options = HillshadeIntensity.entries.map { it.id to it.label },
-            selectedId = DevicePrefs.getHillshadeIntensity(this).id,
-            activeColor = { p.green }
-        ) { id ->
-            val next = HillshadeIntensity.fromId(id)
-            DevicePrefs.setHillshadeIntensity(this, next)
-            map?.style?.let { st -> if (st.isFullyLoaded) applyHillshadeSettings(st) }
-        }
-
-        addCardSwitch(
-            mapCard,
-            title = "Elevation Contour Lines",
-            subtitle = "Lightweight 100 m / 500 m / 1000 m lines & elevation labels",
-            checked = DevicePrefs.isContoursEnabled(this)
-        ) { enabled ->
-            DevicePrefs.setContoursEnabled(this, enabled)
-            val m = map
-            val st = m?.style
-            if (st != null && st.isFullyLoaded) {
-                contourManager.attachLayers(st, isDarkMapUi(), enabled)
-                contourManager.setVisible(st, enabled)
-                if (enabled) contourManager.scheduleUpdate(m, true, mapStyleMode == MapStyleMode.VECTOR)
-            }
-        }
-
-        addCardSwitch(
-            mapCard,
-            title = "3D Buildings",
-            subtitle = "Extruded building footprints in urban areas",
-            checked = DevicePrefs.is3dBuildingsEnabled(this)
-        ) { enabled ->
-            DevicePrefs.set3dBuildingsEnabled(this, enabled)
-            map?.style?.let { st -> if (st.isFullyLoaded) apply3dBuildingsToggle(st) }
-        }
-
-        addCardSwitch(
-            mapCard,
-            title = "Map Scale Bar",
-            subtitle = "Metric (m / km) or imperial distance reference on canvas",
-            checked = DevicePrefs.isScaleBarEnabled(this)
-        ) { enabled ->
-            DevicePrefs.setScaleBarEnabled(this, enabled)
-            updateScaleBar()
-        }
-        body.addView(mapCard)
-
-        // =========================================================================
-        // 2. LANGUAGE & LABELS
-        // =========================================================================
-        body.addView(DesignSystem.createSectionHeader(this, AppStrings.secLanguageLabels(this), p))
-        val langCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
-
-        addSegmentedBlock(
-            langCard,
-            title = "App Language",
-            subtitle = "Interface labels with RTL layout for Kurdish & Arabic",
-            options = AppLanguage.entries.map { it.id to it.label },
-            selectedId = DevicePrefs.getAppLanguage(this).id
-        ) { id ->
-            val next = AppLanguage.fromId(id)
-            if (DevicePrefs.getAppLanguage(this) != next) {
-                DevicePrefs.setAppLanguage(this, next)
-                openFullPage(::buildSettingsPage)
-            }
-        }
-
-        langCard.addView(DesignSystem.createHairlineDivider(this, p))
-        langCard.addView(TextView(this).apply {
-            text = "Map Label Language & Script"
-            textSize = 14.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            setPadding(0, dp(8), 0, dp(2))
+        body.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
         })
-        val curMapLang = DevicePrefs.getMapLabelLanguage(this)
-        val tvMapLangSub = TextView(this).apply {
-            text = curMapLang.subtitle
-            textSize = 12f
-            setTextColor(txtSub)
-            setPadding(0, 0, 0, dp(8))
-        }
-        langCard.addView(tvMapLangSub)
 
-        val mapLangScroll = android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-        }
-        val mapLangRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, dp(10))
-        }
-        val mapLangBtns = mutableMapOf<MapLabelLanguage, MaterialButton>()
-        fun syncMapLangBtns(activeLang: MapLabelLanguage) {
-            tvMapLangSub.text = activeLang.subtitle
-            mapLangBtns.forEach { (l, b) -> DesignSystem.styleSegmentedButton(b, l == activeLang, p) }
-        }
-        MapLabelLanguage.entries.forEachIndexed { idx, lang ->
-            val btn = MaterialButton(this).apply {
-                text = lang.label
-                textSize = 12.5f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(12), 0, dp(12), 0)
-                cornerRadius = dp(10)
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
-                    if (idx < MapLabelLanguage.entries.lastIndex) marginEnd = dp(6)
+        when (section) {
+            SettingsSection.MAP_SHADERS -> {
+                val mapCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
+
+                addSegmentedBlock(
+                    mapCard,
+                    title = "Map Style",
+                    subtitle = "Crisp vector street grid or satellite hybrid imagery",
+                    options = MapStyleMode.entries.map { it.id.toString() to it.label },
+                    selectedId = mapStyleMode.id.toString(),
+                    activeColor = { id -> if (id == MapStyleMode.VECTOR.id.toString()) p.green else p.accent }
+                ) { chosenId ->
+                    val mode = MapStyleMode.fromId(chosenId.toIntOrNull() ?: MapStyleMode.VECTOR.id)
+                    if (mapStyleMode != mode) {
+                        mapStyleMode = mode
+                        DevicePrefs.setMapStyleMode(this, mode)
+                        applyMapChromeTheme()
+                        loadMapStyle()
+                    }
                 }
-                UiAnimations.attachSnappyPress(this)
-                setOnClickListener {
-                    if (DevicePrefs.getMapLabelLanguage(this@MainActivity) == lang) return@setOnClickListener
-                    DevicePrefs.setMapLabelLanguage(this@MainActivity, lang)
-                    syncMapLangBtns(lang)
+
+                mapCard.addView(DesignSystem.createHairlineDivider(this, p))
+                addSegmentedBlock(
+                    mapCard,
+                    title = "Appearance Theme",
+                    subtitle = "Automatically adapts map canvas and system bars",
+                    options = listOf("day" to "Day", "night" to "Night", "auto" to "Auto"),
+                    selectedId = DevicePrefs.getThemeMode(this)
+                ) { key ->
+                    if (DevicePrefs.getThemeMode(this) != key) {
+                        DevicePrefs.setThemeMode(this, key)
+                        applyMapChromeTheme()
+                        if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
+                        reopenSettingsSection(SettingsSection.MAP_SHADERS)
+                    }
+                }
+
+                addCardSwitch(
+                    mapCard,
+                    title = "Mountain Hillshading",
+                    subtitle = "Organic green terrain relief shading (Vector Street)",
+                    checked = DevicePrefs.isHillshadeEnabled(this)
+                ) { enabled ->
+                    DevicePrefs.setHillshadeEnabled(this, enabled)
+                    map?.style?.let { st -> if (st.isFullyLoaded) applyHillshadeSettings(st) }
+                }
+
+                mapCard.addView(DesignSystem.createHairlineDivider(this, p))
+                addSegmentedBlock(
+                    mapCard,
+                    title = "Hillshading Intensity",
+                    subtitle = "Adjust relief depth for sunlight readability",
+                    options = HillshadeIntensity.entries.map { it.id to it.label },
+                    selectedId = DevicePrefs.getHillshadeIntensity(this).id,
+                    activeColor = { p.green }
+                ) { id ->
+                    val next = HillshadeIntensity.fromId(id)
+                    DevicePrefs.setHillshadeIntensity(this, next)
+                    map?.style?.let { st -> if (st.isFullyLoaded) applyHillshadeSettings(st) }
+                }
+
+                addCardSwitch(
+                    mapCard,
+                    title = "Elevation Contour Lines",
+                    subtitle = "Lightweight 100 m / 500 m / 1000 m lines & elevation labels",
+                    checked = DevicePrefs.isContoursEnabled(this)
+                ) { enabled ->
+                    DevicePrefs.setContoursEnabled(this, enabled)
+                    val m = map
+                    val st = m?.style
+                    if (st != null && st.isFullyLoaded) {
+                        contourManager.attachLayers(st, isDarkMapUi(), enabled)
+                        contourManager.setVisible(st, enabled)
+                        if (enabled) contourManager.scheduleUpdate(m, true, mapStyleMode == MapStyleMode.VECTOR)
+                    }
+                }
+
+                addCardSwitch(
+                    mapCard,
+                    title = "3D Buildings",
+                    subtitle = "Extruded building footprints in urban areas",
+                    checked = DevicePrefs.is3dBuildingsEnabled(this)
+                ) { enabled ->
+                    DevicePrefs.set3dBuildingsEnabled(this, enabled)
+                    map?.style?.let { st -> if (st.isFullyLoaded) apply3dBuildingsToggle(st) }
+                }
+
+                addCardSwitch(
+                    mapCard,
+                    title = "Map Scale Bar",
+                    subtitle = "Metric (m / km) or imperial distance reference on canvas",
+                    checked = DevicePrefs.isScaleBarEnabled(this)
+                ) { enabled ->
+                    DevicePrefs.setScaleBarEnabled(this, enabled)
+                    updateScaleBar()
+                }
+                body.addView(mapCard)
+            }
+
+            SettingsSection.LANGUAGE_LABELS -> {
+                val langCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
+
+                addSegmentedBlock(
+                    langCard,
+                    title = "App Language",
+                    subtitle = "Interface labels with RTL layout for Kurdish & Arabic",
+                    options = AppLanguage.entries.map { it.id to it.label },
+                    selectedId = DevicePrefs.getAppLanguage(this).id
+                ) { id ->
+                    val next = AppLanguage.fromId(id)
+                    if (DevicePrefs.getAppLanguage(this) != next) {
+                        DevicePrefs.setAppLanguage(this, next)
+                        reopenSettingsSection(SettingsSection.LANGUAGE_LABELS)
+                    }
+                }
+
+                langCard.addView(DesignSystem.createHairlineDivider(this, p))
+                langCard.addView(TextView(this).apply {
+                    text = "Map Label Language & Script"
+                    textSize = 14.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    setPadding(0, dp(8), 0, dp(2))
+                })
+                val curMapLang = DevicePrefs.getMapLabelLanguage(this)
+                val tvMapLangSub = TextView(this).apply {
+                    text = curMapLang.subtitle
+                    textSize = 12f
+                    setTextColor(txtSub)
+                    setPadding(0, 0, 0, dp(8))
+                }
+                langCard.addView(tvMapLangSub)
+
+                val mapLangScroll = android.widget.HorizontalScrollView(this).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                }
+                val mapLangRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 0, 0, dp(10))
+                }
+                val mapLangBtns = mutableMapOf<MapLabelLanguage, MaterialButton>()
+                fun syncMapLangBtns(activeLang: MapLabelLanguage) {
+                    tvMapLangSub.text = activeLang.subtitle
+                    mapLangBtns.forEach { (l, b) -> DesignSystem.styleSegmentedButton(b, l == activeLang, p) }
+                }
+                MapLabelLanguage.entries.forEachIndexed { idx, lang ->
+                    val btn = MaterialButton(this).apply {
+                        text = lang.label
+                        textSize = 12.5f
+                        isAllCaps = false
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(12), 0, dp(12), 0)
+                        cornerRadius = dp(10)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
+                            if (idx < MapLabelLanguage.entries.lastIndex) marginEnd = dp(6)
+                        }
+                        UiAnimations.attachSnappyPress(this)
+                        setOnClickListener {
+                            if (DevicePrefs.getMapLabelLanguage(this@MainActivity) == lang) return@setOnClickListener
+                            DevicePrefs.setMapLabelLanguage(this@MainActivity, lang)
+                            syncMapLangBtns(lang)
+                            map?.style?.let { st ->
+                                if (st.isFullyLoaded && mapStyleMode == MapStyleMode.VECTOR) {
+                                    MapCartography.applyOrganicCartography(this@MainActivity, st, isDarkMapUi())
+                                }
+                            }
+                        }
+                    }
+                    mapLangBtns[lang] = btn
+                    mapLangRow.addView(btn)
+                }
+                syncMapLangBtns(curMapLang)
+                mapLangScroll.addView(mapLangRow)
+                langCard.addView(mapLangScroll)
+
+                langCard.addView(DesignSystem.createHairlineDivider(this, p))
+                addSegmentedBlock(
+                    langCard,
+                    title = "POI & Icon Labels",
+                    subtitle = "Control text labels shown beneath map POI badges",
+                    options = PoiLabelBehavior.entries.map { it.id to it.label },
+                    selectedId = DevicePrefs.getPoiLabelBehavior(this).id
+                ) { id ->
+                    val next = PoiLabelBehavior.fromId(id)
+                    DevicePrefs.setPoiLabelBehavior(this, next)
                     map?.style?.let { st ->
                         if (st.isFullyLoaded && mapStyleMode == MapStyleMode.VECTOR) {
-                            MapCartography.applyOrganicCartography(this@MainActivity, st, isDarkMapUi())
+                            MapCartography.applyOrganicCartography(this, st, isDarkMapUi())
                         }
                     }
                 }
+                body.addView(langCard)
             }
-            mapLangBtns[lang] = btn
-            mapLangRow.addView(btn)
-        }
-        syncMapLangBtns(curMapLang)
-        mapLangScroll.addView(mapLangRow)
-        langCard.addView(mapLangScroll)
 
-        langCard.addView(DesignSystem.createHairlineDivider(this, p))
-        addSegmentedBlock(
-            langCard,
-            title = "POI & Icon Labels",
-            subtitle = "Control text labels shown beneath map POI badges",
-            options = PoiLabelBehavior.entries.map { it.id to it.label },
-            selectedId = DevicePrefs.getPoiLabelBehavior(this).id
-        ) { id ->
-            val next = PoiLabelBehavior.fromId(id)
-            DevicePrefs.setPoiLabelBehavior(this, next)
-            map?.style?.let { st ->
-                if (st.isFullyLoaded && mapStyleMode == MapStyleMode.VECTOR) {
-                    MapCartography.applyOrganicCartography(this, st, isDarkMapUi())
+            SettingsSection.NAVIGATION_ROUTING -> {
+                val navCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
+
+                addSegmentedBlock(
+                    navCard,
+                    title = "Default Routing Mode",
+                    subtitle = "Used for Route To previews and turn-by-turn navigation",
+                    options = TravelMode.entries.map { it.id to "${it.icon} ${it.label}" },
+                    selectedId = travelMode.id,
+                    activeColor = { id -> Color.parseColor(TravelMode.fromId(id).routeColorHex) }
+                ) { id ->
+                    val mode = TravelMode.fromId(id)
+                    travelMode = mode
+                    DevicePrefs.setTravelMode(this, mode)
                 }
-            }
-        }
-        body.addView(langCard)
 
-        // =========================================================================
-        // 3. NAVIGATION & ROUTING
-        // =========================================================================
-        body.addView(DesignSystem.createSectionHeader(this, AppStrings.secNavigationRouting(this), p))
-        val navCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
-
-        addSegmentedBlock(
-            navCard,
-            title = "Default Routing Mode",
-            subtitle = "Used for Route To previews and turn-by-turn navigation",
-            options = TravelMode.entries.map { it.id to "${it.icon} ${it.label}" },
-            selectedId = travelMode.id,
-            activeColor = { id -> Color.parseColor(TravelMode.fromId(id).routeColorHex) }
-        ) { id ->
-            val mode = TravelMode.fromId(id)
-            travelMode = mode
-            DevicePrefs.setTravelMode(this, mode)
-        }
-
-        navCard.addView(DesignSystem.createHairlineDivider(this, p))
-        addSegmentedBlock(
-            navCard,
-            title = "Speed & Distance Units",
-            subtitle = "Applies to Speed HUD, scale bar, ruler, and distances",
-            options = SpeedUnit.entries.map { it.id to it.label },
-            selectedId = DevicePrefs.getSpeedUnit(this).id
-        ) { id ->
-            DevicePrefs.setSpeedUnit(this, SpeedUnit.fromId(id))
-            updateSpeedBadge(currentLocation)
-            updateScaleBar()
-            if (isRulerMode) updateRulerUi()
-        }
-
-        addCardSwitch(
-            navCard,
-            title = "Live Speed HUD",
-            subtitle = "Tabular speedometer readout while driving or navigating",
-            checked = DevicePrefs.isSpeedIndicatorEnabled(this)
-        ) { enabled ->
-            DevicePrefs.setSpeedIndicatorEnabled(this, enabled)
-            updateSpeedBadge(currentLocation)
-        }
-        addCardSwitch(
-            navCard,
-            title = "Auto-Follow Live GPS",
-            subtitle = "Keep map centered on GPS arrow while moving",
-            checked = DevicePrefs.isAutoFollow(this)
-        ) { DevicePrefs.setAutoFollow(this, it) }
-        addCardSwitch(
-            navCard,
-            title = "Turn-by-Turn Voice Prompts",
-            subtitle = "Spoken maneuver guidance during active navigation",
-            checked = DevicePrefs.isVoiceNav(this)
-        ) {
-            DevicePrefs.setVoiceNav(this, it)
-            btnNavVoice.alpha = if (it) 1.0f else 0.4f
-        }
-        addCardSwitch(
-            navCard,
-            title = "Keep Screen Awake",
-            subtitle = "Prevent display sleep during field surveys",
-            checked = DevicePrefs.isKeepAwake(this)
-        ) {
-            DevicePrefs.setKeepAwake(this, it)
-            applyKeepAwakeFlag()
-        }
-        body.addView(navCard)
-
-        // =========================================================================
-        // 4. FIELD DATA & SYNC (Bookmarks, Firebase/Kobo, KML/KMZ, Device Stamp)
-        // =========================================================================
-        body.addView(DesignSystem.createSectionHeader(this, AppStrings.secFieldDataSync(this), p))
-        val fieldCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
-
-        addCardSwitch(
-            fieldCard,
-            title = "Show Bookmark Titles on Map",
-            subtitle = "Display non-overlapping pin names beneath teardrop pins",
-            checked = DevicePrefs.isShowBookmarkTitles(this),
-            addDivider = false
-        ) {
-            DevicePrefs.setShowBookmarkTitles(this, it)
-            renderMapData()
-        }
-        addCardSwitch(
-            fieldCard,
-            title = "Quick Map Tools",
-            subtitle = "Show All Pins filter pill, Lasso circle-select, and quick Import",
-            checked = DevicePrefs.isShowExtraMapTools(this)
-        ) {
-            DevicePrefs.setShowExtraMapTools(this, it)
-            applyExtraMapToolsVisibility()
-        }
-
-        fieldCard.addView(DesignSystem.createHairlineDivider(this, p))
-
-        // Firebase / KoboToolbox Sync Status & Quick KML/KMZ Actions
-        val localCount = layers.count { LocalFolderStore.isLocalLayerId(it.id) }
-        val cloudCount = layers.size - localCount
-        fieldCard.addView(TextView(this).apply {
-            text = "Firebase Sync & KoboToolbox / KML"
-            textSize = 14.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            setPadding(0, dp(10), 0, dp(2))
-        })
-        fieldCard.addView(TextView(this).apply {
-            val statusStr = if (isLiveConnected) "Cloud live connected" else "Offline cache active"
-            text = "$statusStr • $localCount local & $cloudCount cloud folders (${pins.size} pins)"
-            textSize = 12f
-            setTextColor(if (isLiveConnected) p.green else p.amber)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, 0, 0, dp(10))
-        })
-
-        val syncActionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, dp(10))
-        }
-        syncActionRow.addView(MaterialButton(this).apply {
-            text = "Import KML/KMZ"
-            textSize = 12.5f
-            isAllCaps = false
-            maxLines = 1
-            insetTop = 0
-            insetBottom = 0
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.green)
-            cornerRadius = dp(10)
-            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                closeFullPage()
-                kmlPicker.launch(arrayOf("*/*"))
-            }
-        })
-        syncActionRow.addView(MaterialButton(this).apply {
-            text = "Bookmarks & Export"
-            textSize = 12.5f
-            isAllCaps = false
-            maxLines = 1
-            insetTop = 0
-            insetBottom = 0
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.accent)
-            cornerRadius = dp(10)
-            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener { openFullPage(::buildBookmarksAndTracksPage) }
-        })
-        syncActionRow.addView(MaterialButton(this).apply {
-            text = "Sync"
-            textSize = 12.5f
-            isAllCaps = false
-            maxLines = 1
-            insetTop = 0
-            insetBottom = 0
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(10)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
-            DesignSystem.styleSegmentedButton(this, false, p)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                refreshJoinedSync()
-                Toast.makeText(this@MainActivity, "Syncing folders...", Toast.LENGTH_SHORT).show()
-            }
-        })
-        fieldCard.addView(syncActionRow)
-
-        fieldCard.addView(DesignSystem.createHairlineDivider(this, p))
-        fieldCard.addView(TextView(this).apply {
-            text = "Field Operator Stamp"
-            textSize = 14.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            setPadding(0, dp(10), 0, dp(2))
-        })
-        val tvCurrentStamp = TextView(this).apply {
-            text = DevicePrefs.getDeviceStamp(this@MainActivity)
-            textSize = 12f
-            setTextColor(txtSub)
-            setPadding(0, 0, 0, dp(8))
-        }
-        fieldCard.addView(tvCurrentStamp)
-
-        val nameRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(8))
-        }
-        val etDeviceName = EditText(this).apply {
-            hint = "Display name (e.g. Team 4 / Supervisor)"
-            textSize = 14f
-            setTextColor(txtPrimary)
-            setHintTextColor(txtSub)
-            setSingleLine(true)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = GradientDrawable().apply {
-                setColor(p.chipSurface)
-                cornerRadius = dp(10).toFloat()
-            }
-            setText(DevicePrefs.getCustomName(this@MainActivity))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        nameRow.addView(etDeviceName)
-        nameRow.addView(MaterialButton(this).apply {
-            text = "Save"
-            textSize = 12.5f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.accent)
-            cornerRadius = dp(10)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                dp(40)
-            ).apply { marginStart = dp(8) }
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                DevicePrefs.setCustomName(this@MainActivity, etDeviceName.text.toString())
-                val updated = DevicePrefs.getDeviceStamp(this@MainActivity)
-                tvCurrentStamp.text = updated
-                Toast.makeText(this@MainActivity, "Updated: $updated", Toast.LENGTH_SHORT).show()
-            }
-        })
-        fieldCard.addView(nameRow)
-        body.addView(fieldCard)
-
-        // =========================================================================
-        // 5. OFFLINE MAPS & CACHE
-        // =========================================================================
-        body.addView(DesignSystem.createSectionHeader(this, AppStrings.secOfflineCache(this), p))
-        body.addView(TextView(this).apply {
-            text = "Each offline map pack bundles vector tiles and embedded turn-by-turn road routing."
-            textSize = 12f
-            setTextColor(txtSub)
-            setPadding(dp(6), 0, dp(6), dp(8))
-        })
-
-        val packUpdaters = mutableListOf<() -> Unit>()
-        val pixelRatio = resources.displayMetrics.density
-
-        fun addOfflineCard(
-            packId: String,
-            title: String,
-            subtitle: String,
-            onDownload: () -> Unit,
-            onDownloadRoadsOnly: () -> Unit
-        ) {
-            val card = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12)
-            card.addView(TextView(this).apply {
-                text = title
-                textSize = 15f
-                setTextColor(txtPrimary)
-                setTypeface(null, Typeface.BOLD)
-            })
-            card.addView(TextView(this).apply {
-                text = subtitle
-                textSize = 12f
-                setTextColor(txtSub)
-                setPadding(0, dp(2), 0, dp(6))
-            })
-            val tvStatus = TextView(this).apply {
-                textSize = 12f
-                setTextColor(p.green)
-                DesignSystem.applyTabularNumerals(this)
-            }
-            card.addView(tvStatus)
-
-            val tvRoadStatus = TextView(this).apply {
-                textSize = 11.5f
-                setTextColor(p.accent)
-                DesignSystem.applyTabularNumerals(this)
-                visibility = View.GONE
-                setPadding(0, dp(2), 0, 0)
-            }
-            card.addView(tvRoadStatus)
-
-            val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-                max = 100
-                visibility = View.GONE
-            }
-            card.addView(progressBar)
-
-            val btnRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(8), 0, 0)
-            }
-            val btnDl = MaterialButton(this).apply {
-                textSize = 12.5f
-                isAllCaps = false
-                maxLines = 1
-                insetTop = 0
-                insetBottom = 0
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(10), 0, dp(10), 0)
-                setTextColor(Color.WHITE)
-                setBackgroundColor(p.green)
-                cornerRadius = dp(10)
-                layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
-                UiAnimations.attachSnappyPress(this)
-            }
-            val btnDel = MaterialButton(this).apply {
-                text = "Delete"
-                textSize = 12.5f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(10), 0, dp(10), 0)
-                setTextColor(p.red)
-                setBackgroundColor(Color.TRANSPARENT)
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42))
-            }
-
-            fun refreshCard() {
-                val st = offlineMaps.getState(packId)
-                val busy = st.isDownloading || st.isRoadDownloading
-                val fullyReady = st.isDownloaded && st.hasRoadGraph
-                tvStatus.text = st.statusText
-                if (st.roadStatusText.isNotBlank() && !fullyReady) {
-                    tvRoadStatus.text = st.roadStatusText
-                    tvRoadStatus.visibility = View.VISIBLE
-                } else {
-                    tvRoadStatus.visibility = View.GONE
+                navCard.addView(DesignSystem.createHairlineDivider(this, p))
+                addSegmentedBlock(
+                    navCard,
+                    title = "Speed & Distance Units",
+                    subtitle = "Applies to Speed HUD, scale bar, ruler, and distances",
+                    options = SpeedUnit.entries.map { it.id to it.label },
+                    selectedId = DevicePrefs.getSpeedUnit(this).id
+                ) { id ->
+                    DevicePrefs.setSpeedUnit(this, SpeedUnit.fromId(id))
+                    updateSpeedBadge(currentLocation)
+                    updateScaleBar()
+                    if (isRulerMode) updateRulerUi()
                 }
-                progressBar.visibility = if (busy) View.VISIBLE else View.GONE
-                progressBar.isIndeterminate = !st.isDownloading && st.isRoadDownloading
-                if (st.isDownloading) progressBar.progress = st.progressPercent
 
-                btnDl.text = when {
-                    busy -> "Pause"
-                    fullyReady -> "Map + Routing Ready"
-                    st.isDownloaded && !st.hasRoadGraph -> "Add Offline Roads"
-                    else -> "Download Map + Roads"
+                addCardSwitch(
+                    navCard,
+                    title = "Live Speed HUD",
+                    subtitle = "Tabular speedometer readout while driving or navigating",
+                    checked = DevicePrefs.isSpeedIndicatorEnabled(this)
+                ) { enabled ->
+                    DevicePrefs.setSpeedIndicatorEnabled(this, enabled)
+                    updateSpeedBadge(currentLocation)
                 }
-                btnDl.isEnabled = !fullyReady || busy
-                btnDl.alpha = if (btnDl.isEnabled) 1f else 0.55f
+                addCardSwitch(
+                    navCard,
+                    title = "Auto-Follow Live GPS",
+                    subtitle = "Keep map centered on GPS arrow while moving",
+                    checked = DevicePrefs.isAutoFollow(this)
+                ) { DevicePrefs.setAutoFollow(this, it) }
+                addCardSwitch(
+                    navCard,
+                    title = "Turn-by-Turn Voice Prompts",
+                    subtitle = "Spoken maneuver guidance during active navigation",
+                    checked = DevicePrefs.isVoiceNav(this)
+                ) {
+                    DevicePrefs.setVoiceNav(this, it)
+                    btnNavVoice.alpha = if (it) 1.0f else 0.4f
+                }
+                addCardSwitch(
+                    navCard,
+                    title = "Keep Screen Awake",
+                    subtitle = "Prevent display sleep during field surveys",
+                    checked = DevicePrefs.isKeepAwake(this)
+                ) {
+                    DevicePrefs.setKeepAwake(this, it)
+                    applyKeepAwakeFlag()
+                }
+                body.addView(navCard)
             }
 
-            btnDl.setOnClickListener {
-                val st = offlineMaps.getState(packId)
-                when {
-                    st.isDownloading || st.isRoadDownloading -> offlineMaps.pauseDownload(packId)
-                    st.isDownloaded && !st.hasRoadGraph -> onDownloadRoadsOnly()
-                    else -> onDownload()
+            SettingsSection.FIELD_DATA_SYNC -> {
+                val fieldCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
+
+                addCardSwitch(
+                    fieldCard,
+                    title = "Show Bookmark Titles on Map",
+                    subtitle = "Display non-overlapping pin names beneath teardrop pins",
+                    checked = DevicePrefs.isShowBookmarkTitles(this),
+                    addDivider = false
+                ) {
+                    DevicePrefs.setShowBookmarkTitles(this, it)
+                    renderMapData()
                 }
-            }
-            btnDel.setOnClickListener {
-                offlineMaps.deletePack(packId) { msg ->
-                    runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                addCardSwitch(
+                    fieldCard,
+                    title = "Quick Map Tools",
+                    subtitle = "Show All Pins filter pill, Lasso circle-select, and quick Import",
+                    checked = DevicePrefs.isShowExtraMapTools(this)
+                ) {
+                    DevicePrefs.setShowExtraMapTools(this, it)
+                    applyExtraMapToolsVisibility()
                 }
+
+                fieldCard.addView(DesignSystem.createHairlineDivider(this, p))
+
+                val localCount = layers.count { LocalFolderStore.isLocalLayerId(it.id) }
+                val cloudCount = layers.size - localCount
+                fieldCard.addView(TextView(this).apply {
+                    text = "Firebase Sync & KoboToolbox / KML"
+                    textSize = 14.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    setPadding(0, dp(10), 0, dp(2))
+                })
+                fieldCard.addView(TextView(this).apply {
+                    val statusStr = if (isLiveConnected) "Cloud live connected" else "Offline cache active"
+                    text = "$statusStr • $localCount local & $cloudCount cloud folders (${pins.size} pins)"
+                    textSize = 12f
+                    setTextColor(if (isLiveConnected) p.green else p.amber)
+                    DesignSystem.applyTabularNumerals(this)
+                    setPadding(0, 0, 0, dp(10))
+                })
+
+                val syncActionRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 0, 0, dp(10))
+                }
+                syncActionRow.addView(MaterialButton(this).apply {
+                    text = "Import KML/KMZ"
+                    textSize = 12.5f
+                    isAllCaps = false
+                    maxLines = 1
+                    insetTop = 0
+                    insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(dp(8), 0, dp(8), 0)
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(p.green)
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        closeFullPage()
+                        kmlPicker.launch(arrayOf("*/*"))
+                    }
+                })
+                syncActionRow.addView(MaterialButton(this).apply {
+                    text = "Bookmarks & Export"
+                    textSize = 12.5f
+                    isAllCaps = false
+                    maxLines = 1
+                    insetTop = 0
+                    insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(dp(8), 0, dp(8), 0)
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(p.accent)
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener { openFullPage(::buildBookmarksAndTracksPage) }
+                })
+                syncActionRow.addView(MaterialButton(this).apply {
+                    text = "Sync"
+                    textSize = 12.5f
+                    isAllCaps = false
+                    maxLines = 1
+                    insetTop = 0
+                    insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(dp(10), 0, dp(10), 0)
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
+                    DesignSystem.styleSegmentedButton(this, false, p)
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        refreshJoinedSync()
+                        Toast.makeText(this@MainActivity, "Syncing folders...", Toast.LENGTH_SHORT).show()
+                    }
+                })
+                fieldCard.addView(syncActionRow)
+
+                fieldCard.addView(DesignSystem.createHairlineDivider(this, p))
+                fieldCard.addView(TextView(this).apply {
+                    text = "Field Operator Stamp"
+                    textSize = 14.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    setPadding(0, dp(10), 0, dp(2))
+                })
+                val tvCurrentStamp = TextView(this).apply {
+                    text = DevicePrefs.getDeviceStamp(this@MainActivity)
+                    textSize = 12f
+                    setTextColor(txtSub)
+                    setPadding(0, 0, 0, dp(8))
+                }
+                fieldCard.addView(tvCurrentStamp)
+
+                val nameRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 0, 0, dp(8))
+                }
+                val etDeviceName = EditText(this).apply {
+                    hint = "Display name (e.g. Team 4 / Supervisor)"
+                    textSize = 14f
+                    setTextColor(txtPrimary)
+                    setHintTextColor(txtSub)
+                    setSingleLine(true)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    background = GradientDrawable().apply {
+                        setColor(p.chipSurface)
+                        cornerRadius = dp(10).toFloat()
+                    }
+                    setText(DevicePrefs.getCustomName(this@MainActivity))
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                nameRow.addView(etDeviceName)
+                nameRow.addView(MaterialButton(this).apply {
+                    text = "Save"
+                    textSize = 12.5f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(p.accent)
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        dp(40)
+                    ).apply { marginStart = dp(8) }
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        DevicePrefs.setCustomName(this@MainActivity, etDeviceName.text.toString())
+                        val updated = DevicePrefs.getDeviceStamp(this@MainActivity)
+                        tvCurrentStamp.text = updated
+                        Toast.makeText(this@MainActivity, "Updated: $updated", Toast.LENGTH_SHORT).show()
+                    }
+                })
+                fieldCard.addView(nameRow)
+                body.addView(fieldCard)
             }
 
-            btnRow.addView(btnDl)
-            btnRow.addView(btnDel)
-            card.addView(btnRow)
-            body.addView(card)
+            SettingsSection.OFFLINE_CACHE -> {
+                body.addView(TextView(this).apply {
+                    text = "Each offline map pack bundles vector tiles and embedded turn-by-turn road routing."
+                    textSize = 12.5f
+                    setTextColor(txtSub)
+                    setPadding(dp(4), 0, dp(4), dp(10))
+                })
 
-            refreshCard()
-            packUpdaters += ::refreshCard
+                val packUpdaters = mutableListOf<() -> Unit>()
+                val pixelRatio = resources.displayMetrics.density
+
+                fun addOfflineCard(
+                    packId: String,
+                    title: String,
+                    subtitle: String,
+                    onDownload: () -> Unit,
+                    onDownloadRoadsOnly: () -> Unit
+                ) {
+                    val card = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12)
+                    card.addView(TextView(this).apply {
+                        text = title
+                        textSize = 15f
+                        setTextColor(txtPrimary)
+                        setTypeface(null, Typeface.BOLD)
+                    })
+                    card.addView(TextView(this).apply {
+                        text = subtitle
+                        textSize = 12f
+                        setTextColor(txtSub)
+                        setPadding(0, dp(2), 0, dp(6))
+                    })
+                    val tvStatus = TextView(this).apply {
+                        textSize = 12f
+                        setTextColor(p.green)
+                        DesignSystem.applyTabularNumerals(this)
+                    }
+                    card.addView(tvStatus)
+
+                    val tvRoadStatus = TextView(this).apply {
+                        textSize = 11.5f
+                        setTextColor(p.accent)
+                        DesignSystem.applyTabularNumerals(this)
+                        visibility = View.GONE
+                        setPadding(0, dp(2), 0, 0)
+                    }
+                    card.addView(tvRoadStatus)
+
+                    val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                        max = 100
+                        visibility = View.GONE
+                    }
+                    card.addView(progressBar)
+
+                    val btnRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, dp(8), 0, 0)
+                    }
+                    val btnDl = MaterialButton(this).apply {
+                        textSize = 12.5f
+                        isAllCaps = false
+                        maxLines = 1
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        setTextColor(Color.WHITE)
+                        setBackgroundColor(p.green)
+                        cornerRadius = dp(10)
+                        layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+                        UiAnimations.attachSnappyPress(this)
+                    }
+                    val btnDel = MaterialButton(this).apply {
+                        text = "Delete"
+                        textSize = 12.5f
+                        isAllCaps = false
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        setTextColor(p.red)
+                        setBackgroundColor(Color.TRANSPARENT)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42))
+                    }
+
+                    fun refreshCard() {
+                        val st = offlineMaps.getState(packId)
+                        val busy = st.isDownloading || st.isRoadDownloading
+                        val fullyReady = st.isDownloaded && st.hasRoadGraph
+                        tvStatus.text = st.statusText
+                        if (st.roadStatusText.isNotBlank() && !fullyReady) {
+                            tvRoadStatus.text = st.roadStatusText
+                            tvRoadStatus.visibility = View.VISIBLE
+                        } else {
+                            tvRoadStatus.visibility = View.GONE
+                        }
+                        progressBar.visibility = if (busy) View.VISIBLE else View.GONE
+                        progressBar.isIndeterminate = !st.isDownloading && st.isRoadDownloading
+                        if (st.isDownloading) progressBar.progress = st.progressPercent
+
+                        btnDl.text = when {
+                            busy -> "Pause"
+                            fullyReady -> "Map + Routing Ready"
+                            st.isDownloaded && !st.hasRoadGraph -> "Add Offline Roads"
+                            else -> "Download Map + Roads"
+                        }
+                        btnDl.isEnabled = !fullyReady || busy
+                        btnDl.alpha = if (btnDl.isEnabled) 1f else 0.55f
+                    }
+
+                    btnDl.setOnClickListener {
+                        val st = offlineMaps.getState(packId)
+                        when {
+                            st.isDownloading || st.isRoadDownloading -> offlineMaps.pauseDownload(packId)
+                            st.isDownloaded && !st.hasRoadGraph -> onDownloadRoadsOnly()
+                            else -> onDownload()
+                        }
+                    }
+                    btnDel.setOnClickListener {
+                        offlineMaps.deletePack(packId) { msg ->
+                            runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                        }
+                    }
+
+                    btnRow.addView(btnDl)
+                    btnRow.addView(btnDel)
+                    card.addView(btnRow)
+                    body.addView(card)
+
+                    refreshCard()
+                    packUpdaters += ::refreshCard
+                }
+
+                OfflineMapManager.REGIONAL_PACKS.forEach { pack ->
+                    addOfflineCard(
+                        pack.id,
+                        pack.title,
+                        pack.subtitle,
+                        onDownload = { offlineMaps.downloadPack(pack, pixelRatio) },
+                        onDownloadRoadsOnly = { offlineMaps.downloadRoadGraphOnly(pack) }
+                    )
+                }
+
+                body.addView(MaterialButton(this).apply {
+                    text = "Clear Temporary Map Cache"
+                    textSize = 13f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    cornerRadius = dp(12)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
+                        topMargin = dp(2)
+                        bottomMargin = dp(4)
+                    }
+                    DesignSystem.styleSegmentedButton(this, false, p)
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        offlineMaps.clearAmbientCache { msg ->
+                            runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                        }
+                    }
+                })
+
+                offlineMaps.setStateListener {
+                    runOnUiThread { packUpdaters.forEach { it() } }
+                }
+                offlineMaps.refreshAll()
+                activePageCleanup = { offlineMaps.setStateListener(null) }
+            }
+
+            SettingsSection.ABOUT_BUILD -> {
+                val aboutCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
+
+                addCardSwitch(
+                    aboutCard,
+                    title = "Reduce Motion",
+                    subtitle = "Disable slide transitions for instant screen swaps",
+                    checked = DevicePrefs.isReducedMotion(this),
+                    addDivider = false
+                ) { DevicePrefs.setReducedMotion(this, it) }
+
+                aboutCard.addView(DesignSystem.createHairlineDivider(this, p))
+                aboutCard.addView(TextView(this).apply {
+                    text = "TerraSync v${getInstalledVersionName()} • MapLibre GL"
+                    textSize = 14f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    DesignSystem.applyTabularNumerals(this)
+                    setPadding(0, dp(10), 0, dp(2))
+                })
+                aboutCard.addView(TextView(this).apply {
+                    val diag = "Device #${DevicePrefs.getDeviceId(this@MainActivity)} • ${layers.size} folders • ${pins.size} pins • ${tracks.size} tracks"
+                    text = diag
+                    textSize = 12f
+                    setTextColor(txtSub)
+                    DesignSystem.applyTabularNumerals(this)
+                    setPadding(0, 0, 0, dp(10))
+                })
+                aboutCard.addView(MaterialButton(this).apply {
+                    text = "Open About & Diagnostics"
+                    textSize = 13f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                        bottomMargin = dp(8)
+                    }
+                    DesignSystem.styleSegmentedButton(this, false, p)
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener { openFullPage(::buildAboutPage) }
+                })
+                body.addView(aboutCard)
+            }
         }
 
-        OfflineMapManager.REGIONAL_PACKS.forEach { pack ->
-            addOfflineCard(
-                pack.id,
-                pack.title,
-                pack.subtitle,
-                onDownload = { offlineMaps.downloadPack(pack, pixelRatio) },
-                onDownloadRoadsOnly = { offlineMaps.downloadRoadGraphOnly(pack) }
-            )
-        }
-
-        body.addView(MaterialButton(this).apply {
-            text = "Clear Temporary Map Cache"
-            textSize = 13f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(12)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
-                topMargin = dp(2)
-                bottomMargin = dp(4)
-            }
-            DesignSystem.styleSegmentedButton(this, false, p)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                offlineMaps.clearAmbientCache { msg ->
-                    runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
-                }
-            }
-        })
-
-        // =========================================================================
-        // 6. ABOUT & BUILD DIAGNOSTICS
-        // =========================================================================
-        body.addView(DesignSystem.createSectionHeader(this, AppStrings.secAboutBuild(this), p))
-        val aboutCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
-
-        addCardSwitch(
-            aboutCard,
-            title = "Reduce Motion",
-            subtitle = "Disable slide transitions for instant screen swaps",
-            checked = DevicePrefs.isReducedMotion(this),
-            addDivider = false
-        ) { DevicePrefs.setReducedMotion(this, it) }
-
-        aboutCard.addView(DesignSystem.createHairlineDivider(this, p))
-        aboutCard.addView(TextView(this).apply {
-            text = "TerraSync v${getInstalledVersionName()} • MapLibre GL"
-            textSize = 14f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, dp(10), 0, dp(2))
-        })
-        aboutCard.addView(TextView(this).apply {
-            val diag = "Device #${DevicePrefs.getDeviceId(this@MainActivity)} • ${layers.size} folders • ${pins.size} pins • ${tracks.size} tracks"
-            text = diag
-            textSize = 12f
-            setTextColor(txtSub)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, 0, 0, dp(10))
-        })
-        aboutCard.addView(MaterialButton(this).apply {
-            text = "Open About & Diagnostics"
-            textSize = 13f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(10)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
-                bottomMargin = dp(8)
-            }
-            DesignSystem.styleSegmentedButton(this, false, p)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener { openFullPage(::buildAboutPage) }
-        })
-        body.addView(aboutCard)
-
-        offlineMaps.setStateListener {
-            runOnUiThread { packUpdaters.forEach { it() } }
-        }
-        offlineMaps.refreshAll()
-        UiAnimations.staggerRevealChildren(body)
         return outer
     }
 
