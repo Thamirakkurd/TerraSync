@@ -219,7 +219,7 @@ class SyncRepo {
                 "lng" to p.lng,
                 "status" to p.status,
                 "issueReason" to p.issueReason,
-                "updatedAt" to p.updatedAt.takeIf { it > 0L } ?: now,
+                "updatedAt" to (p.updatedAt.takeIf { it > 0L } ?: now),
                 "isEdited" to p.isEdited,
                 "editedBy" to p.editedBy,
                 "editedAt" to p.editedAt,
