@@ -186,6 +186,66 @@ class SyncRepo {
         onDone(true, "Imported ${parsed.pins.size} pins (Code: $shareCode)", shareCode)
     }
 
+    fun combineLayers(
+        newLayerId: String,
+        layerName: String,
+        createdBy: String,
+        creatorDeviceId: String,
+        sourcePins: List<PinItem>,
+        sourceTracks: List<TrackItem>,
+        onDone: (Boolean, String, String) -> Unit
+    ) {
+        val now = System.currentTimeMillis()
+        val shareCode = generateShareCode()
+        val ops = mutableListOf<Pair<com.google.firebase.firestore.DocumentReference, Map<String, Any>>>()
+
+        ops += db.collection("layers").document(newLayerId) to mapOf(
+            "id" to newLayerId,
+            "name" to layerName,
+            "shareCode" to shareCode,
+            "createdBy" to createdBy,
+            "creatorDeviceId" to creatorDeviceId,
+            "updatedAt" to now
+        )
+
+        sourcePins.forEach { p ->
+            val newId = UUID.randomUUID().toString()
+            ops += db.collection("pins").document(newId) to mapOf(
+                "id" to newId,
+                "layerId" to newLayerId,
+                "name" to p.name,
+                "description" to p.description,
+                "lat" to p.lat,
+                "lng" to p.lng,
+                "status" to p.status,
+                "issueReason" to p.issueReason,
+                "updatedAt" to p.updatedAt.takeIf { it > 0L } ?: now,
+                "isEdited" to p.isEdited,
+                "editedBy" to p.editedBy,
+                "editedAt" to p.editedAt,
+                "editHistory" to p.editHistory
+            )
+        }
+
+        sourceTracks.forEach { t ->
+            val newId = UUID.randomUUID().toString()
+            ops += db.collection("tracks").document(newId) to mapOf(
+                "id" to newId,
+                "layerId" to newLayerId,
+                "name" to t.name,
+                "coords" to t.coords,
+                "updatedAt" to now
+            )
+        }
+
+        ops.chunked(400).forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { (ref, data) -> batch.set(ref, data) }
+            batch.commit()
+        }
+        onDone(true, "Combined ${sourcePins.size} pins into \"$layerName\" (Code: $shareCode)", shareCode)
+    }
+
     fun joinLayerByCode(rawCode: String, onDone: (Boolean, String, String?) -> Unit) {
         val code = rawCode.trim().uppercase().replace("-", "")
         if (code.length < 4) {

@@ -1,9 +1,7 @@
 package com.terrasync.app
 
 import android.content.Context
-import android.content.res.Configuration
 import android.os.Build
-import java.util.Calendar
 import java.util.UUID
 
 object DevicePrefs {
@@ -24,7 +22,6 @@ object DevicePrefs {
     private const val KEY_3D_BUILDINGS = "buildings_3d_enabled"
     private const val KEY_TRAVEL_MODE = "travel_mode"
     private const val KEY_SPEED_INDICATOR = "speed_indicator_enabled"
-    private const val KEY_NIGHT_MODE = "night_map_mode" // 0=Off, 1=Auto, 2=On
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -148,9 +145,4 @@ object DevicePrefs {
 
     fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, true)
     fun setHillshadeEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_HILLSHADE, v).apply()
-
-    fun getNightMode(ctx: Context): Int = prefs(ctx).getInt(KEY_NIGHT_MODE, 0)
-    fun setNightMode(ctx: Context, mode: Int) = prefs(ctx).edit().putInt(KEY_NIGHT_MODE, mode.coerceIn(0, 2)).apply()
-
-    fun isNightActive(ctx: Context): Boolean = false
 }

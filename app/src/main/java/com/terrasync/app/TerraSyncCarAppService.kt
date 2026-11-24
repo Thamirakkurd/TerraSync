@@ -140,6 +140,8 @@ private class TerraSyncCarPinsScreen(
     private val repo: SyncRepo
 ) : Screen(carContext) {
 
+    private val workingPins = sourcePins.toMutableList()
+
     @SuppressLint("MissingPermission")
     private fun getLastKnownLocation(): Location? {
         val hasPerm = ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -153,7 +155,7 @@ private class TerraSyncCarPinsScreen(
 
     override fun onGetTemplate(): Template {
         val myLoc = getLastKnownLocation()
-        val prioritized = sourcePins.sortedWith(
+        val prioritized = workingPins.sortedWith(
             compareBy<PinItem> {
                 when (it.status.lowercase()) {
                     "issue" -> 0
@@ -185,7 +187,7 @@ private class TerraSyncCarPinsScreen(
             val details = buildString {
                 append("  • ")
                 append(statusLabel(pin.status))
-                if (pin.status.equals("issue", true) && pin.issueReason.isNotBlank()) {
+                if ((pin.status.equals("issue", true) || pin.status.equals("done", true)) && pin.issueReason.isNotBlank()) {
                     append(" (${pin.issueReason})")
                 } else if (folderName.isNotBlank()) {
                     append(" • $folderName")
@@ -214,7 +216,11 @@ private class TerraSyncCarPinsScreen(
                     .setBrowsable(true)
                     .setOnClickListener {
                         screenManager.push(
-                            TerraSyncCarPinDetailScreen(carContext, pin, folderName, repo)
+                            TerraSyncCarPinDetailScreen(carContext, pin, folderName, repo) {
+                                val idx = workingPins.indexOfFirst { it.id == pin.id }
+                                if (idx >= 0) workingPins[idx] = workingPins[idx].copy(status = "done", issueReason = "")
+                                invalidate()
+                            }
                         )
                     }
                     .build()
@@ -237,7 +243,8 @@ private class TerraSyncCarPinDetailScreen(
     carContext: CarContext,
     private val pin: PinItem,
     private val folderName: String,
-    private val repo: SyncRepo
+    private val repo: SyncRepo,
+    private val onMarkedDone: () -> Unit
 ) : Screen(carContext) {
 
     private var currentStatus = pin.status
@@ -257,10 +264,10 @@ private class TerraSyncCarPinDetailScreen(
                     .build()
             )
 
-        if (pin.issueReason.isNotBlank()) {
+        if (pin.issueReason.isNotBlank() && (currentStatus.equals("issue", true) || currentStatus.equals("done", true))) {
             paneBuilder.addRow(
                 Row.Builder()
-                    .setTitle("Issue")
+                    .setTitle(if (currentStatus.equals("done", true)) "Done Note" else "Issue")
                     .addText(pin.issueReason)
                     .build()
             )
@@ -296,6 +303,7 @@ private class TerraSyncCarPinDetailScreen(
                     val stamp = DevicePrefs.getDeviceStamp(carContext)
                     repo.updatePinStatus(pin, "done", stamp)
                     currentStatus = "done"
+                    onMarkedDone()
                     CarToast.makeText(carContext, "Marked Done", CarToast.LENGTH_SHORT).show()
                     invalidate()
                 }

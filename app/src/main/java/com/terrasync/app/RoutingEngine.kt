@@ -37,14 +37,15 @@ object RoutingEngine {
                 if (mode == TravelMode.CAR) {
                     add("https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true")
                 } else if (mode == TravelMode.WALKING) {
-                    add("https://router.project-osrm.org/route/v1/foot/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true&alternatives=true&continue_straight=false")
+                    add("https://routing.openstreetmap.de/routed-foot/route/v1/foot/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true&continue_straight=false")
                 }
             }
 
             var lastError = "Route request failed"
             for (urlStr in urls) {
+                var conn: HttpURLConnection? = null
                 try {
-                    val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 10000
                         readTimeout = 12000
                         setRequestProperty("User-Agent", USER_AGENT)
@@ -105,6 +106,8 @@ object RoutingEngine {
                     return@Thread
                 } catch (e: Exception) {
                     lastError = e.message ?: "Route request failed"
+                } finally {
+                    conn?.disconnect()
                 }
             }
             onResult(null, lastError)
@@ -149,8 +152,9 @@ object RoutingEngine {
                     readTimeout = 8000
                     setRequestProperty("User-Agent", USER_AGENT)
                 }
-                if (conn.responseCode == 200) {
-                    val arr = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
+                try {
+                    if (conn.responseCode == 200) {
+                        val arr = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
                     for (i in 0 until arr.length()) {
                         val obj = arr.getJSONObject(i)
                         val display = obj.optString("display_name", "Place")
@@ -163,6 +167,9 @@ object RoutingEngine {
                             out.add(PlaceResult(title, sub, lat, lng))
                         }
                     }
+                    }
+                } finally {
+                    conn.disconnect()
                 }
             }
             onResult(out)
@@ -178,15 +185,19 @@ object RoutingEngine {
                     readTimeout = 6000
                     setRequestProperty("User-Agent", USER_AGENT)
                 }
-                if (conn.responseCode == 200) {
-                    val obj = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-                    val name = obj.optString("name", "").trim()
-                    val display = obj.optString("display_name", "").trim()
-                    val parts = display.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                    val title = name.ifBlank { parts.firstOrNull() ?: "Selected Location" }
-                    val sub = parts.filterNot { it.equals(title, ignoreCase = true) }.take(3).joinToString(", ")
-                    PlaceResult(title, sub, lat, lng)
-                } else null
+                try {
+                    if (conn.responseCode == 200) {
+                        val obj = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                        val name = obj.optString("name", "").trim()
+                        val display = obj.optString("display_name", "").trim()
+                        val parts = display.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                        val title = name.ifBlank { parts.firstOrNull() ?: "Selected Location" }
+                        val sub = parts.filterNot { it.equals(title, ignoreCase = true) }.take(3).joinToString(", ")
+                        PlaceResult(title, sub, lat, lng)
+                    } else null
+                } finally {
+                    conn.disconnect()
+                }
             }.getOrNull()
             onResult(result)
         }.start()

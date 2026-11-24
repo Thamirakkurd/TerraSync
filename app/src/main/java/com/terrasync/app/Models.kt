@@ -104,6 +104,6 @@ fun formatDistanceShort(meters: Double): String {
     return when {
         meters < 1000.0 -> "${meters.toInt()} m"
         meters < 10000.0 -> "${"%.1f".format(meters / 1000.0)} km"
-        else -> "${"%.1f".format(meters / 1000.0)} km"
+        else -> "${(meters / 1000.0).toInt()} km"
     }
 }

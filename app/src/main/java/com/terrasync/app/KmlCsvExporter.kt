@@ -37,7 +37,10 @@ object KmlCsvExporter {
         pins.forEach { p ->
             val descParts = mutableListOf<String>()
             descParts += "Status: ${statusLabel(p.status)}"
-            if (p.issueReason.isNotBlank()) descParts += "Issue: ${p.issueReason}"
+            if (p.issueReason.isNotBlank()) {
+                val noteLabel = if (p.status.equals("done", true)) "Done Note" else "Issue"
+                descParts += "$noteLabel: ${p.issueReason}"
+            }
             if (p.description.isNotBlank()) descParts += p.description
             if (p.isEdited && p.editedBy.isNotBlank()) descParts += "Edited by: ${p.editedBy}"
             sb.append("  <Placemark>\n")
@@ -65,7 +68,7 @@ object KmlCsvExporter {
         val file = File(dir, "${safeFileName(layer.name)}.csv")
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
         val sb = StringBuilder()
-        sb.append("Name,Status,IssueReason,Description,Latitude,Longitude,EditedBy,EditedAt\n")
+        sb.append("Name,Status,StatusNote,Description,Latitude,Longitude,EditedBy,EditedAt\n")
         pins.forEach { p ->
             val timeStr = if (p.editedAt > 0L) fmt.format(Date(p.editedAt)) else ""
             sb.append(

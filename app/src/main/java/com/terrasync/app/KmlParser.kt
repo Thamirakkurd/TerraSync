@@ -49,11 +49,16 @@ object KmlParser {
         var inPlacemark = false
         var inPoint = false
         var inLine = false
+        var inExtendedData = false
+        var currentDataKey = ""
         var activeTag = ""
         val textBuf = StringBuilder()
 
         var pmName = ""
         var pmDesc = ""
+        val pmExtra = mutableListOf<String>()
+        val pmPoints = mutableListOf<Pair<Double, Double>>()
+        val pmLines = mutableListOf<List<Pair<Double, Double>>>()
 
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -65,15 +70,26 @@ object KmlParser {
                     when (tag) {
                         "placemark" -> {
                             inPlacemark = true
+                            inPoint = false
+                            inLine = false
+                            inExtendedData = false
+                            currentDataKey = ""
                             pmName = ""
                             pmDesc = ""
+                            pmExtra.clear()
+                            pmPoints.clear()
+                            pmLines.clear()
                         }
                         "point" -> inPoint = true
                         "linestring", "polygon", "linearring" -> inLine = true
+                        "extendeddata" -> inExtendedData = true
+                        "data", "simpledata" -> if (inPlacemark) {
+                            currentDataKey = parser.getAttributeValue(null, "name")?.trim().orEmpty()
+                        }
                     }
                 }
                 XmlPullParser.TEXT, XmlPullParser.CDSECT -> {
-                    if (inPlacemark && (activeTag == "name" || activeTag == "description" || activeTag == "coordinates")) {
+                    if (inPlacemark && (activeTag == "name" || activeTag == "description" || activeTag == "coordinates" || activeTag == "value" || activeTag == "simpledata")) {
                         textBuf.append(parser.text ?: "")
                     }
                 }
@@ -81,25 +97,50 @@ object KmlParser {
                     val tag = parser.name.substringAfterLast(':').lowercase()
                     if (inPlacemark) {
                         when (tag) {
-                            "name" -> if (pmName.isBlank()) pmName = textBuf.toString().trim()
-                            "description" -> if (pmDesc.isBlank()) pmDesc = textBuf.toString().trim()
+                            "name" -> if (!inExtendedData && pmName.isBlank()) pmName = textBuf.toString().trim()
+                            "description" -> if (!inExtendedData && pmDesc.isBlank()) pmDesc = textBuf.toString().trim()
+                            "value", "simpledata" -> {
+                                val v = textBuf.toString().trim()
+                                if (currentDataKey.isNotBlank() && v.isNotBlank()) {
+                                    pmExtra.add("$currentDataKey: $v")
+                                }
+                                if (tag == "simpledata") currentDataKey = ""
+                            }
+                            "data" -> currentDataKey = ""
+                            "extendeddata" -> inExtendedData = false
                             "coordinates" -> {
                                 val pts = parseCoordinates(textBuf.toString())
                                 if (inPoint && pts.isNotEmpty()) {
-                                    val (lng, lat) = pts.first()
+                                    pmPoints.add(pts.first())
+                                } else if (inLine && pts.size >= 2) {
+                                    pmLines.add(pts)
+                                }
+                            }
+                            "point" -> inPoint = false
+                            "linestring", "polygon", "linearring" -> inLine = false
+                            "placemark" -> {
+                                val fullDesc = buildString {
+                                    if (pmDesc.isNotBlank()) append(pmDesc)
+                                    if (pmExtra.isNotEmpty()) {
+                                        if (isNotEmpty()) append("\n")
+                                        append(pmExtra.joinToString("\n"))
+                                    }
+                                }
+                                pmPoints.forEach { (lng, lat) ->
                                     pins.add(
                                         PinItem(
                                             id = UUID.randomUUID().toString(),
                                             layerId = layerId,
                                             name = pmName.ifBlank { "Pin ${pins.size + 1}" },
-                                            description = pmDesc,
+                                            description = fullDesc,
                                             lat = lat,
                                             lng = lng,
                                             status = "pending",
                                             updatedAt = now
                                         )
                                     )
-                                } else if (inLine && pts.size >= 2) {
+                                }
+                                pmLines.forEach { pts ->
                                     val encoded = pts.joinToString(";") { "${it.first},${it.second}" }
                                     tracks.add(
                                         TrackItem(
@@ -111,13 +152,11 @@ object KmlParser {
                                         )
                                     )
                                 }
-                            }
-                            "point" -> inPoint = false
-                            "linestring", "polygon", "linearring" -> inLine = false
-                            "placemark" -> {
                                 inPlacemark = false
                                 inPoint = false
                                 inLine = false
+                                inExtendedData = false
+                                currentDataKey = ""
                             }
                         }
                     }

@@ -40,6 +40,17 @@ class OfflineMapManager(private val context: Context) {
 
         val REGIONAL_PACKS = listOf(
             OfflinePackSpec(
+                id = "duhok_akre_hd",
+                title = "Duhok & Akre HD (Street + Mosques)",
+                subtitle = "Targeted street-level pack for Duhok, Akre & surrounding feeders (zoom 10–14)",
+                minLat = 36.65,
+                maxLat = 37.02,
+                minLng = 42.82,
+                maxLng = 44.02,
+                minZoom = 10.0,
+                maxZoom = 14.0
+            ),
+            OfflinePackSpec(
                 id = "kurdistan_north",
                 title = "Northern Iraq (Kurdistan Region)",
                 subtitle = "Duhok, Zakho, Akre, Erbil, Sulaymaniyah, Halabja, Kirkuk, Nineveh",

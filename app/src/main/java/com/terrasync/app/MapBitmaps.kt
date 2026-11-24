@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Typeface
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -165,6 +166,46 @@ object MapBitmaps {
         }
         c.drawPath(arrowPath, stroke)
         c.drawPath(arrowPath, fill)
+        return bmp
+    }
+
+    /** Compact Organic Maps-style on-route ETA pill (e.g. "12 min") */
+    fun createRoutePill(ctx: Context, label: String, bgHex: String): Bitmap {
+        val d = ctx.resources.displayMetrics.density
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 11.5f * d
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
+        val padH = 9f * d
+        val padV = 5f * d
+        val textW = textPaint.measureText(label)
+        val fm = textPaint.fontMetrics
+        val textH = fm.descent - fm.ascent
+        val strokeW = 1.6f * d
+        val w = (textW + padH * 2f + strokeW * 2f).toInt().coerceAtLeast((38 * d).toInt())
+        val h = (textH + padV * 2f + strokeW * 2f).toInt().coerceAtLeast((22 * d).toInt())
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val rect = RectF(strokeW, strokeW, w - strokeW, h - strokeW)
+        val r = rect.height() / 2f
+
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor(bgHex)
+            style = Paint.Style.FILL
+        }
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = strokeW
+        }
+        c.drawRoundRect(rect, r, r, fillPaint)
+        c.drawRoundRect(rect, r, r, borderPaint)
+
+        val baseline = rect.centerY() - (fm.ascent + fm.descent) / 2f
+        c.drawText(label, rect.centerX(), baseline, textPaint)
         return bmp
     }
 }
