@@ -7,60 +7,127 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 object MapBitmaps {
 
-    /** Compact, crisp teardrop pin bitmap with subtle drop shadow & white center dot */
+    /** Compact Organic Maps-style teardrop pin with crisp white border & soft ground shadow */
     fun createTeardropPin(ctx: Context, colorHex: String, scale: Float = 1f): Bitmap {
         val d = ctx.resources.displayMetrics.density * scale
-        val w = (24 * d).toInt().coerceAtLeast(24)
-        val h = (32 * d).toInt().coerceAtLeast(32)
+        val w = (21 * d).toInt().coerceAtLeast(21)
+        val h = (27 * d).toInt().coerceAtLeast(27)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
 
         val cx = w / 2f
-        val headR = 8.0f * d
-        val headY = 10.2f * d
-        val tipY = h - 3.0f * d
+        val headR = 6.8f * d
+        val headY = 8.6f * d
+        val tipY = h - 2.4f * d
 
-        // Ground shadow ellipse
+        // Subtle ground shadow
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#400F172A")
+            color = Color.parseColor("#380F172A")
         }
-        c.drawOval(RectF(cx - 5.0f * d, tipY - 1.6f * d, cx + 5.0f * d, tipY + 1.8f * d), shadowPaint)
+        c.drawOval(
+            RectF(cx - 4.2f * d, tipY - 1.3f * d, cx + 4.2f * d, tipY + 1.5f * d),
+            shadowPaint
+        )
 
-        // Teardrop path
+        // Compact teardrop silhouette
         val pinPath = Path().apply {
             moveTo(cx, tipY)
-            cubicTo(cx - headR * 0.65f, headY + headR * 1.15f, cx - headR, headY + headR * 0.45f, cx - headR, headY)
-            arcTo(RectF(cx - headR, headY - headR, cx + headR, headY + headR), 180f, 180f, false)
-            cubicTo(cx + headR, headY + headR * 0.45f, cx + headR * 0.65f, headY + headR * 1.15f, cx, tipY)
+            cubicTo(
+                cx - headR * 0.52f, headY + headR * 1.18f,
+                cx - headR, headY + headR * 0.48f,
+                cx - headR, headY
+            )
+            arcTo(
+                RectF(cx - headR, headY - headR, cx + headR, headY + headR),
+                180f, 180f, false
+            )
+            cubicTo(
+                cx + headR, headY + headR * 0.48f,
+                cx + headR * 0.52f, headY + headR * 1.18f,
+                cx, tipY
+            )
             close()
         }
 
-        // Crisp white outer border
+        // Crisp white outer ring
         val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = 1.8f * d
+            strokeWidth = 2.0f * d
             strokeJoin = Paint.Join.ROUND
         }
         c.drawPath(pinPath, borderPaint)
 
-        // Colored fill
+        // Status color fill
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor(colorHex)
             style = Paint.Style.FILL
         }
         c.drawPath(pinPath, fillPaint)
 
-        // Clean inner white dot
+        // Clean centered white dot
         val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             style = Paint.Style.FILL
         }
-        c.drawCircle(cx, headY, headR * 0.38f, innerPaint)
+        c.drawCircle(cx, headY, headR * 0.34f, innerPaint)
 
+        return bmp
+    }
+
+    /** Crisp Organic Maps-style crescent-and-star mosque badge */
+    fun createMosqueIcon(ctx: Context): Bitmap {
+        val d = ctx.resources.displayMetrics.density
+        val size = (20 * d).toInt().coerceAtLeast(20)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val cx = size / 2f
+        val cy = size / 2f
+
+        // Soft circular badge with white rim (Organic Maps POI style)
+        val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#6D4C41")
+            style = Paint.Style.FILL
+        }
+        c.drawCircle(cx, cy, 8.6f * d, rimPaint)
+        c.drawCircle(cx, cy, 7.5f * d, bgPaint)
+
+        // Crescent moon via Path.Op.DIFFERENCE
+        val outer = Path().apply { addCircle(cx - 0.8f * d, cy, 4.1f * d, Path.Direction.CW) }
+        val inner = Path().apply { addCircle(cx + 0.9f * d, cy - 0.5f * d, 3.3f * d, Path.Direction.CW) }
+        outer.op(inner, Path.Op.DIFFERENCE)
+
+        // 5-point star tucked inside the crescent
+        val star = Path()
+        val sx = cx + 2.2f * d
+        val sy = cy - 0.9f * d
+        val rOut = 1.9f * d
+        val rIn = 0.8f * d
+        for (i in 0 until 10) {
+            val angle = -PI / 2.0 + i * PI / 5.0
+            val r = if (i % 2 == 0) rOut else rIn
+            val x = sx + (r * cos(angle)).toFloat()
+            val y = sy + (r * sin(angle)).toFloat()
+            if (i == 0) star.moveTo(x, y) else star.lineTo(x, y)
+        }
+        star.close()
+
+        val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        c.drawPath(outer, iconPaint)
+        c.drawPath(star, iconPaint)
         return bmp
     }
 

@@ -1,13 +1,11 @@
 package com.terrasync.app
 
 enum class MapStyleMode(val id: Int, val label: String) {
-    OSM(0, "OpenStreetMap"),
     VECTOR(1, "Vector Street"),
-    SATELLITE(2, "Satellite Hybrid"),
-    NIGHT(3, "Night Dark");
+    SATELLITE(2, "Satellite Hybrid");
 
     companion object {
-        fun fromId(id: Int): MapStyleMode = entries.firstOrNull { it.id == id } ?: OSM
+        fun fromId(id: Int): MapStyleMode = entries.firstOrNull { it.id == id } ?: VECTOR
     }
 }
 

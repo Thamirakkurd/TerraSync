@@ -212,8 +212,8 @@ class SyncRepo {
 
     fun updatePinStatus(pin: PinItem, status: String, deviceStamp: String, issueReason: String = "") {
         val now = System.currentTimeMillis()
-        val cleanReason = if (status.equals("issue", ignoreCase = true)) issueReason.trim() else ""
-        val detail = if (cleanReason.isNotBlank()) "Issue: $cleanReason" else statusLabel(status)
+        val cleanReason = if (status.equals("issue", ignoreCase = true) || status.equals("done", ignoreCase = true)) issueReason.trim() else ""
+        val detail = if (cleanReason.isNotBlank()) "${statusLabel(status)}: $cleanReason" else statusLabel(status)
         val line = "${formatTime(now)} • $deviceStamp → $detail"
         val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
         db.collection("pins").document(pin.id).update(

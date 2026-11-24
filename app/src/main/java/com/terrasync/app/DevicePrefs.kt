@@ -100,9 +100,9 @@ object DevicePrefs {
     fun getMapStyleMode(ctx: Context): MapStyleMode {
         val p = prefs(ctx)
         if (!p.contains(KEY_MAP_STYLE_MODE)) {
-            return if (p.getBoolean(KEY_DEFAULT_SAT, false)) MapStyleMode.SATELLITE else MapStyleMode.OSM
+            return if (p.getBoolean(KEY_DEFAULT_SAT, false)) MapStyleMode.SATELLITE else MapStyleMode.VECTOR
         }
-        return MapStyleMode.fromId(p.getInt(KEY_MAP_STYLE_MODE, MapStyleMode.OSM.id))
+        return MapStyleMode.fromId(p.getInt(KEY_MAP_STYLE_MODE, MapStyleMode.VECTOR.id))
     }
 
     fun setMapStyleMode(ctx: Context, mode: MapStyleMode) {
@@ -152,15 +152,5 @@ object DevicePrefs {
     fun getNightMode(ctx: Context): Int = prefs(ctx).getInt(KEY_NIGHT_MODE, 0)
     fun setNightMode(ctx: Context, mode: Int) = prefs(ctx).edit().putInt(KEY_NIGHT_MODE, mode.coerceIn(0, 2)).apply()
 
-    fun isNightActive(ctx: Context): Boolean {
-        return when (getNightMode(ctx)) {
-            2 -> true
-            1 -> {
-                val sysDark = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-                val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-                sysDark || hour >= 19 || hour < 6
-            }
-            else -> false
-        }
-    }
+    fun isNightActive(ctx: Context): Boolean = false
 }

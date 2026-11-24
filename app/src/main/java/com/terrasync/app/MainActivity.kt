@@ -110,29 +110,17 @@ class MainActivity : AppCompatActivity() {
 
         private val ISSUE_PRESETS = listOf(
             "Customer Refused / No Access",
-            "Meter Missing / Damaged",
+            "Need Electricity",
             "Wrong Location / Coordinates",
             "Closed / Nobody Home",
             "Safety Hazard / Network Fault"
         )
 
-        private const val STYLE_OSM_STANDARD = """
-        {
-          "version": 8,
-          "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-          "sources": {
-            "osm": {
-              "type": "raster",
-              "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-              "tileSize": 256,
-              "maxzoom": 19
-            }
-          },
-          "layers": [
-            { "id": "osm-layer", "type": "raster", "source": "osm", "minzoom": 0, "maxzoom": 22 }
-          ]
-        }
-        """
+        private val DONE_PRESETS = listOf(
+            "Meter Linked",
+            "Inaccessible",
+            "No Bill"
+        )
 
         private const val STYLE_SATELLITE = """
         {
@@ -166,23 +154,6 @@ class MainActivity : AppCompatActivity() {
         }
         """
 
-        private const val STYLE_NIGHT_STREET = """
-        {
-          "version": 8,
-          "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-          "sources": {
-            "dark_osm": {
-              "type": "raster",
-              "tiles": ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
-              "tileSize": 256,
-              "maxzoom": 19
-            }
-          },
-          "layers": [
-            { "id": "dark-layer", "type": "raster", "source": "dark_osm", "minzoom": 0, "maxzoom": 22 }
-          ]
-        }
-        """
     }
 
     private data class SharedPinTarget(val lat: Double, val lng: Double, val name: String, val pinId: String)
@@ -239,7 +210,7 @@ class MainActivity : AppCompatActivity() {
     private var tracks: List<TrackItem> = emptyList()
     private var visibleStatuses: MutableSet<String> = mutableSetOf("pending", "done", "issue")
     private var isLiveConnected = false
-    private var mapStyleMode: MapStyleMode = MapStyleMode.OSM
+    private var mapStyleMode: MapStyleMode = MapStyleMode.VECTOR
     private var travelMode: TravelMode = TravelMode.CAR
     private var isFollowingGps = false
     private var hasAutoZoomedInitial = false
@@ -471,9 +442,7 @@ class MainActivity : AppCompatActivity() {
         pageOverlayContainer = findViewById(R.id.pageOverlayContainer)
     }
 
-    private fun isDarkMapUi(): Boolean {
-        return DevicePrefs.isNightActive(this) || mapStyleMode == MapStyleMode.NIGHT
-    }
+    private fun isDarkMapUi(): Boolean = false
 
     private fun applyMapChromeTheme() {
         val night = isDarkMapUi()
@@ -508,9 +477,7 @@ class MainActivity : AppCompatActivity() {
             Color.parseColor(
                 when (mapStyleMode) {
                     MapStyleMode.SATELLITE -> "#0EA5E9"
-                    MapStyleMode.NIGHT -> "#A78BFA"
                     MapStyleMode.VECTOR -> "#10B981"
-                    MapStyleMode.OSM -> "#2563EB"
                 }
             )
         )
@@ -810,16 +777,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadMapStyle() {
         val m = map ?: return
-        val nightAuto = DevicePrefs.isNightActive(this)
-        val builder = when {
-            mapStyleMode == MapStyleMode.SATELLITE -> Style.Builder().fromJson(STYLE_SATELLITE)
-            mapStyleMode == MapStyleMode.NIGHT || nightAuto -> Style.Builder().fromJson(STYLE_NIGHT_STREET)
-            mapStyleMode == MapStyleMode.VECTOR -> Style.Builder().fromUri(OfflineMapManager.STYLE_STREET_URL)
-            else -> Style.Builder().fromJson(STYLE_OSM_STANDARD)
+        val builder = when (mapStyleMode) {
+            MapStyleMode.SATELLITE -> Style.Builder().fromJson(STYLE_SATELLITE)
+            MapStyleMode.VECTOR -> Style.Builder().fromUri(OfflineMapManager.STYLE_STREET_URL)
         }
         m.setStyle(builder) { style ->
             apply3dBuildingsToggle(style)
             registerMapBitmaps(style)
+            enhanceVectorStyleForField(style)
             attachTerrainHillshade(style)
             attachOverlayLayers(style)
             renderMapData()
@@ -843,7 +808,68 @@ class MainActivity : AppCompatActivity() {
         style.addImage("pin-done", MapBitmaps.createTeardropPin(this, "#22C55E", 1.0f))
         style.addImage("pin-issue", MapBitmaps.createTeardropPin(this, "#EF4444", 1.0f))
         style.addImage("pin-target", MapBitmaps.createTeardropPin(this, "#2563EB", 1.05f))
+        style.addImage("mosque-icon", MapBitmaps.createMosqueIcon(this))
         style.addImage("gps-arrow", MapBitmaps.createGpsArrow(this))
+    }
+
+    private fun enhanceVectorStyleForField(style: Style) {
+        if (mapStyleMode != MapStyleMode.VECTOR) return
+        runCatching {
+            // Expose minor neighborhood roads, rural tracks & footpaths earlier
+            for (layer in style.layers) {
+                if (layer is LineLayer) {
+                    val id = layer.id.lowercase()
+                    if (id.contains("minor") || id.contains("service") ||
+                        id.contains("track") || id.contains("path") ||
+                        id.contains("residential") || id.contains("unclassified")
+                    ) {
+                        if (layer.minZoom > 12.0f) layer.minZoom = 12.0f
+                    }
+                }
+            }
+            // Dedicated Organic Maps-style Mosque POI layer across zoom levels
+            val vecSource = style.sources.firstOrNull {
+                it is org.maplibre.android.style.sources.VectorSource
+            } ?: return
+            val mosqueLayerId = "terrasync-mosques-layer"
+            if (style.getLayer(mosqueLayerId) == null) {
+                val mosqueLayer = SymbolLayer(mosqueLayerId, vecSource.id).apply {
+                    sourceLayer = "poi"
+                    minZoom = 12.5f
+                    setFilter(
+                        Expression.any(
+                            Expression.eq(Expression.get("subclass"), Expression.literal("mosque")),
+                            Expression.all(
+                                Expression.eq(Expression.get("class"), Expression.literal("place_of_worship")),
+                                Expression.neq(Expression.get("subclass"), Expression.literal("christian")),
+                                Expression.neq(Expression.get("subclass"), Expression.literal("church")),
+                                Expression.neq(Expression.get("subclass"), Expression.literal("synagogue")),
+                                Expression.neq(Expression.get("subclass"), Expression.literal("temple"))
+                            )
+                        )
+                    )
+                    setProperties(
+                        PropertyFactory.iconImage("mosque-icon"),
+                        PropertyFactory.iconSize(0.92f),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(false),
+                        PropertyFactory.iconPadding(2f),
+                        PropertyFactory.textField(Expression.get("name")),
+                        PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                        PropertyFactory.textSize(10.5f),
+                        PropertyFactory.textColor("#5D4037"),
+                        PropertyFactory.textHaloColor("#FFFFFF"),
+                        PropertyFactory.textHaloWidth(1.6f),
+                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                        PropertyFactory.textOffset(arrayOf(0f, 0.72f)),
+                        PropertyFactory.textMaxWidth(8.5f),
+                        PropertyFactory.textOptional(true),
+                        PropertyFactory.textAllowOverlap(false)
+                    )
+                }
+                style.addLayer(mosqueLayer)
+            }
+        }
     }
 
     private fun attachTerrainHillshade(style: Style) {
@@ -909,6 +935,16 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
                 )
             )
+            style.addLayer(
+                LineLayer("terrasync-route-walk-layer", ROUTE_SOURCE).withProperties(
+                    PropertyFactory.lineColor(TravelMode.WALKING.routeColorHex),
+                    PropertyFactory.lineWidth(5.0f),
+                    PropertyFactory.lineDasharray(arrayOf(1.6f, 1.3f)),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                    PropertyFactory.visibility(Property.NONE)
+                )
+            )
         }
 
         if (style.getSource(PULSE_SOURCE) == null) {
@@ -925,26 +961,30 @@ class MainActivity : AppCompatActivity() {
         if (style.getSource(PINS_SOURCE) == null) {
             style.addSource(GeoJsonSource(PINS_SOURCE))
             style.addLayer(
+                SymbolLayer(PINS_LABELS_LAYER, PINS_SOURCE).withProperties(
+                    PropertyFactory.visibility(if (showTitles) Property.VISIBLE else Property.NONE),
+                    PropertyFactory.textField(Expression.get("label")),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                    PropertyFactory.textSize(10.5f),
+                    PropertyFactory.textMaxWidth(9.0f),
+                    PropertyFactory.textLineHeight(1.05f),
+                    PropertyFactory.textPadding(6f),
+                    PropertyFactory.textColor(labelColor),
+                    PropertyFactory.textHaloColor(haloColor),
+                    PropertyFactory.textHaloWidth(1.8f),
+                    PropertyFactory.textOffset(arrayOf(0f, 0.25f)),
+                    PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                    PropertyFactory.textAllowOverlap(false),
+                    PropertyFactory.textIgnorePlacement(false),
+                    PropertyFactory.textOptional(true)
+                )
+            )
+            style.addLayer(
                 SymbolLayer(PINS_LAYER, PINS_SOURCE).withProperties(
                     PropertyFactory.iconImage(Expression.get("icon")),
                     PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
                     PropertyFactory.iconAllowOverlap(true),
                     PropertyFactory.iconIgnorePlacement(true)
-                )
-            )
-            style.addLayer(
-                SymbolLayer(PINS_LABELS_LAYER, PINS_SOURCE).withProperties(
-                    PropertyFactory.visibility(if (showTitles) Property.VISIBLE else Property.NONE),
-                    PropertyFactory.textField(Expression.get("name")),
-                    PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                    PropertyFactory.textSize(11f),
-                    PropertyFactory.textColor(labelColor),
-                    PropertyFactory.textHaloColor(haloColor),
-                    PropertyFactory.textHaloWidth(1.6f),
-                    PropertyFactory.textOffset(arrayOf(0f, 0.35f)),
-                    PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
-                    PropertyFactory.textAllowOverlap(false),
-                    PropertyFactory.textOptional(true)
                 )
             )
         }
@@ -1050,9 +1090,13 @@ class MainActivity : AppCompatActivity() {
         )
 
         val pinFeatures = visiblePins.map { p ->
+            val shortLabel = p.name.trim().let {
+                if (it.length > 22) it.take(21).trimEnd() + "…" else it
+            }
             Feature.fromGeometry(Point.fromLngLat(p.lng, p.lat)).apply {
                 addStringProperty("id", p.id)
                 addStringProperty("name", p.name)
+                addStringProperty("label", shortLabel)
                 addStringProperty("icon", statusIconId(p.status))
             }
         }
@@ -1080,8 +1124,19 @@ class MainActivity : AppCompatActivity() {
         style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(routeFeatures))
         if (routeToShow != null) {
-            style.getLayerAs<LineLayer>(ROUTE_LAYER)
-                ?.setProperties(PropertyFactory.lineColor(routeToShow.mode.routeColorHex))
+            val isWalk = routeToShow.mode == TravelMode.WALKING
+            style.getLayerAs<LineLayer>(ROUTE_CASING_LAYER)?.setProperties(
+                PropertyFactory.lineWidth(if (isWalk) 7.2f else 9.5f),
+                PropertyFactory.lineOpacity(if (isWalk) 0.55f else 1.0f)
+            )
+            style.getLayerAs<LineLayer>(ROUTE_LAYER)?.setProperties(
+                PropertyFactory.lineColor(routeToShow.mode.routeColorHex),
+                PropertyFactory.visibility(if (isWalk) Property.NONE else Property.VISIBLE)
+            )
+            style.getLayerAs<LineLayer>("terrasync-route-walk-layer")?.setProperties(
+                PropertyFactory.lineColor(routeToShow.mode.routeColorHex),
+                PropertyFactory.visibility(if (isWalk) Property.VISIBLE else Property.NONE)
+            )
         }
 
         // Ruler features
@@ -1544,6 +1599,8 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     if (key == "issue") {
                         showIssueReasonDialog(pin)
+                    } else if (key == "done") {
+                        showDoneReasonDialog(pin)
                     } else {
                         repo.updatePinStatus(pin, key, stamp)
                         fireStatusPulse(pin.lat, pin.lng, hex)
@@ -2005,18 +2062,39 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        titleCol.addView(TextView(this).apply {
-            text = "${route.mode.icon} $etaMin min  ($distStr)"
-            textSize = 19f
-            setTextColor(modeColor)
+        val metaRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        metaRow.addView(TextView(this).apply {
+            text = "${route.mode.icon} $etaMin min"
+            textSize = 15.5f
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            setPadding(dp(10), dp(3), dp(10), dp(3))
+            background = GradientDrawable().apply {
+                setColor(modeColor)
+                cornerRadius = dp(10).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) }
+        })
+        metaRow.addView(TextView(this).apply {
+            text = distStr
+            textSize = 15.5f
+            setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
         })
+        titleCol.addView(metaRow)
         titleCol.addView(TextView(this).apply {
-            text = "From: $startLabel → $destTitle"
-            textSize = 13f
+            text = "$startLabel → $destTitle"
+            textSize = 12.5f
             setTextColor(txtSub)
-            maxLines = 2
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(4), 0, 0)
         })
         header.addView(titleCol)
 
@@ -3234,7 +3312,7 @@ class MainActivity : AppCompatActivity() {
         val (outer, body) = makePageFrame("Search", { closeFullPage() })
 
         val etQuery = EditText(this).apply {
-            hint = "Pin name, issue, street, or 36.86, 42.99..."
+            hint = "Search pins, places, or coords..."
             setTextColor(txtPrimary)
             setHintTextColor(txtSub)
             setSingleLine(true)
@@ -3252,20 +3330,28 @@ class MainActivity : AppCompatActivity() {
         }
         val btnWebSearch = MaterialButton(this).apply {
             text = "Search Map Places"
-            textSize = 13f
+            textSize = 12.5f
             isAllCaps = false
+            maxLines = 1
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(8), 0, dp(8), 0)
             insetTop = 0
             insetBottom = 0
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#2563EB"))
             cornerRadius = dp(12)
-            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.3f).apply { marginEnd = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.05f).apply { marginEnd = dp(8) }
             UiAnimations.attachSpringTouch(this)
         }
         val btnNearest = MaterialButton(this).apply {
             text = "Nearest Pending"
             textSize = 12.5f
             isAllCaps = false
+            maxLines = 1
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(8), 0, dp(8), 0)
             insetTop = 0
             insetBottom = 0
             setTextColor(Color.WHITE)
@@ -3285,6 +3371,15 @@ class MainActivity : AppCompatActivity() {
         fun renderLocalMatches(q: String) {
             resultsBox.removeAllViews()
             val trimmed = q.trim()
+            if (trimmed.isEmpty()) {
+                resultsBox.addView(TextView(this).apply {
+                    text = "Type a pin name, street, or coordinates to search."
+                    textSize = 13f
+                    setTextColor(txtSub)
+                    setPadding(dp(6), dp(14), dp(6), dp(8))
+                })
+                return
+            }
 
             val coordParts = trimmed.split(",").map { it.trim().toDoubleOrNull() }
             if (coordParts.size == 2 && coordParts[0] != null && coordParts[1] != null) {
@@ -3344,15 +3439,24 @@ class MainActivity : AppCompatActivity() {
                 row.addView(TextView(this).apply {
                     text = "${pin.name} (${statusLabel(pin.status)})"
                     textSize = 14f
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                     setTextColor(txtPrimary)
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginEnd = dp(12)
+                    }
                 })
                 if (loc != null) {
                     val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, pin.lat, pin.lng)
                     row.addView(TextView(this).apply {
                         text = formatDistanceShort(d)
                         textSize = 12f
+                        setSingleLine(true)
                         setTextColor(txtSub)
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { marginStart = dp(4) }
                     })
                 }
                 resultsBox.addView(row)
@@ -3473,7 +3577,7 @@ class MainActivity : AppCompatActivity() {
         })
         body.addView(nameRow)
 
-        // 2. Map Style Selector (OSM / Vector Street / Satellite / Night)
+        // 2. Map Style Selector (Vector Street / Satellite Hybrid)
         body.addView(TextView(this).apply {
             text = "Map Style"
             textSize = 14f
@@ -3481,18 +3585,13 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#2563EB"))
             setPadding(0, dp(4), 0, dp(6))
         })
-        val styleRow1 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, dp(6))
-        }
-        val styleRow2 = LinearLayout(this).apply {
+        val styleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, 0, 0, dp(12))
         }
         MapStyleMode.entries.forEachIndexed { idx, mode ->
             val active = mode == mapStyleMode
-            val targetRow = if (idx < 2) styleRow1 else styleRow2
-            targetRow.addView(MaterialButton(this).apply {
+            styleRow.addView(MaterialButton(this).apply {
                 text = mode.label
                 textSize = 12.5f
                 isAllCaps = false
@@ -3502,7 +3601,7 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(if (active) Color.parseColor("#2563EB") else chipIdle)
                 cornerRadius = dp(10)
                 layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
-                    if (idx % 2 == 0) marginEnd = dp(6)
+                    if (idx < MapStyleMode.entries.lastIndex) marginEnd = dp(6)
                 }
                 UiAnimations.attachSpringTouch(this)
                 setOnClickListener {
@@ -3514,8 +3613,7 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
-        body.addView(styleRow1)
-        body.addView(styleRow2)
+        body.addView(styleRow)
 
         // 3. Default Travel Mode (Car / Bicycle / Walk)
         body.addView(TextView(this).apply {
@@ -3556,45 +3654,7 @@ class MainActivity : AppCompatActivity() {
         }
         body.addView(travelRow)
 
-        // 4. Night Theme Mode (Day / Auto / Night)
-        body.addView(TextView(this).apply {
-            text = "App & Night Theme"
-            textSize = 14f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#2563EB"))
-            setPadding(0, dp(2), 0, dp(6))
-        })
-        val themeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, dp(12))
-        }
-        val curNight = DevicePrefs.getNightMode(this)
-        listOf(0 to "Day", 1 to "Auto", 2 to "Night").forEachIndexed { idx, (mode, label) ->
-            val active = mode == curNight
-            themeRow.addView(MaterialButton(this).apply {
-                text = label
-                textSize = 12.5f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                setTextColor(if (active) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (active) Color.parseColor("#2563EB") else chipIdle)
-                cornerRadius = dp(10)
-                layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
-                    if (idx < 2) marginEnd = dp(6)
-                }
-                UiAnimations.attachSpringTouch(this)
-                setOnClickListener {
-                    DevicePrefs.setNightMode(this@MainActivity, mode)
-                    applyMapChromeTheme()
-                    loadMapStyle()
-                    openFullPage(::buildSettingsPage)
-                }
-            })
-        }
-        body.addView(themeRow)
-
-        // 5. Map & Driving Toggles
+        // 4. Map & Driving Toggles
         fun addSwitchRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -3828,7 +3888,7 @@ class MainActivity : AppCompatActivity() {
         body.addView(hero)
 
         body.addView(TextView(this).apply {
-            text = "Field mapping with OpenStreetMap & Vector Street styles, optional 3D buildings, unified KML bookmark folders, cross-folder search, multi-point distance ruler, Car/Bicycle/Walk routing with Route From, live speed indicator, and Android Auto support."
+            text = "Field mapping with Vector Street & Satellite Hybrid styles, optional 3D buildings, unified KML bookmark folders, cross-folder search, multi-point distance ruler, Car/Bicycle/Walk routing with Route From, live speed indicator, and Android Auto support."
             textSize = 14f
             setTextColor(txtPrimary)
             setPadding(0, 0, 0, dp(16))
@@ -3949,6 +4009,70 @@ class MainActivity : AppCompatActivity() {
                 selectedMarkerIcon = "pin-issue"
                 renderMapData()
                 Toast.makeText(this, "Marked Issue: $reason", Toast.LENGTH_SHORT).show()
+                dlg.dismiss()
+                hideInScreenSheet()
+            }
+        }
+        dlg.show()
+    }
+
+    private fun showDoneReasonDialog(pin: PinItem) {
+        val scroll = ScrollView(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        box.addView(TextView(this).apply {
+            text = "Select completion status or type details below:"
+            textSize = 13f
+            setTextColor(Color.parseColor("#64748B"))
+            setPadding(0, 0, 0, dp(8))
+        })
+        val etNote = EditText(this).apply {
+            hint = "Optional details..."
+            if (pin.status.equals("done", ignoreCase = true)) {
+                setText(pin.issueReason)
+            }
+            minLines = 2
+        }
+        DONE_PRESETS.forEach { preset ->
+            box.addView(MaterialButton(this).apply {
+                text = preset
+                textSize = 12.5f
+                isAllCaps = false
+                setTextColor(Color.parseColor("#1E293B"))
+                setBackgroundColor(Color.parseColor("#F1F5F9"))
+                cornerRadius = dp(10)
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                    bottomMargin = dp(6)
+                }
+                setOnClickListener {
+                    etNote.setText(preset)
+                    etNote.setSelection(preset.length)
+                }
+            })
+        }
+        box.addView(etNote)
+        scroll.addView(box)
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Mark as Done")
+            .setView(scroll)
+            .setPositiveButton("Save Done", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val note = etNote.text.toString().trim()
+                val stamp = DevicePrefs.getDeviceStamp(this)
+                repo.updatePinStatus(pin, "done", stamp, note)
+                fireStatusPulse(pin.lat, pin.lng, "#22C55E")
+                selectedMarkerIcon = statusIconId("done")
+                renderMapData()
+                val msg = if (note.isNotBlank()) "Marked Done: $note" else "Marked Done"
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 dlg.dismiss()
                 hideInScreenSheet()
             }

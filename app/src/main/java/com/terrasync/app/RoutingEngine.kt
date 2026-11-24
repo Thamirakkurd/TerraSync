@@ -24,10 +24,20 @@ object RoutingEngine {
         onResult: (NavRoute?, String?) -> Unit
     ) {
         Thread {
+            val profile = when (mode) {
+                TravelMode.CAR -> "driving"
+                TravelMode.BICYCLE -> "bike"
+                TravelMode.WALKING -> "foot"
+            }
+            val extra = if (mode == TravelMode.WALKING) {
+                "&alternatives=true&continue_straight=false"
+            } else ""
             val urls = buildList {
-                add("https://routing.openstreetmap.de/${mode.osrmPrefix}/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true")
+                add("https://routing.openstreetmap.de/${mode.osrmPrefix}/route/v1/$profile/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true$extra")
                 if (mode == TravelMode.CAR) {
                     add("https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true")
+                } else if (mode == TravelMode.WALKING) {
+                    add("https://router.project-osrm.org/route/v1/foot/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true&alternatives=true&continue_straight=false")
                 }
             }
 
@@ -50,7 +60,18 @@ object RoutingEngine {
                         lastError = "No ${mode.label.lowercase()} route found"
                         continue
                     }
-                    val r0 = routes.getJSONObject(0)
+                    var r0 = routes.getJSONObject(0)
+                    if (mode == TravelMode.WALKING && routes.length() > 1) {
+                        var bestDist = r0.optDouble("distance", Double.MAX_VALUE)
+                        for (idx in 1 until routes.length()) {
+                            val cand = routes.getJSONObject(idx)
+                            val d = cand.optDouble("distance", Double.MAX_VALUE)
+                            if (d < bestDist) {
+                                bestDist = d
+                                r0 = cand
+                            }
+                        }
+                    }
                     val totalDist = r0.optDouble("distance", 0.0)
                     val totalDur = r0.optDouble("duration", 0.0)
 
