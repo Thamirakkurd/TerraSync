@@ -570,58 +570,85 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Unified Opaque Floating Pill Dock (Zero Map Bleed-Through) -->
+        <!-- 4 Separate Opaque Floating Rounded-Square Icons -->
         <LinearLayout
             android:id="@+id/bottomIconRow"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginStart="6dp"
-            android:layout_marginEnd="6dp"
-            android:elevation="8dp"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:clipToPadding="false"
             android:gravity="center"
             android:orientation="horizontal"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp">
+            android:paddingTop="4dp"
+            android:paddingBottom="6dp">
 
-            <ImageButton
-                android:id="@+id/btnTabSearch"
+            <FrameLayout
                 android:layout_width="0dp"
-                android:layout_height="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:contentDescription="Search"
-                android:padding="15dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_search" />
+                android:clipChildren="false"
+                android:clipToPadding="false">
+                <ImageButton
+                    android:id="@+id/btnTabSearch"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="Search"
+                    android:padding="13dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_search" />
+            </FrameLayout>
 
-            <ImageButton
-                android:id="@+id/btnTabBookmarks"
+            <FrameLayout
                 android:layout_width="0dp"
-                android:layout_height="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:contentDescription="Bookmarks"
-                android:padding="15dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_bookmarks_list" />
+                android:clipChildren="false"
+                android:clipToPadding="false">
+                <ImageButton
+                    android:id="@+id/btnTabBookmarks"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="Bookmarks"
+                    android:padding="13dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_bookmarks_list" />
+            </FrameLayout>
 
-            <ImageButton
-                android:id="@+id/btnTabSettings"
+            <FrameLayout
                 android:layout_width="0dp"
-                android:layout_height="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:contentDescription="Settings"
-                android:padding="16dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_settings" />
+                android:clipChildren="false"
+                android:clipToPadding="false">
+                <ImageButton
+                    android:id="@+id/btnTabSettings"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="Settings"
+                    android:padding="14dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_settings" />
+            </FrameLayout>
 
-            <ImageButton
-                android:id="@+id/btnTabAbout"
+            <FrameLayout
                 android:layout_width="0dp"
-                android:layout_height="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:contentDescription="About"
-                android:padding="16dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_info" />
+                android:clipChildren="false"
+                android:clipToPadding="false">
+                <ImageButton
+                    android:id="@+id/btnTabAbout"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="About"
+                    android:padding="14dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_info" />
+            </FrameLayout>
         </LinearLayout>
     </LinearLayout>
 

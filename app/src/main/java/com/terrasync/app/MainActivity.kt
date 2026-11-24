@@ -276,7 +276,6 @@ class MainActivity : AppCompatActivity() {
     private var previewRoute: NavRoute? = null
     private var routeRequestSeq: Int = 0
     private var lastRoutePillKey: String? = null
-    private var pendingUpdateApkFile: java.io.File? = null
     private var activeNavRoute: NavRoute? = null
     private var activeNavTrimmedGeom: List<Pair<Double, Double>>? = null
     private var navLastSegIdx: Int = 0
@@ -291,6 +290,7 @@ class MainActivity : AppCompatActivity() {
 
     // Full-screen overlay stack
     private val pageBackStack = mutableListOf<() -> Unit>()
+    private var backCallback: OnBackPressedCallback? = null
     private var liveBookmarksRefresh: (() -> Unit)? = null
     private var livePinListRefresh: (() -> Unit)? = null
 
@@ -321,10 +321,22 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val installedVer = AppUpdater.getInstalledVersionName(this)
+        @Suppress("DEPRECATION")
+        run {
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+        val installedVer = getInstalledVersionName()
         val appUserAgent = "TerraSync/$installedVer (https://github.com/Thamirakkurd/TerraSync)"
         RoutingEngine.userAgent = appUserAgent
-        AppUpdater.cleanupOldApks(this)
 
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(
@@ -454,7 +466,6 @@ class MainActivity : AppCompatActivity() {
 
         refreshJoinedSync()
         handleDeepLinkIntent(intent)
-        checkForAppUpdate(silent = true)
     }
 
     private fun bindViews() {
@@ -551,9 +562,10 @@ class MainActivity : AppCompatActivity() {
         UiAnimations.styleFloatingTile(this, btnImport, Color.parseColor("#0F766E"), 22f, 6f, "#44FFFFFF", Color.TRANSPARENT, 0f)
         UiAnimations.styleFloatingTile(this, btnLocate, tileBg, 24f, 7f, strokeColor = tileStroke)
 
-        UiAnimations.styleFloatingPill(this, bottomIconRow, tileBg, 28f, 8f, tileStroke)
+        bottomIconRow.background = null
+        bottomIconRow.elevation = 0f
         listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout).forEach { btn ->
-            UiAnimations.applyPillItemRipple(this, btn, 24f)
+            UiAnimations.styleFloatingTile(this, btn, tileBg, 16f, 7f, strokeColor = tileStroke)
             btn.setColorFilter(iconTint)
         }
 
@@ -856,7 +868,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBackNavigation() {
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+        val cb = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (pageOverlayContainer.visibility == View.VISIBLE) {
                     if (pageBackStack.isNotEmpty()) {
@@ -894,10 +906,11 @@ class MainActivity : AppCompatActivity() {
                     hideInScreenSheet()
                     return
                 }
-                isEnabled = false
-                onBackPressedDispatcher.onBackPressed()
+                moveTaskToBack(true)
             }
-        })
+        }
+        backCallback = cb
+        onBackPressedDispatcher.addCallback(this, cb)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -2901,7 +2914,7 @@ class MainActivity : AppCompatActivity() {
 
         tvNavArrow.text = step.arrow
         tvNavInstruction.text = if (isRerouting) "Recalculating route..." else step.instruction
-        tvNavMeta.text = "${route.mode.icon} In ${formatDistanceShort(distToStep)} • ${formatDistanceShort(remainingRoadMeters)} (~$etaMin min) • ${route.engineLabel}"
+        tvNavMeta.text = "${formatDistanceShort(distToStep)} • ${formatDistanceShort(remainingRoadMeters)} (${etaMin}m) • ${route.engineLabel}"
 
         val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
         if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
@@ -4712,14 +4725,6 @@ class MainActivity : AppCompatActivity() {
             DevicePrefs.setShowExtraMapTools(this, it)
             applyExtraMapToolsVisibility()
         }
-        addSwitchRow("Beta Updates Channel (Pre-releases)", DevicePrefs.isBetaUpdatesEnabled(this)) {
-            DevicePrefs.setBetaUpdatesEnabled(this, it)
-            Toast.makeText(
-                this,
-                if (it) "Beta updates enabled on this phone" else "Stable updates only",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
 
         // 6. Offline Maps & Embedded Turn-by-Turn Routing
         body.addView(TextView(this).apply {
@@ -4942,8 +4947,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         })
         heroText.addView(TextView(this).apply {
-            val ch = if (DevicePrefs.isBetaUpdatesEnabled(this@MainActivity)) " • Beta" else ""
-            text = "Version ${AppUpdater.getInstalledVersionName(this@MainActivity)}$ch • Kotlin + MapLibre GL"
+            text = "Version ${getInstalledVersionName()} • Kotlin + MapLibre GL"
             textSize = 13f
             setTextColor(Color.parseColor("#0F766E"))
             setTypeface(null, Typeface.BOLD)
@@ -4987,20 +4991,6 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtSub)
         })
         body.addView(devCard)
-
-        body.addView(MaterialButton(this).apply {
-            text = "Check for Updates"
-            textSize = 13.5f
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#16A34A"))
-            cornerRadius = dp(12)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
-                bottomMargin = dp(10)
-            }
-            UiAnimations.attachSpringTouch(this)
-            setOnClickListener { checkForAppUpdate(silent = false) }
-        })
 
         listOf(
             Triple("GitHub Profile (@Thamirakkurd)", "https://github.com/Thamirakkurd", "#1E293B"),
@@ -5524,154 +5514,23 @@ class MainActivity : AppCompatActivity() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     override fun onStart() { super.onStart(); mapView.onStart() }
-    // --- In-App GitHub Updater ---
-
-    private fun checkForAppUpdate(silent: Boolean) {
-        val includeBeta = DevicePrefs.isBetaUpdatesEnabled(this)
-        if (!silent) {
-            val channel = if (includeBeta) "beta & stable" else "stable"
-            Toast.makeText(this, "Checking for $channel updates...", Toast.LENGTH_SHORT).show()
-        }
-        AppUpdater.checkForUpdate(this, includeBeta = includeBeta) { info, err ->
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                if (info != null) {
-                    showUpdateAvailableDialog(info)
-                } else if (!silent) {
-                    val msg = err ?: "You are on the latest version (v${AppUpdater.getInstalledVersionName(this)})"
-                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                }
+    @Suppress("DEPRECATION")
+    private fun getInstalledVersionName(): String {
+        return runCatching {
+            val info = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+            } else {
+                packageManager.getPackageInfo(packageName, 0)
             }
-        }
-    }
-
-    private fun showUpdateAvailableDialog(info: UpdateInfo) {
-        val currentVer = AppUpdater.getInstalledVersionName(this)
-        val sizeStr = if (info.sizeBytes > 0L) {
-            " • ${"%.1f".format(Locale.US, info.sizeBytes / (1024.0 * 1024.0))} MB"
-        } else ""
-        val notes = info.releaseNotes.ifBlank { "Bug fixes and field workflow improvements." }
-
-        val scroll = ScrollView(this)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(8))
-        }
-        box.addView(TextView(this).apply {
-            text = "Installed: v$currentVer  →  New: v${info.versionName}$sizeStr"
-            textSize = 13f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#0F766E"))
-            setPadding(0, 0, 0, dp(10))
-        })
-        box.addView(TextView(this).apply {
-            text = notes.take(1500)
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#334155"))
-        })
-        scroll.addView(box)
-
-        AlertDialog.Builder(this)
-            .setTitle(if (info.isPreRelease) "Beta Update Available (v${info.versionName})" else "Update Available (v${info.versionName})")
-            .setView(scroll)
-            .setPositiveButton("Update Now") { _, _ -> startApkUpdateDownload(info) }
-            .setNeutralButton("GitHub") { _, _ ->
-                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.htmlUrl))) }
-            }
-            .setNegativeButton("Later", null)
-            .show()
-    }
-
-    private fun startApkUpdateDownload(info: UpdateInfo) {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(16), dp(22), dp(10))
-        }
-        val tvStatus = TextView(this).apply {
-            text = "Downloading ${info.apkName}..."
-            textSize = 13.5f
-            setTextColor(Color.parseColor("#0F172A"))
-            setPadding(0, 0, 0, dp(10))
-        }
-        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            isIndeterminate = true
-        }
-        box.addView(tvStatus)
-        box.addView(progressBar)
-
-        var cancelDownload: (() -> Unit)? = null
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Downloading v${info.versionName}")
-            .setView(box)
-            .setCancelable(false)
-            .setNegativeButton("Cancel") { _, _ -> cancelDownload?.invoke() }
-            .create()
-        dlg.show()
-
-        cancelDownload = AppUpdater.downloadApk(
-            this,
-            info,
-            onProgress = { pct, dlMb, totalMb ->
-                runOnUiThread {
-                    if (isFinishing || isDestroyed || !dlg.isShowing) return@runOnUiThread
-                    if (pct >= 0) {
-                        progressBar.isIndeterminate = false
-                        progressBar.progress = pct
-                        tvStatus.text = if (totalMb > 0.0) {
-                            "$pct%  •  ${"%.1f".format(Locale.US, dlMb)} / ${"%.1f".format(Locale.US, totalMb)} MB"
-                        } else {
-                            "$pct%  •  ${"%.1f".format(Locale.US, dlMb)} MB"
-                        }
-                    } else {
-                        tvStatus.text = "Downloaded ${"%.1f".format(Locale.US, dlMb)} MB..."
-                    }
-                }
-            },
-            onDone = { file, err ->
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    if (dlg.isShowing) dlg.dismiss()
-                    if (file != null) {
-                        tryInstallDownloadedApk(file)
-                    } else if (err != null && err != "Download cancelled") {
-                        Toast.makeText(this, err, Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        )
-    }
-
-    private fun tryInstallDownloadedApk(apkFile: java.io.File) {
-        if (AppUpdater.canInstallApks(this)) {
-            pendingUpdateApkFile = null
-            runCatching {
-                AppUpdater.launchApkInstaller(this, apkFile)
-            }.onFailure {
-                Toast.makeText(this, "Could not start installer: ${it.message}", Toast.LENGTH_LONG).show()
-            }
-        } else {
-            pendingUpdateApkFile = apkFile
-            AlertDialog.Builder(this)
-                .setTitle("Allow App Updates")
-                .setMessage("Enable \"Install unknown apps\" for TerraSync in Settings, then return here to install the update.")
-                .setPositiveButton("Open Settings") { _, _ ->
-                    AppUpdater.openInstallPermissionSettings(this)
-                }
-                .setNegativeButton("Cancel") { _, _ -> pendingUpdateApkFile = null }
-                .show()
-        }
+            (info.versionName ?: "2.8.0").trim().removePrefix("v").removePrefix("V")
+        }.getOrDefault("2.8.0")
     }
 
     override fun onResume() {
         super.onResume()
+        backCallback?.isEnabled = true
         mapView.onResume()
         if (hasLocationPermission()) startLiveGpsUpdates()
-        val pendingApk = pendingUpdateApkFile
-        if (pendingApk != null && pendingApk.exists() && AppUpdater.canInstallApks(this)) {
-            pendingUpdateApkFile = null
-            runCatching { AppUpdater.launchApkInstaller(this, pendingApk) }
-        }
     }
     override fun onPause() {
         if (activeNavRoute == null) stopLiveGpsUpdates()
