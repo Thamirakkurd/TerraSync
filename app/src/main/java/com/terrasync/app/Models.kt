@@ -72,7 +72,8 @@ data class NavRoute(
     val totalDistanceMeters: Double,
     val totalDurationSeconds: Double,
     val steps: List<NavStep>,
-    val mode: TravelMode = TravelMode.CAR
+    val mode: TravelMode = TravelMode.CAR,
+    val engineLabel: String = "Valhalla"
 )
 
 data class RouteProgress(

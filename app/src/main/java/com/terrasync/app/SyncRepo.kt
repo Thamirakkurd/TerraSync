@@ -158,12 +158,12 @@ class SyncRepo {
                 "lat" to p.lat,
                 "lng" to p.lng,
                 "status" to p.status,
-                "issueReason" to "",
+                "issueReason" to p.issueReason,
                 "updatedAt" to now,
-                "isEdited" to false,
-                "editedBy" to "",
-                "editedAt" to 0L,
-                "editHistory" to ""
+                "isEdited" to p.isEdited,
+                "editedBy" to p.editedBy,
+                "editedAt" to p.editedAt,
+                "editHistory" to p.editHistory
             )
         }
 
@@ -360,6 +360,52 @@ class SyncRepo {
             mapOf(
                 "name" to clean,
                 "updatedAt" to System.currentTimeMillis()
+            )
+        )
+    }
+
+    fun deletePinHistoryEntry(pin: PinItem, lineIndex: Int) {
+        val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }.toMutableList()
+        if (lineIndex !in lines.indices) return
+        lines.removeAt(lineIndex)
+        val newHistory = lines.joinToString("
+")
+        val now = System.currentTimeMillis()
+
+        // Recalculate live status & note from the newest remaining status entry ("→")
+        val latestStatusLine = lines.firstOrNull { it.contains("→") }
+        var newStatus = "pending"
+        var newReason = ""
+        var newEditedBy = ""
+        var newIsEdited = lines.isNotEmpty()
+        var newEditedAt = if (lines.isNotEmpty()) pin.editedAt.takeIf { it > 0L } ?: now else 0L
+
+        if (latestStatusLine != null) {
+            val left = latestStatusLine.substringBefore("→").trim()
+            val right = latestStatusLine.substringAfter("→").trim()
+            newEditedBy = left.substringAfter("•", left).trim()
+            val statusToken = right.substringBefore(":").trim().lowercase()
+            val reasonPart = if (right.contains(":")) right.substringAfter(":").trim() else ""
+            newStatus = when (statusToken) {
+                "done" -> "done"
+                "issue" -> "issue"
+                else -> "pending"
+            }
+            newReason = if (newStatus == "done" || newStatus == "issue") reasonPart else ""
+        } else if (lines.isNotEmpty()) {
+            val first = lines.first()
+            newEditedBy = first.substringAfter("•", first).substringBefore(" edited text").trim()
+        }
+
+        db.collection("pins").document(pin.id).update(
+            mapOf(
+                "status" to newStatus,
+                "issueReason" to newReason,
+                "updatedAt" to now,
+                "isEdited" to newIsEdited,
+                "editedBy" to newEditedBy,
+                "editedAt" to newEditedAt,
+                "editHistory" to newHistory
             )
         )
     }

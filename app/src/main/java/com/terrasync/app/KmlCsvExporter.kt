@@ -31,7 +31,8 @@ object KmlCsvExporter {
         layer: LayerItem,
         pins: List<PinItem>,
         tracks: List<TrackItem>,
-        filterSuffix: String = ""
+        filterSuffix: String = "",
+        extraShareText: String? = null
     ) {
         val dir = File(ctx.cacheDir, "exports").apply { mkdirs() }
         val suffixClean = filterSuffix.trim()
@@ -56,9 +57,31 @@ object KmlCsvExporter {
             }
             if (p.description.isNotBlank()) descParts += p.description
             if (p.isEdited && p.editedBy.isNotBlank()) descParts += "Edited by: ${p.editedBy}"
+
             sb.append("  <Placemark>\n")
             sb.append("    <name>${xmlEscape(p.name)}</name>\n")
             sb.append("    <description>${xmlEscape(descParts.joinToString("\n"))}</description>\n")
+            sb.append("    <ExtendedData>\n")
+            sb.append("      <Data name=\"ts_status\"><value>${xmlEscape(p.status.lowercase())}</value></Data>\n")
+            if (p.issueReason.isNotBlank()) {
+                sb.append("      <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
+            }
+            if (p.description.isNotBlank()) {
+                sb.append("      <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
+            }
+            if (p.isEdited) {
+                sb.append("      <Data name=\"ts_is_edited\"><value>true</value></Data>\n")
+            }
+            if (p.editedBy.isNotBlank()) {
+                sb.append("      <Data name=\"ts_edited_by\"><value>${xmlEscape(p.editedBy)}</value></Data>\n")
+            }
+            if (p.editedAt > 0L) {
+                sb.append("      <Data name=\"ts_edited_at\"><value>${p.editedAt}</value></Data>\n")
+            }
+            if (p.editHistory.isNotBlank()) {
+                sb.append("      <Data name=\"ts_edit_history\"><value>${xmlEscape(p.editHistory)}</value></Data>\n")
+            }
+            sb.append("    </ExtendedData>\n")
             sb.append("    <Point><coordinates>${p.lng},${p.lat},0</coordinates></Point>\n")
             sb.append("  </Placemark>\n")
         }
@@ -73,7 +96,7 @@ object KmlCsvExporter {
 
         sb.append("</Document>\n</kml>\n")
         file.writeText(sb.toString(), Charsets.UTF_8)
-        shareFile(ctx, file, "application/vnd.google-earth.kml+xml", "Export KML: $exportTitle")
+        shareFile(ctx, file, "application/vnd.google-earth.kml+xml", "Export KML: $exportTitle", extraShareText)
     }
 
     fun exportAndShareCsv(ctx: Context, layer: LayerItem, pins: List<PinItem>) {
@@ -98,15 +121,18 @@ object KmlCsvExporter {
             ).append("\n")
         }
         file.writeText(sb.toString(), Charsets.UTF_8)
-        shareFile(ctx, file, "text/csv", "Export CSV: ${layer.name}")
+        shareFile(ctx, file, "text/csv", "Export CSV: ${layer.name}", null)
     }
 
-    private fun shareFile(ctx: Context, file: File, mime: String, title: String) {
+    private fun shareFile(ctx: Context, file: File, mime: String, title: String, extraText: String? = null) {
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_SUBJECT, file.name)
+            if (!extraText.isNullOrBlank()) {
+                putExtra(Intent.EXTRA_TEXT, extraText)
+            }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         ctx.startActivity(Intent.createChooser(intent, title))

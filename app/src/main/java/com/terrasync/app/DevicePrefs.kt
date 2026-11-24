@@ -26,6 +26,7 @@ object DevicePrefs {
     private const val KEY_HIDE_SENT_PINS = "hide_sent_pins"
     private const val KEY_PINNED_LAYERS = "pinned_layer_ids"
     private const val KEY_BETA_UPDATES = "beta_updates_enabled"
+    private const val KEY_SHOW_EXTRA_MAP_TOOLS = "show_extra_map_tools"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -215,4 +216,7 @@ object DevicePrefs {
 
     fun isBetaUpdatesEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_BETA_UPDATES, false)
     fun setBetaUpdatesEnabled(ctx: Context, enabled: Boolean) = prefs(ctx).edit().putBoolean(KEY_BETA_UPDATES, enabled).apply()
+
+    fun isShowExtraMapTools(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, false)
+    fun setShowExtraMapTools(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, show).apply()
 }

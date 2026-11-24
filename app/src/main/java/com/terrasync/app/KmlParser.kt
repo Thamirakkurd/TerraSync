@@ -37,6 +37,14 @@ object KmlParser {
         return null
     }
 
+    private fun normalizeStatus(raw: String): String {
+        return when (raw.trim().lowercase()) {
+            "done", "completed", "complete" -> "done"
+            "issue", "problem", "error", "inaccessible", "no bill", "need electricity" -> "issue"
+            else -> "pending"
+        }
+    }
+
     private fun parseKmlXml(bytes: ByteArray, layerId: String): ParsedKml {
         val pins = mutableListOf<PinItem>()
         val tracks = mutableListOf<TrackItem>()
@@ -66,6 +74,7 @@ object KmlParser {
         var pmName = ""
         var pmDesc = ""
         val pmExtra = mutableListOf<String>()
+        val pmMeta = mutableMapOf<String, String>()
         val pmPoints = mutableListOf<Pair<Double, Double>>()
         val pmLines = mutableListOf<List<Pair<Double, Double>>>()
 
@@ -86,6 +95,7 @@ object KmlParser {
                             pmName = ""
                             pmDesc = ""
                             pmExtra.clear()
+                            pmMeta.clear()
                             pmPoints.clear()
                             pmLines.clear()
                         }
@@ -111,7 +121,12 @@ object KmlParser {
                             "value", "simpledata" -> {
                                 val v = textBuf.toString().trim()
                                 if (currentDataKey.isNotBlank() && v.isNotBlank()) {
-                                    pmExtra.add("$currentDataKey: $v")
+                                    val keyLow = currentDataKey.lowercase()
+                                    if (keyLow.startsWith("ts_")) {
+                                        pmMeta[keyLow] = v
+                                    } else {
+                                        pmExtra.add("$currentDataKey: $v")
+                                    }
                                 }
                                 if (tag == "simpledata") currentDataKey = ""
                             }
@@ -128,13 +143,58 @@ object KmlParser {
                             "point" -> inPoint = false
                             "linestring", "polygon", "linearring" -> inLine = false
                             "placemark" -> {
+                                // Restore status/notes from ExtendedData first, or fallback to legacy TerraSync description lines
+                                var restoredStatus = pmMeta["ts_status"]?.let { normalizeStatus(it) }
+                                var restoredReason = pmMeta["ts_issue_reason"] ?: ""
+                                var restoredEditedBy = pmMeta["ts_edited_by"] ?: ""
+                                val restoredEditedAt = pmMeta["ts_edited_at"]?.toLongOrNull() ?: 0L
+                                val restoredHistory = pmMeta["ts_edit_history"] ?: ""
+                                var restoredIsEdited = pmMeta["ts_is_edited"]?.equals("true", true) == true
+                                val rawDescFromMeta = pmMeta["ts_raw_description"]
+
+                                val cleanedDescLines = mutableListOf<String>()
+                                if (rawDescFromMeta != null) {
+                                    if (rawDescFromMeta.isNotBlank()) cleanedDescLines.add(rawDescFromMeta)
+                                } else if (pmDesc.isNotBlank()) {
+                                    pmDesc.lines().forEach { line ->
+                                        val trimmed = line.trim()
+                                        val low = trimmed.lowercase()
+                                        when {
+                                            low.startsWith("status:") -> {
+                                                if (restoredStatus == null) {
+                                                    restoredStatus = normalizeStatus(trimmed.substringAfter(":"))
+                                                }
+                                            }
+                                            low.startsWith("done note:") || low.startsWith("issue:") -> {
+                                                if (restoredReason.isBlank()) {
+                                                    restoredReason = trimmed.substringAfter(":").trim()
+                                                }
+                                            }
+                                            low.startsWith("edited by:") -> {
+                                                if (restoredEditedBy.isBlank()) {
+                                                    restoredEditedBy = trimmed.substringAfter(":").trim()
+                                                    restoredIsEdited = true
+                                                }
+                                            }
+                                            else -> cleanedDescLines.add(line)
+                                        }
+                                    }
+                                }
+
+                                val finalStatus = restoredStatus ?: "pending"
+                                if (finalStatus != "pending" || restoredEditedBy.isNotBlank() || restoredHistory.isNotBlank()) {
+                                    restoredIsEdited = restoredIsEdited || restoredEditedBy.isNotBlank() || restoredHistory.isNotBlank()
+                                }
+
                                 val fullDesc = buildString {
-                                    if (pmDesc.isNotBlank()) append(pmDesc)
+                                    val baseDesc = cleanedDescLines.joinToString("\n").trim()
+                                    if (baseDesc.isNotBlank()) append(baseDesc)
                                     if (pmExtra.isNotEmpty()) {
                                         if (isNotEmpty()) append("\n")
                                         append(pmExtra.joinToString("\n"))
                                     }
                                 }
+
                                 pmPoints.forEach { (lng, lat) ->
                                     pins.add(
                                         PinItem(
@@ -144,8 +204,13 @@ object KmlParser {
                                             description = fullDesc,
                                             lat = lat,
                                             lng = lng,
-                                            status = "pending",
-                                            updatedAt = now
+                                            status = finalStatus,
+                                            issueReason = restoredReason,
+                                            updatedAt = now,
+                                            isEdited = restoredIsEdited,
+                                            editedBy = restoredEditedBy,
+                                            editedAt = restoredEditedAt,
+                                            editHistory = restoredHistory
                                         )
                                     )
                                 }

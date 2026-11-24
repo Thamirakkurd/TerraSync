@@ -1,8 +1,12 @@
 package com.terrasync.app
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.atan2
@@ -14,7 +18,18 @@ import kotlin.math.sqrt
 
 object RoutingEngine {
 
-    @Volatile var userAgent: String = "TerraSync/2.6.1 (https://github.com/Thamirakkurd/TerraSync)"
+    @Volatile var userAgent: String = "TerraSync/2.7.0 (https://github.com/Thamirakkurd/TerraSync)"
+    @Volatile var appContext: Context? = null
+
+    private fun isNetworkAvailable(ctx: Context?): Boolean {
+        if (ctx == null) return true
+        return runCatching {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }.getOrDefault(true)
+    }
 
     fun fetchRoute(
         startLat: Double,
@@ -26,117 +41,307 @@ object RoutingEngine {
         onResult: (NavRoute?, String?) -> Unit
     ) {
         Thread {
-            val profile = when (mode) {
-                TravelMode.CAR -> "driving"
-                TravelMode.BICYCLE -> "bike"
-                TravelMode.WALKING -> "foot"
-            }
-            val extra = if (mode == TravelMode.WALKING) {
-                "&alternatives=true&continue_straight=false"
-            } else ""
-            val bearingParam = if (startBearing != null && mode != TravelMode.WALKING) {
-                val deg = ((startBearing.roundToInt() % 360) + 360) % 360
-                "&bearings=$deg,60;&continue_straight=true"
-            } else ""
+            val ctx = appContext
+            val online = isNetworkAvailable(ctx)
 
-            val basePrimary = "https://routing.openstreetmap.de/${mode.osrmPrefix}/route/v1/$profile/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true$extra"
-            val urls = buildList {
-                if (bearingParam.isNotEmpty()) {
-                    add("$basePrimary$bearingParam")
-                }
-                add(basePrimary)
-                if (mode == TravelMode.CAR) {
-                    val fallbackCar = "https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true"
-                    if (bearingParam.isNotEmpty()) add("$fallbackCar$bearingParam")
-                    add(fallbackCar)
-                } else if (mode == TravelMode.WALKING) {
-                    add("https://routing.openstreetmap.de/routed-foot/route/v1/foot/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true&continue_straight=false")
-                }
-            }
-
-            var lastError = "Route request failed"
-            for (urlStr in urls) {
-                var conn: HttpURLConnection? = null
-                try {
-                    conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 10000
-                        readTimeout = 12000
-                        setRequestProperty("User-Agent", userAgent)
-                    }
-                    if (conn.responseCode != 200) {
-                        lastError = "Routing server error (${conn.responseCode})"
-                        continue
-                    }
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val root = JSONObject(body)
-                    val routes = root.optJSONArray("routes")
-                    if (routes == null || routes.length() == 0) {
-                        lastError = "No ${mode.label.lowercase()} route found"
-                        continue
-                    }
-                    var r0 = routes.getJSONObject(0)
-                    if (mode == TravelMode.WALKING && routes.length() > 1) {
-                        var bestDist = r0.optDouble("distance", Double.MAX_VALUE)
-                        for (idx in 1 until routes.length()) {
-                            val cand = routes.getJSONObject(idx)
-                            val d = cand.optDouble("distance", Double.MAX_VALUE)
-                            if (d < bestDist) {
-                                bestDist = d
-                                r0 = cand
-                            }
-                        }
-                    }
-                    val totalDist = r0.optDouble("distance", 0.0)
-                    val totalDur = r0.optDouble("duration", 0.0)
-
-                    val coordsArr = r0.getJSONObject("geometry").getJSONArray("coordinates")
-                    val geom = mutableListOf<Pair<Double, Double>>()
-                    for (i in 0 until coordsArr.length()) {
-                        val pt = coordsArr.getJSONArray(i)
-                        geom.add(pt.getDouble(0) to pt.getDouble(1))
-                    }
-                    var geomTotal = 0.0
-                    for (i in 0 until geom.size - 1) {
-                        geomTotal += haversineMeters(geom[i].second, geom[i].first, geom[i + 1].second, geom[i + 1].first)
-                    }
-
-                    val steps = mutableListOf<NavStep>()
-                    val legs = r0.optJSONArray("legs")
-                    if (legs != null && legs.length() > 0) {
-                        val stepsArr = legs.getJSONObject(0).optJSONArray("steps") ?: JSONArray()
-                        var cumDist = 0.0
-                        for (i in 0 until stepsArr.length()) {
-                            val s = stepsArr.getJSONObject(i)
-                            val dist = s.optDouble("distance", 0.0)
-                            val roadName = s.optString("name", "").trim()
-                            val man = s.optJSONObject("maneuver") ?: JSONObject()
-                            val type = man.optString("type", "")
-                            val mod = man.optString("modifier", "")
-                            val loc = man.optJSONArray("location")
-                            val lng = loc?.optDouble(0) ?: endLng
-                            val lat = loc?.optDouble(1) ?: endLat
-
-                            val stepRouteDist = when {
-                                i == 0 -> 0.0
-                                i == stepsArr.length() - 1 -> geomTotal
-                                totalDist > 1.0 && geomTotal > 1.0 -> (cumDist / totalDist) * geomTotal
-                                else -> cumDist
-                            }
-                            val (arrow, instr) = formatStep(type, mod, roadName)
-                            steps.add(NavStep(instr, arrow, dist, lat, lng, stepRouteDist))
-                            cumDist += dist
-                        }
-                    }
-                    onResult(NavRoute(geom, totalDist, totalDur, steps, mode), null)
+            // 1. If device is offline, go straight to local offline routing engine
+            if (!online && ctx != null) {
+                val (offRoute, offErr) = OfflineRoutingEngine.routeOffline(ctx, startLat, startLng, endLat, endLng, mode)
+                if (offRoute != null) {
+                    onResult(offRoute, null)
                     return@Thread
-                } catch (e: Exception) {
-                    lastError = e.message ?: "Route request failed"
-                } finally {
-                    conn?.disconnect()
+                }
+                onResult(null, offErr ?: "Offline and no local road graph found")
+                return@Thread
+            }
+
+            // 2. Primary Online Engine: Valhalla (valhalla1.openstreetmap.de)
+            val valhallaHeading = if (startBearing != null && mode != TravelMode.WALKING) {
+                ((startBearing.roundToInt() % 360) + 360) % 360
+            } else null
+
+            val valhallaAttempts = if (valhallaHeading != null) listOf<Int?>(valhallaHeading, null) else listOf<Int?>(null)
+            var lastError = "Route request failed"
+            for (heading in valhallaAttempts) {
+                val (vRoute, vErr) = fetchValhallaRoute(startLat, startLng, endLat, endLng, mode, heading)
+                if (vRoute != null) {
+                    onResult(vRoute, null)
+                    return@Thread
+                }
+                if (!vErr.isNullOrBlank()) lastError = vErr
+            }
+
+            // 3. Secondary Online Fallback: OSRM
+            val (osrmRoute, osrmErr) = fetchOsrmRoute(startLat, startLng, endLat, endLng, mode, startBearing)
+            if (osrmRoute != null) {
+                onResult(osrmRoute, null)
+                return@Thread
+            }
+            if (!osrmErr.isNullOrBlank()) lastError = osrmErr
+
+            // 4. Local Offline Fallback if online servers failed
+            if (ctx != null && OfflineRoutingEngine.hasAnyRegion(ctx)) {
+                val (offRoute, _) = OfflineRoutingEngine.routeOffline(ctx, startLat, startLng, endLat, endLng, mode)
+                if (offRoute != null) {
+                    onResult(offRoute, null)
+                    return@Thread
                 }
             }
+
             onResult(null, lastError)
         }.start()
+    }
+
+    private fun fetchValhallaRoute(
+        startLat: Double,
+        startLng: Double,
+        endLat: Double,
+        endLng: Double,
+        mode: TravelMode,
+        headingDeg: Int?
+    ): Pair<NavRoute?, String?> {
+        var conn: HttpURLConnection? = null
+        return try {
+            val costing = when (mode) {
+                TravelMode.CAR -> "auto"
+                TravelMode.BICYCLE -> "bicycle"
+                TravelMode.WALKING -> "pedestrian"
+            }
+            val orig = JSONObject().apply {
+                put("lat", startLat)
+                put("lon", startLng)
+                if (headingDeg != null) {
+                    put("heading", headingDeg)
+                    put("heading_tolerance", 60)
+                }
+            }
+            val dest = JSONObject().apply {
+                put("lat", endLat)
+                put("lon", endLng)
+            }
+            val payload = JSONObject().apply {
+                put("locations", JSONArray().apply {
+                    put(orig)
+                    put(dest)
+                })
+                put("costing", costing)
+                put("directions_options", JSONObject().apply {
+                    put("units", "kilometers")
+                    put("language", "en-US")
+                })
+            }
+
+            conn = (URL("https://valhalla1.openstreetmap.de/route").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 9000
+                readTimeout = 12000
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                setRequestProperty("User-Agent", userAgent)
+            }
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+            if (conn.responseCode != 200) {
+                return null to "Valhalla HTTP ${conn.responseCode}"
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val trip = JSONObject(body).optJSONObject("trip") ?: return null to "Invalid Valhalla response"
+            val legs = trip.optJSONArray("legs")
+            if (legs == null || legs.length() == 0) return null to "No Valhalla route found"
+            val leg0 = legs.getJSONObject(0)
+            val shape = leg0.optString("shape", "")
+            val geom = decodePolyline6(shape)
+            if (geom.size < 2) return null to "Empty Valhalla geometry"
+
+            val cumGeom = DoubleArray(geom.size)
+            for (i in 0 until geom.size - 1) {
+                cumGeom[i + 1] = cumGeom[i] + haversineMeters(
+                    geom[i].second, geom[i].first,
+                    geom[i + 1].second, geom[i + 1].first
+                )
+            }
+            val geomTotal = cumGeom.last()
+            val summary = leg0.optJSONObject("summary")
+            val totalDist = (summary?.optDouble("length", 0.0) ?: 0.0) * 1000.0
+            val finalDist = if (totalDist > 1.0) totalDist else geomTotal
+            val totalDur = summary?.optDouble("time", 0.0) ?: 0.0
+
+            val steps = mutableListOf<NavStep>()
+            val mans = leg0.optJSONArray("maneuvers") ?: JSONArray()
+            for (i in 0 until mans.length()) {
+                val m = mans.getJSONObject(i)
+                val mType = m.optInt("type", 8)
+                val instr = m.optString("instruction", "Continue").trim().removeSuffix(".")
+                val distM = m.optDouble("length", 0.0) * 1000.0
+                val beginIdx = m.optInt("begin_shape_index", 0).coerceIn(0, geom.lastIndex)
+                val pt = geom[beginIdx]
+                val arrow = valhallaArrow(mType)
+                steps.add(NavStep(instr, arrow, distM, pt.second, pt.first, cumGeom[beginIdx]))
+            }
+            NavRoute(geom, finalDist, totalDur, steps, mode, "Valhalla") to null
+        } catch (e: Exception) {
+            null to (e.message ?: "Valhalla error")
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    private fun valhallaArrow(type: Int): String = when (type) {
+        4, 5, 6 -> "🏁"
+        9, 18, 20, 23 -> "↗"
+        10 -> "↱"
+        11 -> "↘"
+        12, 13 -> "↺"
+        14 -> "↙"
+        15 -> "↰"
+        16, 19, 21, 24 -> "↖"
+        26, 27 -> "⟳"
+        else -> "↑"
+    }
+
+    private fun decodePolyline6(encoded: String): List<Pair<Double, Double>> {
+        val poly = ArrayList<Pair<Double, Double>>()
+        var index = 0
+        val len = encoded.length
+        var lat = 0
+        var lng = 0
+        while (index < len) {
+            var b: Int
+            var shift = 0
+            var result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20 && index < len)
+            val dlat = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lat += dlat
+
+            shift = 0
+            result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20 && index < len)
+            val dlng = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lng += dlng
+
+            poly.add((lng / 1e6) to (lat / 1e6))
+        }
+        return poly
+    }
+
+    private fun fetchOsrmRoute(
+        startLat: Double,
+        startLng: Double,
+        endLat: Double,
+        endLng: Double,
+        mode: TravelMode,
+        startBearing: Float?
+    ): Pair<NavRoute?, String?> {
+        val profile = when (mode) {
+            TravelMode.CAR -> "driving"
+            TravelMode.BICYCLE -> "bike"
+            TravelMode.WALKING -> "foot"
+        }
+        val extra = if (mode == TravelMode.WALKING) "&alternatives=true&continue_straight=false" else ""
+        val bearingParam = if (startBearing != null && mode != TravelMode.WALKING) {
+            val deg = ((startBearing.roundToInt() % 360) + 360) % 360
+            "&bearings=$deg,60;&continue_straight=true"
+        } else ""
+
+        val basePrimary = "https://routing.openstreetmap.de/${mode.osrmPrefix}/route/v1/$profile/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true$extra"
+        val urls = buildList {
+            if (bearingParam.isNotEmpty()) add("$basePrimary$bearingParam")
+            add(basePrimary)
+            if (mode == TravelMode.CAR) {
+                val fallbackCar = "https://router.project-osrm.org/route/v1/driving/$startLng,$startLat;$endLng,$endLat?overview=full&geometries=geojson&steps=true"
+                if (bearingParam.isNotEmpty()) add("$fallbackCar$bearingParam")
+                add(fallbackCar)
+            }
+        }
+
+        var lastError = "OSRM route request failed"
+        for (urlStr in urls) {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 9000
+                    readTimeout = 11000
+                    setRequestProperty("User-Agent", userAgent)
+                }
+                if (conn.responseCode != 200) {
+                    lastError = "OSRM error (${conn.responseCode})"
+                    continue
+                }
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val root = JSONObject(body)
+                val routes = root.optJSONArray("routes")
+                if (routes == null || routes.length() == 0) {
+                    lastError = "No ${mode.label.lowercase()} route found"
+                    continue
+                }
+                var r0 = routes.getJSONObject(0)
+                if (mode == TravelMode.WALKING && routes.length() > 1) {
+                    var bestDist = r0.optDouble("distance", Double.MAX_VALUE)
+                    for (idx in 1 until routes.length()) {
+                        val cand = routes.getJSONObject(idx)
+                        val d = cand.optDouble("distance", Double.MAX_VALUE)
+                        if (d < bestDist) {
+                            bestDist = d
+                            r0 = cand
+                        }
+                    }
+                }
+                val totalDist = r0.optDouble("distance", 0.0)
+                val totalDur = r0.optDouble("duration", 0.0)
+
+                val coordsArr = r0.getJSONObject("geometry").getJSONArray("coordinates")
+                val geom = mutableListOf<Pair<Double, Double>>()
+                for (i in 0 until coordsArr.length()) {
+                    val pt = coordsArr.getJSONArray(i)
+                    geom.add(pt.getDouble(0) to pt.getDouble(1))
+                }
+                var geomTotal = 0.0
+                for (i in 0 until geom.size - 1) {
+                    geomTotal += haversineMeters(geom[i].second, geom[i].first, geom[i + 1].second, geom[i + 1].first)
+                }
+
+                val steps = mutableListOf<NavStep>()
+                val legs = r0.optJSONArray("legs")
+                if (legs != null && legs.length() > 0) {
+                    val stepsArr = legs.getJSONObject(0).optJSONArray("steps") ?: JSONArray()
+                    var cumDist = 0.0
+                    for (i in 0 until stepsArr.length()) {
+                        val s = stepsArr.getJSONObject(i)
+                        val dist = s.optDouble("distance", 0.0)
+                        val roadName = s.optString("name", "").trim()
+                        val man = s.optJSONObject("maneuver") ?: JSONObject()
+                        val type = man.optString("type", "")
+                        val mod = man.optString("modifier", "")
+                        val loc = man.optJSONArray("location")
+                        val lng = loc?.optDouble(0) ?: endLng
+                        val lat = loc?.optDouble(1) ?: endLat
+
+                        val stepRouteDist = when {
+                            i == 0 -> 0.0
+                            i == stepsArr.length() - 1 -> geomTotal
+                            totalDist > 1.0 && geomTotal > 1.0 -> (cumDist / totalDist) * geomTotal
+                            else -> cumDist
+                        }
+                        val (arrow, instr) = formatStep(type, mod, roadName)
+                        steps.add(NavStep(instr, arrow, dist, lat, lng, stepRouteDist))
+                        cumDist += dist
+                    }
+                }
+                return NavRoute(geom, totalDist, totalDur, steps, mode, "OSRM") to null
+            } catch (e: Exception) {
+                lastError = e.message ?: "OSRM request failed"
+            } finally {
+                conn?.disconnect()
+            }
+        }
+        return null to lastError
     }
 
     fun fetchDrivingRoute(
