@@ -16,9 +16,9 @@ enum class TravelMode(
     val osrmPrefix: String,
     val routeColorHex: String
 ) {
-    CAR("car", "Car", "🚗", "routed-car", "#2563EB"),
-    BICYCLE("bike", "Bicycle", "🚲", "routed-bike", "#0F766E"),
-    WALKING("walk", "Walk", "🚶", "routed-foot", "#7C3AED");
+    CAR("car", "Car", "🚗", "routed-car", "#1E88E5"),
+    WALKING("walk", "Walk", "🚶", "routed-foot", "#2E8B47"),
+    BICYCLE("bike", "Bicycle", "🚲", "routed-bike", "#0F766E");
 
     companion object {
         fun fromId(id: String?): TravelMode = entries.firstOrNull { it.id == id } ?: CAR
@@ -110,10 +110,10 @@ data class PlaceResult(
 )
 
 fun statusColorHex(status: String): String = when (status.lowercase()) {
-    "done" -> "#22C55E"
-    "issue" -> "#EF4444"
-    "pending" -> "#F59E0B"
-    else -> "#2563EB"
+    "done" -> "#2E8B47"
+    "issue" -> "#D93025"
+    "pending" -> "#E69500"
+    else -> "#1E88E5"
 }
 
 fun statusIconId(status: String): String = when (status.lowercase()) {
@@ -128,7 +128,16 @@ fun statusLabel(status: String): String = when (status.lowercase()) {
     else -> "Pending"
 }
 
-fun formatDistanceShort(meters: Double): String {
+fun formatDistanceShort(meters: Double, unit: SpeedUnit = SpeedUnit.METRIC): String {
+    if (unit == SpeedUnit.IMPERIAL) {
+        val feet = meters * 3.28084
+        val miles = meters / 1609.344
+        return when {
+            feet < 1000.0 -> "${feet.toInt()} ft"
+            miles < 10.0 -> "${"%.1f".format(miles)} mi"
+            else -> "${miles.toInt()} mi"
+        }
+    }
     return when {
         meters < 1000.0 -> "${meters.toInt()} m"
         meters < 10000.0 -> "${"%.1f".format(meters / 1000.0)} km"

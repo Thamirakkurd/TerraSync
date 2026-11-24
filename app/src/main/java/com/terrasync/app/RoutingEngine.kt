@@ -413,10 +413,20 @@ object RoutingEngine {
                     "&viewbox=$left,$top,$right,$bottom"
                 } else ""
                 val urlStr = "https://nominatim.openstreetmap.org/search?q=$q&format=json&limit=8$biasPart"
+                val acceptLang = appContext?.let { ctx ->
+                    when (DevicePrefs.getMapLabelLanguage(ctx)) {
+                        MapLabelLanguage.KURDISH -> "ku,ckb,en,ar"
+                        MapLabelLanguage.ARABIC -> "ar,en,ku"
+                        MapLabelLanguage.ENGLISH -> "en,ku,ar"
+                        MapLabelLanguage.LOCAL -> "ku,ar,en"
+                        MapLabelLanguage.BILINGUAL -> "en,ku,ar"
+                    }
+                } ?: "en,ku,ar"
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
                     setRequestProperty("User-Agent", userAgent)
+                    setRequestProperty("Accept-Language", acceptLang)
                 }
                 try {
                     if (conn.responseCode == 200) {
@@ -450,10 +460,20 @@ object RoutingEngine {
         ioExecutor.execute {
             val result = runCatching {
                 val urlStr = "https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=json&zoom=18&addressdetails=1"
+                val acceptLang = appContext?.let { ctx ->
+                    when (DevicePrefs.getMapLabelLanguage(ctx)) {
+                        MapLabelLanguage.KURDISH -> "ku,ckb,en,ar"
+                        MapLabelLanguage.ARABIC -> "ar,en,ku"
+                        MapLabelLanguage.ENGLISH -> "en,ku,ar"
+                        MapLabelLanguage.LOCAL -> "ku,ar,en"
+                        MapLabelLanguage.BILINGUAL -> "en,ku,ar"
+                    }
+                } ?: "en,ku,ar"
                 val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 6000
                     readTimeout = 6000
                     setRequestProperty("User-Agent", userAgent)
+                    setRequestProperty("Accept-Language", acceptLang)
                 }
                 try {
                     if (conn.responseCode == 200) {

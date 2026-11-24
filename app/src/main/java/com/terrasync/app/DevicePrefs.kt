@@ -4,6 +4,63 @@ import android.content.Context
 import android.os.Build
 import java.util.UUID
 
+enum class HillshadeIntensity(val id: String, val label: String, val exaggeration: Float) {
+    LIGHT("light", "Light", 0.22f),
+    MEDIUM("medium", "Medium", 0.36f),
+    STRONG("strong", "Strong", 0.52f);
+
+    companion object {
+        fun fromId(id: String?): HillshadeIntensity =
+            entries.firstOrNull { it.id == id } ?: MEDIUM
+    }
+}
+
+enum class AppLanguage(val id: String, val label: String, val isRtl: Boolean) {
+    ENGLISH("en", "English", false),
+    KURDISH("ku", "کوردی", true),
+    ARABIC("ar", "العربية", true);
+
+    companion object {
+        fun fromId(id: String?): AppLanguage =
+            entries.firstOrNull { it.id == id } ?: ENGLISH
+    }
+}
+
+enum class MapLabelLanguage(val id: String, val label: String, val subtitle: String) {
+    BILINGUAL("bilingual", "Bilingual", "English + Kurdish / Arabic"),
+    ENGLISH("en", "English", "Latin / English labels"),
+    KURDISH("ku", "Kurdish", "Kurdish script with fallback"),
+    ARABIC("ar", "Arabic", "Arabic script with fallback"),
+    LOCAL("local", "Local", "Native OSM tag names");
+
+    companion object {
+        fun fromId(id: String?): MapLabelLanguage =
+            entries.firstOrNull { it.id == id } ?: BILINGUAL
+    }
+}
+
+enum class PoiLabelBehavior(val id: String, val label: String) {
+    MATCH_MAP("match", "Match Map"),
+    ENGLISH_ONLY("en", "English"),
+    LOCAL_ONLY("local", "Local"),
+    ICONS_ONLY("icons", "Icons Only");
+
+    companion object {
+        fun fromId(id: String?): PoiLabelBehavior =
+            entries.firstOrNull { it.id == id } ?: MATCH_MAP
+    }
+}
+
+enum class SpeedUnit(val id: String, val label: String, val speedSuffix: String) {
+    METRIC("metric", "km/h • km", "km/h"),
+    IMPERIAL("imperial", "mph • mi", "mph");
+
+    companion object {
+        fun fromId(id: String?): SpeedUnit =
+            entries.firstOrNull { it.id == id } ?: METRIC
+    }
+}
+
 object DevicePrefs {
     private const val PREFS = "terrasync_prefs_v2"
     private const val KEY_DEVICE_ID = "device_id"
@@ -19,17 +76,23 @@ object DevicePrefs {
     private const val KEY_KEEP_AWAKE = "keep_screen_awake"
     private const val KEY_VOICE_NAV = "voice_guidance"
     private const val KEY_HILLSHADE = "terrain_hillshade"
+    private const val KEY_HILLSHADE_INTENSITY = "terrain_hillshade_intensity"
+    private const val KEY_CONTOURS = "terrain_contours_enabled"
     private const val KEY_3D_BUILDINGS = "buildings_3d_enabled"
+    private const val KEY_SCALE_BAR = "show_scale_bar"
     private const val KEY_TRAVEL_MODE = "travel_mode"
     private const val KEY_SPEED_INDICATOR = "speed_indicator_enabled"
+    private const val KEY_SPEED_UNIT = "speed_unit_system"
     private const val KEY_LOCAL_SENT_PINS = "local_sent_pin_ids"
     private const val KEY_HIDE_SENT_PINS = "hide_sent_pins"
     private const val KEY_PINNED_LAYERS = "pinned_layer_ids"
     private const val KEY_SHOW_EXTRA_MAP_TOOLS = "show_extra_map_tools"
     private const val KEY_CACHED_LAYER_NAMES = "cached_layer_names"
     private const val KEY_THEME_MODE = "ui_theme_mode"
-    private const val KEY_UI_DESIGN_STYLE = "ui_design_style"
     private const val KEY_REDUCED_MOTION = "ui_reduced_motion"
+    private const val KEY_APP_LANGUAGE = "app_ui_language"
+    private const val KEY_MAP_LABEL_LANGUAGE = "map_label_language"
+    private const val KEY_POI_LABEL_BEHAVIOR = "poi_label_behavior"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -123,11 +186,17 @@ object DevicePrefs {
     fun is3dBuildingsEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_3D_BUILDINGS, false)
     fun set3dBuildingsEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_3D_BUILDINGS, v).apply()
 
+    fun isScaleBarEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SCALE_BAR, true)
+    fun setScaleBarEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_SCALE_BAR, v).apply()
+
     fun getTravelMode(ctx: Context): TravelMode = TravelMode.fromId(prefs(ctx).getString(KEY_TRAVEL_MODE, TravelMode.CAR.id))
     fun setTravelMode(ctx: Context, mode: TravelMode) = prefs(ctx).edit().putString(KEY_TRAVEL_MODE, mode.id).apply()
 
     fun isSpeedIndicatorEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SPEED_INDICATOR, true)
     fun setSpeedIndicatorEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_SPEED_INDICATOR, v).apply()
+
+    fun getSpeedUnit(ctx: Context): SpeedUnit = SpeedUnit.fromId(prefs(ctx).getString(KEY_SPEED_UNIT, SpeedUnit.METRIC.id))
+    fun setSpeedUnit(ctx: Context, unit: SpeedUnit) = prefs(ctx).edit().putString(KEY_SPEED_UNIT, unit.id).apply()
 
     fun getBookmarks(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_BOOKMARKS, emptySet())?.toSet() ?: emptySet()
@@ -159,6 +228,29 @@ object DevicePrefs {
 
     fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, true)
     fun setHillshadeEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_HILLSHADE, v).apply()
+
+    fun getHillshadeIntensity(ctx: Context): HillshadeIntensity =
+        HillshadeIntensity.fromId(prefs(ctx).getString(KEY_HILLSHADE_INTENSITY, HillshadeIntensity.MEDIUM.id))
+    fun setHillshadeIntensity(ctx: Context, intensity: HillshadeIntensity) =
+        prefs(ctx).edit().putString(KEY_HILLSHADE_INTENSITY, intensity.id).apply()
+
+    fun isContoursEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CONTOURS, true)
+    fun setContoursEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_CONTOURS, v).apply()
+
+    fun getAppLanguage(ctx: Context): AppLanguage =
+        AppLanguage.fromId(prefs(ctx).getString(KEY_APP_LANGUAGE, AppLanguage.ENGLISH.id))
+    fun setAppLanguage(ctx: Context, lang: AppLanguage) =
+        prefs(ctx).edit().putString(KEY_APP_LANGUAGE, lang.id).apply()
+
+    fun getMapLabelLanguage(ctx: Context): MapLabelLanguage =
+        MapLabelLanguage.fromId(prefs(ctx).getString(KEY_MAP_LABEL_LANGUAGE, MapLabelLanguage.BILINGUAL.id))
+    fun setMapLabelLanguage(ctx: Context, lang: MapLabelLanguage) =
+        prefs(ctx).edit().putString(KEY_MAP_LABEL_LANGUAGE, lang.id).apply()
+
+    fun getPoiLabelBehavior(ctx: Context): PoiLabelBehavior =
+        PoiLabelBehavior.fromId(prefs(ctx).getString(KEY_POI_LABEL_BEHAVIOR, PoiLabelBehavior.MATCH_MAP.id))
+    fun setPoiLabelBehavior(ctx: Context, behavior: PoiLabelBehavior) =
+        prefs(ctx).edit().putString(KEY_POI_LABEL_BEHAVIOR, behavior.id).apply()
 
     fun getLocalSentPinIds(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_LOCAL_SENT_PINS, emptySet())?.toSet() ?: emptySet()
@@ -228,14 +320,8 @@ object DevicePrefs {
         return nowPinned
     }
 
-
     fun getThemeMode(ctx: Context): String = prefs(ctx).getString(KEY_THEME_MODE, "day") ?: "day"
     fun setThemeMode(ctx: Context, mode: String) = prefs(ctx).edit().putString(KEY_THEME_MODE, mode).apply()
-
-    fun getUiDesignStyle(ctx: Context): UiDesignStyle =
-        UiDesignStyle.fromId(prefs(ctx).getString(KEY_UI_DESIGN_STYLE, UiDesignStyle.CLASSIC.id))
-    fun setUiDesignStyle(ctx: Context, style: UiDesignStyle) =
-        prefs(ctx).edit().putString(KEY_UI_DESIGN_STYLE, style.id).apply()
 
     fun isReducedMotion(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_REDUCED_MOTION, false)
     fun setReducedMotion(ctx: Context, enabled: Boolean) =
