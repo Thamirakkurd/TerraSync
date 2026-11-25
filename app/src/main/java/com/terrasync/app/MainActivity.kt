@@ -1546,7 +1546,7 @@ class MainActivity : AppCompatActivity() {
                 CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
                     PropertyFactory.circleColor("#5AA8E8"),
                     PropertyFactory.circleOpacity(0.90f),
-                    PropertyFactory.circleRadius(13.0f),
+                    PropertyFactory.circleRadius(15.5f),
                     PropertyFactory.circleStrokeWidth(0f),
                     PropertyFactory.circleStrokeOpacity(0f)
                 )

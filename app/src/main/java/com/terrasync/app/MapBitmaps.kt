@@ -16,21 +16,21 @@ import kotlin.math.sin
 
 object MapBitmaps {
 
-    // Exact Organic Maps pinched-waist + round bottom droplet bookmark pin (32 x 31 grid -> 28 x 27.125 dp)
+    // Exact Organic Maps pinched-waist + round bottom droplet bookmark pin (32 x 31 grid -> 34 x 32.9375 dp)
     private const val BOOKMARK_PIN_GRID_W = 32.0f
     private const val BOOKMARK_PIN_GRID_H = 31.0f
     private const val BOOKMARK_PIN_DROPLET_CENTER_Y = 26.80f
-    const val BOOKMARK_PIN_CANVAS_W_DP = 28.0f
-    const val BOOKMARK_PIN_CANVAS_H_DP = BOOKMARK_PIN_CANVAS_W_DP * (BOOKMARK_PIN_GRID_H / BOOKMARK_PIN_GRID_W) // 27.125 dp
+    const val BOOKMARK_PIN_CANVAS_W_DP = 34.0f
+    const val BOOKMARK_PIN_CANVAS_H_DP = BOOKMARK_PIN_CANVAS_W_DP * (BOOKMARK_PIN_GRID_H / BOOKMARK_PIN_GRID_W) // 32.9375 dp (~33.0 dp)
     const val BOOKMARK_PIN_TIP_BOTTOM_PAD_DP =
         (BOOKMARK_PIN_GRID_H - BOOKMARK_PIN_DROPLET_CENTER_Y) *
-            (BOOKMARK_PIN_CANVAS_W_DP / BOOKMARK_PIN_GRID_W) // 3.675 dp -> droplet center (16.0, 26.80) lands dead-center on GPS
+            (BOOKMARK_PIN_CANVAS_W_DP / BOOKMARK_PIN_GRID_W) // 4.4625 dp -> droplet center (16.0, 26.80) lands dead-center on GPS
 
     /**
      * Exact Organic Maps-style pinched-waist + round bottom droplet bookmark pin:
-     * - Normalized 32.0 x 31.0 grid scaled uniformly into 28.0 x 27.125 dp at native device density
+     * - Normalized 32.0 x 31.0 grid scaled uniformly into 34.0 x 32.9375 dp (~34 x 33 dp) at native density
      * - Completely flat & crisp 3-layer stack (zero shadows, zero dark contact dot):
-     *   1. Uniform white outer outline (strokeWidth = 2.6 * unit -> ~1.14 dp visible white border)
+     *   1. Uniform white outer outline (strokeWidth = 2.6 * unit -> ~1.38 dp visible white border)
      *   2. Solid dynamic color fill (Pending / Done / Issue / Target)
      *   3. Centered solid white inner dot at (16.0, 12.0), radius 4.2 * unit (~46.7% of head diameter)
      */
@@ -45,14 +45,14 @@ object MapBitmaps {
         val d = (baseDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT) * scale
         val unit = (BOOKMARK_PIN_CANVAS_W_DP / BOOKMARK_PIN_GRID_W) * d
 
-        val w = ceil(BOOKMARK_PIN_CANVAS_W_DP * d).toInt().coerceAtLeast(28)
-        val h = ceil(BOOKMARK_PIN_CANVAS_H_DP * d).toInt().coerceAtLeast(27)
+        val w = ceil(BOOKMARK_PIN_CANVAS_W_DP * d).toInt().coerceAtLeast(34)
+        val h = ceil(BOOKMARK_PIN_CANVAS_H_DP * d).toInt().coerceAtLeast(33)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         bmp.density = baseDpi
         val c = Canvas(bmp)
 
         // Center horizontally and align normalized y = 31.0 flush with bitmap bottom edge h
-        // so droplet center (16.0, 26.80) sits strictly 3.675 dp above bottom edge on every DPI.
+        // so droplet center (16.0, 26.80) sits strictly 4.4625 dp above bottom edge on every DPI.
         val ox = (w - BOOKMARK_PIN_GRID_W * unit) / 2f
         val oy = h - BOOKMARK_PIN_GRID_H * unit
 
