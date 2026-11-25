@@ -22,6 +22,24 @@ object MapCartography {
     const val MOSQUES_LAYER_ID = "terrasync-mosques-layer"
     const val POI_BADGES_LAYER_ID = "terrasync-poi-badges-layer"
 
+    fun registerPinBitmaps(ctx: Context, style: Style) {
+        val pinStyle = DevicePrefs.getMapPinStyle(ctx)
+        fun addAndRecycle(id: String, bmp: Bitmap) {
+            try {
+                style.addImage(id, bmp)
+            } finally {
+                if (!bmp.isRecycled) bmp.recycle()
+            }
+        }
+        fun makePin(hex: String): Bitmap = when (pinStyle) {
+            MapPinStyle.CONCEPT -> MapBitmaps.createConceptDropletPin(ctx, hex, 1.0f)
+            MapPinStyle.CLASSIC -> MapBitmaps.createBookmarkPin(ctx, hex, 1.0f)
+        }
+        addAndRecycle("pin-pending", makePin("#E69500"))
+        addAndRecycle("pin-done", makePin("#2E8B47"))
+        addAndRecycle("pin-issue", makePin("#D93025"))
+    }
+
     fun registerMapBitmaps(ctx: Context, style: Style, isDark: Boolean) {
         fun addAndRecycle(id: String, bmp: Bitmap) {
             try {
@@ -30,12 +48,8 @@ object MapCartography {
                 if (!bmp.isRecycled) bmp.recycle()
             }
         }
-        // Compact Organic Maps-style map-tack bookmark pins (consistent base scale across all states)
-        addAndRecycle("pin-pending", MapBitmaps.createBookmarkPin(ctx, "#E69500", 1.0f))
-        addAndRecycle("pin-done", MapBitmaps.createBookmarkPin(ctx, "#2E8B47", 1.0f))
-        addAndRecycle("pin-issue", MapBitmaps.createBookmarkPin(ctx, "#D93025", 1.0f))
-        // Temporary preview pin for incoming geo: / shared map locations
-        addAndRecycle("pin-preview", MapBitmaps.createBookmarkPin(ctx, "#EE6A26", 1.05f))
+        // Register active user-selected bookmark pin style (Concept Droplet or Classic Teardrop)
+        registerPinBitmaps(ctx, style)
 
         // Crisp Organic Maps white rectangular highway shields with thin black borders
         for (len in 1..6) {

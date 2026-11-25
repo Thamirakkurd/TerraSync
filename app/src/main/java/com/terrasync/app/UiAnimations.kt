@@ -106,8 +106,61 @@ object UiAnimations {
     }
 
     /**
-     * Smoothly glides the active pill indicator inside the floating bottom navigation capsule
-     * using GPU-only translationX (never triggers a layout pass during tab animation).
+     * 120fps GPU-only directional chrome slide (translationX / translationY + alpha,
+     * zero per-frame relayout; settles to INVISIBLE instead of GONE so CoordinatorLayout
+     * never triggers a layout pass when toggling Full-Screen Clean Map Mode).
+     */
+    fun animateChromeSlide(
+        view: View,
+        hide: Boolean,
+        shiftX: Float = 0f,
+        shiftY: Float = 0f,
+        durationMs: Long = 220L
+    ) {
+        view.animate().cancel()
+        if (hide) {
+            if (isReducedMotion(view.context)) {
+                view.alpha = 0f
+                view.translationX = shiftX
+                view.translationY = shiftY
+                view.visibility = View.INVISIBLE
+                return
+            }
+            view.animate()
+                .translationX(shiftX)
+                .translationY(shiftY)
+                .alpha(0f)
+                .setDuration(durationMs)
+                .setInterpolator(EMPHASIZED_DECELERATE)
+                .withLayer()
+                .withEndAction { view.visibility = View.INVISIBLE }
+                .start()
+        } else {
+            if (view.visibility != View.VISIBLE) {
+                view.translationX = shiftX
+                view.translationY = shiftY
+                view.alpha = 0f
+                view.visibility = View.VISIBLE
+            }
+            if (isReducedMotion(view.context)) {
+                view.translationX = 0f
+                view.translationY = 0f
+                view.alpha = 1f
+                return
+            }
+            view.animate()
+                .translationX(0f)
+                .translationY(0f)
+                .alpha(1f)
+                .setDuration(durationMs)
+                .setInterpolator(EMPHASIZED_DECELERATE)
+                .withLayer()
+                .start()
+        }
+    }
+
+    /**
+     * Smoothly glides the active pill indicator inside a floating navigation capsule.
      */
     fun animateNavIndicator(indicator: View, targetX: Float, targetWidth: Int, animate: Boolean) {
         val lp = indicator.layoutParams

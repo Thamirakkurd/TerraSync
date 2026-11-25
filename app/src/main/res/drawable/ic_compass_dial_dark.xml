@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Minimalist compass tick marks around dial (Dark Mode) -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="#73ECECE7"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M12,19.2V21M3,12h1.8M19.2,12H21M5.6,5.6l1.3,1.3M17.1,17.1l1.3,1.3M18.4,5.6l-1.3,1.3M6.9,17.1l-1.3,1.3" />
+    <!-- Bright apricot-orange North pointer triangle (#F27B3F) -->
+    <path
+        android:fillColor="#FFF27B3F"
+        android:pathData="M12,2.6L14.8,11.6L12,10.2L9.2,11.6Z" />
+    <!-- Soft alabaster South needle half -->
+    <path
+        android:fillColor="#FFECECE7"
+        android:pathData="M12,19.2L14.3,12.4L12,13.6L9.7,12.4Z" />
+    <!-- Crisp center pivot dot -->
+    <path
+        android:fillColor="#FF212320"
+        android:pathData="M12,10.8a1.2,1.2 0 1,0 0,2.4a1.2,1.2 0 1,0 0,-2.4z" />
+</vector>

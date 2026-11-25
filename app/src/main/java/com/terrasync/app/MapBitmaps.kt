@@ -115,6 +115,100 @@ object MapBitmaps {
         createBookmarkPin(ctx, colorHex, scale)
 
     /**
+     * Concept Droplet map pin matching the warm minimalist concept screenshot:
+     * crisp white droplet body with soft downward shadow and a clear colored status ring
+     * reflecting Done (green), Issue (red), and Pending (orange).
+     * Shares the exact canvas size & tip anchor as [createBookmarkPin] so coordinates,
+     * hit targets, and label offsets remain 100% identical across both pin styles.
+     */
+    fun createConceptDropletPin(
+        ctx: Context,
+        colorHex: String,
+        scale: Float = 1f
+    ): Bitmap {
+        val baseDpi = ctx.resources.displayMetrics.densityDpi
+            .takeIf { it > 0 } ?: DisplayMetrics.DENSITY_DEFAULT
+        val d = (baseDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT) * scale
+        val unit = (BOOKMARK_PIN_CANVAS_W_DP / BOOKMARK_PIN_GRID_W) * d
+
+        val w = ceil(BOOKMARK_PIN_CANVAS_W_DP * d).toInt().coerceAtLeast(34)
+        val h = ceil(BOOKMARK_PIN_CANVAS_H_DP * d).toInt().coerceAtLeast(33)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bmp.density = baseDpi
+        val c = Canvas(bmp)
+
+        val ox = (w - BOOKMARK_PIN_GRID_W * unit) / 2f
+        val oy = h - BOOKMARK_PIN_GRID_H * unit
+
+        c.save()
+        c.translate(ox, oy)
+
+        // Smooth white droplet silhouette anchored so its bottom tip aligns dead-center on (16.0, 26.80)
+        val cx = 16.0f * unit
+        val headCy = 13.0f * unit
+        val headR = 9.4f * unit
+        val tipY = 26.80f * unit
+
+        val droplet = Path().apply {
+            // Smooth classic inverted-teardrop curve from upper bulb to crisp rounded bottom tip
+            moveTo(cx, tipY)
+            cubicTo(
+                cx - 3.6f * unit, tipY - 3.2f * unit,
+                cx - headR, headCy + 5.2f * unit,
+                cx - headR, headCy
+            )
+            arcTo(
+                RectF(cx - headR, headCy - headR, cx + headR, headCy + headR),
+                180f,
+                180f,
+                false
+            )
+            cubicTo(
+                cx + headR, headCy + 5.2f * unit,
+                cx + 3.6f * unit, tipY - 3.2f * unit,
+                cx, tipY
+            )
+            close()
+        }
+
+        // Layer 1: Subtle directional downward drop shadow for legibility on pale map terrain
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#2B1C1E1B")
+            style = Paint.Style.FILL
+        }
+        c.save()
+        c.translate(0f, 1.35f * unit)
+        c.drawPath(droplet, shadowPaint)
+        c.restore()
+
+        // Layer 2: Crisp pure-white droplet body + delicate hairline edge
+        val whiteFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        val edgeStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#241C1E1B")
+            style = Paint.Style.STROKE
+            strokeWidth = 0.85f * unit
+            strokeJoin = Paint.Join.ROUND
+        }
+        c.drawPath(droplet, whiteFill)
+        c.drawPath(droplet, edgeStroke)
+
+        // Layer 3: Crisp colored status ring enclosing a clean white center
+        val ringColor = runCatching { Color.parseColor(colorHex) }.getOrDefault(Color.parseColor("#E69500"))
+        val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = ringColor
+            style = Paint.Style.STROKE
+            strokeWidth = 2.45f * unit
+        }
+        c.drawCircle(cx, headCy, 5.25f * unit, ringPaint)
+
+        c.restore()
+        return bmp
+    }
+
+    /**
      * Crisp Organic Maps-style white rectangular highway route shield bordered in thin black
      * (e.g., M5, M90, E90, 2). Registered for road_1..road_6 on vector styles.
      */

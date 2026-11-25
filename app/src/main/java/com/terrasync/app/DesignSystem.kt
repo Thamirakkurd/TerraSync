@@ -8,6 +8,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Build
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -16,26 +17,35 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 
 /**
- * TerraSync Warm Minimalist Visual Design System
+ * TerraSync Two-Material-Worlds Visual Design System
  *
- * Light Mode: Warm off-white canvas (#FAF9F6), crisp opaque white floating map controls (#FFFFFF),
- * flat warm-stone tonal cards/buttons (#F0EFEA), emerald primary brand accent (#18794E),
- * warm obsidian primary CTAs (#262422), warm terracotta highlight badges (#EE6A26 / #FCE8DC),
- * and subtle 1dp hairline dividers (#E8E7E2).
+ * World 1 (Floating Over Map):
+ * - Softly frosted, semi-transparent warm-white controls (#E8F8F8F5 Light / #E3212320 Dark)
+ *   and frosted outer navigation tray (#E2F6F6F2 / #DC1C1E1B) so map terrain gently tints through,
+ *   paired with crisp directional downward drop shadows (minimal ambient halo).
  *
- * Dark Mode: Harmonized warm-charcoal companion (#161715 / #20221F / #2B2D29 / #238E5E / #F4F3EE).
- * Preserves all existing pill radii and Done/Issue/Pending status color semantics.
+ * World 2 (Bottom Sheets, Dialogs & Full Screens):
+ * - Calm solid warm alabaster canvas (#F9F9F7 Light / #161715 Dark), 28dp top corners,
+ *   centered 36x4dp drag handle (#D6D7D3), zero inner drop shadows, zero divider lines inside sheets,
+ *   deep espresso-charcoal primary CTAs (#2E292B), forest emerald utility & active accents (#18794E),
+ *   apricot-orange highlight badges (#F0651F on #FCE6D8), and borderless warm-stone secondary pills (#F1F1EE).
  */
 data class ThemePalette(
     val isDark: Boolean,
     val surfaceCanvas: Int,
     val surfaceFloating: Int,
+    val surfaceFrosted: Int,
+    val surfaceFrostedTray: Int,
+    val navPillNeutral: Int,
     val surfaceTonal: Int,
     val accentPrimary: Int,
     val accentPrimarySoft: Int,
@@ -80,12 +90,25 @@ data class ThemePalette(
     val floatingBorder: Int
 )
 
+data class SheetActionItem(
+    val title: String,
+    val iconRes: Int,
+    val subtitle: String? = null,
+    val checked: Boolean = false,
+    val destructive: Boolean = false,
+    val tintOverride: Int? = null,
+    val onClick: () -> Unit
+)
+
 object DesignSystem {
 
     fun palette(isDark: Boolean): ThemePalette {
         return if (isDark) {
             val canvas = Color.parseColor("#161715")
             val floating = Color.parseColor("#20221F")
+            val frosted = Color.parseColor("#E3212320")
+            val frostedTray = Color.parseColor("#DC1B1D1A")
+            val navPill = Color.parseColor("#2A2C28")
             val tonal = Color.parseColor("#2B2D29")
             val primary = Color.parseColor("#238E5E")
             val primarySoft = Color.parseColor("#26238E5E")
@@ -97,6 +120,9 @@ object DesignSystem {
                 isDark = true,
                 surfaceCanvas = canvas,
                 surfaceFloating = floating,
+                surfaceFrosted = frosted,
+                surfaceFrostedTray = frostedTray,
+                navPillNeutral = navPill,
                 surfaceTonal = tonal,
                 accentPrimary = primary,
                 accentPrimarySoft = primarySoft,
@@ -111,15 +137,15 @@ object DesignSystem {
                 textBody = textBdy,
                 textMuted = textMut,
                 onDarkSurface = Color.WHITE,
-                inactiveNavIcon = Color.parseColor("#C4C6C0"),
+                inactiveNavIcon = Color.parseColor("#E2E3DE"),
                 pageBackdrop = canvas,
                 cardSurface = tonal,
                 cardBorder = border,
-                floatingSurface = floating,
+                floatingSurface = frosted,
                 sheetSurface = canvas,
                 chipSurface = tonal,
                 textSecondary = textMut,
-                iconTint = Color.parseColor("#E6E6E1"),
+                iconTint = Color.parseColor("#ECECE7"),
                 iconMuted = textMut,
                 divider = border,
                 handleColor = Color.parseColor("#474A44"),
@@ -131,20 +157,23 @@ object DesignSystem {
                 amberSoft = Color.parseColor("#26F5A623"),
                 red = Color.parseColor("#FF5C52"),
                 redSoft = Color.parseColor("#26FF5C52"),
-                rippleColor = Color.parseColor("#26FFFFFF"),
+                rippleColor = Color.parseColor("#28FFFFFF"),
                 navBannerBg = Color.parseColor("#165E3D"),
                 navBannerSub = Color.parseColor("#CBEAD9"),
-                shadowSpot = Color.parseColor("#E6000000"),
-                shadowAmbient = Color.parseColor("#80000000"),
-                floatingBorder = Color.parseColor("#353832")
+                shadowSpot = Color.parseColor("#D8000000"),
+                shadowAmbient = Color.parseColor("#22000000"),
+                floatingBorder = Color.parseColor("#2AFFFFFF")
             )
         } else {
-            val canvas = Color.parseColor("#FAF9F6")
+            val canvas = Color.parseColor("#F9F9F7")
             val floating = Color.parseColor("#FFFFFF")
-            val tonal = Color.parseColor("#F0EFEA")
+            val frosted = Color.parseColor("#E8F8F8F5")
+            val frostedTray = Color.parseColor("#E0F6F6F2")
+            val navPill = Color.parseColor("#FFFFFF")
+            val tonal = Color.parseColor("#F1F1EE")
             val primary = Color.parseColor("#18794E")
             val primarySoft = Color.parseColor("#1A18794E")
-            val border = Color.parseColor("#E8E7E2")
+            val border = Color.parseColor("#E6E6E1")
             val textPri = Color.parseColor("#1C1E1B")
             val textBdy = Color.parseColor("#4A4D48")
             val textMut = Color.parseColor("#6E716B")
@@ -152,32 +181,35 @@ object DesignSystem {
                 isDark = false,
                 surfaceCanvas = canvas,
                 surfaceFloating = floating,
+                surfaceFrosted = frosted,
+                surfaceFrostedTray = frostedTray,
+                navPillNeutral = navPill,
                 surfaceTonal = tonal,
                 accentPrimary = primary,
                 accentPrimarySoft = primarySoft,
-                actionDark = Color.parseColor("#262422"),
+                actionDark = Color.parseColor("#2E292B"),
                 onActionDark = Color.WHITE,
-                accentWarm = Color.parseColor("#EE6A26"),
-                accentWarmContainer = Color.parseColor("#FCE8DC"),
-                dismissSurface = Color.parseColor("#B8BBB6"),
+                accentWarm = Color.parseColor("#F0651F"),
+                accentWarmContainer = Color.parseColor("#FCE6D8"),
+                dismissSurface = Color.parseColor("#BDBFB9"),
                 onDismissSurface = Color.WHITE,
                 borderSubtle = border,
                 textPrimary = textPri,
                 textBody = textBdy,
                 textMuted = textMut,
                 onDarkSurface = Color.WHITE,
-                inactiveNavIcon = Color.parseColor("#2C2E2B"),
+                inactiveNavIcon = Color.parseColor("#262422"),
                 pageBackdrop = canvas,
                 cardSurface = tonal,
                 cardBorder = border,
-                floatingSurface = floating,
+                floatingSurface = frosted,
                 sheetSurface = canvas,
                 chipSurface = tonal,
                 textSecondary = textMut,
-                iconTint = Color.parseColor("#2C2E2B"),
+                iconTint = Color.parseColor("#262422"),
                 iconMuted = textMut,
                 divider = border,
-                handleColor = Color.parseColor("#D4D3CE"),
+                handleColor = Color.parseColor("#D6D7D3"),
                 accent = primary,
                 accentSoft = primarySoft,
                 green = Color.parseColor("#2E8B47"),
@@ -186,12 +218,12 @@ object DesignSystem {
                 amberSoft = Color.parseColor("#1FE69500"),
                 red = Color.parseColor("#D93025"),
                 redSoft = Color.parseColor("#1AD93025"),
-                rippleColor = Color.parseColor("#181C1E1B"),
+                rippleColor = Color.parseColor("#1A1C1E1B"),
                 navBannerBg = Color.parseColor("#18794E"),
                 navBannerSub = Color.parseColor("#D4F1E2"),
-                shadowSpot = Color.parseColor("#8A000000"),
-                shadowAmbient = Color.parseColor("#38000000"),
-                floatingBorder = Color.parseColor("#DFDED8")
+                shadowSpot = Color.parseColor("#6B000000"),
+                shadowAmbient = Color.parseColor("#08000000"),
+                floatingBorder = Color.parseColor("#1E1C1E1B")
             )
         }
     }
@@ -227,7 +259,10 @@ object DesignSystem {
         }
     }
 
-    /** Opaque floating map control (#FFFFFF / #20221F) + subtle 1dp hairline outline + soft diffused shadow. */
+    /**
+     * Frosted floating map control (~90% warm-white translucency in Light / warm charcoal in Dark)
+     * with delicate edge hairline and clean directional downward drop shadow.
+     */
     fun applyFloatingControl(
         ctx: Context,
         view: View,
@@ -237,7 +272,7 @@ object DesignSystem {
         activeFillColor: Int? = null
     ) {
         val d = ctx.resources.displayMetrics.density
-        val fill = activeFillColor ?: palette.surfaceFloating
+        val fill = activeFillColor ?: palette.surfaceFrosted
         val stroke = if (activeFillColor == null) palette.floatingBorder else Color.TRANSPARENT
         val content = buildOpaqueDrawable(
             ctx = ctx,
@@ -245,7 +280,7 @@ object DesignSystem {
             radiusDp = radiusDp,
             topOnly = false,
             strokeColor = stroke,
-            strokeDp = if (stroke != Color.TRANSPARENT) 1f else 0f
+            strokeDp = if (stroke != Color.TRANSPARENT) 0.75f else 0f
         )
         val mask = GradientDrawable().apply {
             setColor(Color.WHITE)
@@ -254,43 +289,46 @@ object DesignSystem {
         val ripple = if (activeFillColor != null) Color.parseColor("#30FFFFFF") else palette.rippleColor
         view.background = RippleDrawable(ColorStateList.valueOf(ripple), content, mask)
         view.elevation = elevationDp * d
-        applySoftShadow(view, palette)
+        applyDirectionalShadow(view, palette)
         UiAnimations.attachSnappyPress(view)
     }
 
-    /** Opaque floating overlay surface (Bottom Sheet 28dp top corners, Ruler/Lasso/Speed cards, Nav Dock capsule). */
+    /**
+     * Floating overlay surface: solid calm canvas for Bottom Sheets (topOnly=true),
+     * softly frosted translucent surface for floating map trays/cards (topOnly=false).
+     */
     fun applyFloatingSurface(
         ctx: Context,
         view: View,
         palette: ThemePalette,
-        radiusDp: Float = 18f,
+        radiusDp: Float = 20f,
         elevationDp: Float = 7f,
         topOnly: Boolean = false,
         fillOverride: Int? = null,
         strokeOverride: Int? = null
     ) {
         val d = ctx.resources.displayMetrics.density
-        val fill = fillOverride ?: if (topOnly) palette.surfaceCanvas else palette.surfaceFloating
-        val stroke = strokeOverride ?: if (topOnly) palette.borderSubtle else palette.floatingBorder
+        val fill = fillOverride ?: if (topOnly) palette.surfaceCanvas else palette.surfaceFrosted
+        val stroke = strokeOverride ?: if (topOnly) Color.TRANSPARENT else palette.floatingBorder
         view.background = buildOpaqueDrawable(
             ctx = ctx,
             fillColor = fill,
             radiusDp = radiusDp,
             topOnly = topOnly,
             strokeColor = stroke,
-            strokeDp = if (stroke != Color.TRANSPARENT) 1f else 0f
+            strokeDp = if (stroke != Color.TRANSPARENT) 0.75f else 0f
         )
         view.elevation = elevationDp * d
         view.clipToOutline = true
-        applySoftShadow(view, palette)
+        applyDirectionalShadow(view, palette)
     }
 
-    /** Flat tonal grouped container (#F0EFEA light / #2B2D29 dark) with zero inner drop shadow. */
+    /** Flat tonal grouped container (#F1F1EE light / #2B2D29 dark) with zero inner drop shadow. */
     fun applyGroupedCardSurface(
         ctx: Context,
         view: View,
         palette: ThemePalette,
-        radiusDp: Float = 16f,
+        radiusDp: Float = 18f,
         fillOverride: Int? = null
     ) {
         view.background = buildOpaqueDrawable(
@@ -311,15 +349,15 @@ object DesignSystem {
         view.background = buildOpaqueDrawable(
             ctx = ctx,
             fillColor = palette.navBannerBg,
-            radiusDp = 20f,
+            radiusDp = 22f,
             topOnly = false
         )
         view.elevation = 8f * d
         view.clipToOutline = true
-        applySoftShadow(view, palette)
+        applyDirectionalShadow(view, palette)
     }
 
-    /** Primary dark obsidian CTA button (#262422 light / #F4F3EE dark) matching the design reference. */
+    /** Primary deep espresso-charcoal CTA button (#2E292B Light / #F4F3EE Dark) matching the concept. */
     fun applyPrimaryCtaButton(btn: MaterialButton, palette: ThemePalette) {
         btn.setTextColor(palette.onActionDark)
         btn.setBackgroundColor(palette.actionDark)
@@ -329,7 +367,7 @@ object DesignSystem {
         btn.stateListAnimator = null
     }
 
-    /** Secondary flat tonal action button (#F0EFEA light / #2B2D29 dark) matching the design reference. */
+    /** Borderless warm-stone secondary action pill (#F1F1EE Light / #2B2D29 Dark) matching the concept. */
     fun applySecondaryTonalButton(btn: MaterialButton, palette: ThemePalette) {
         btn.setTextColor(palette.textPrimary)
         btn.setBackgroundColor(palette.surfaceTonal)
@@ -339,18 +377,18 @@ object DesignSystem {
         btn.stateListAnimator = null
     }
 
-    /** Soft circular tinted header glyph badge (#FCE8DC / #38251C with #EE6A26 / #F27B3F glyph). */
+    /** Large circular apricot-tinted header badge (default 54dp, #FCE6D8 / #F0651F). */
     fun createHeaderBadge(
         ctx: Context,
         iconRes: Int,
         palette: ThemePalette,
         bgColor: Int = palette.accentWarmContainer,
         glyphColor: Int = palette.accentWarm,
-        sizeDp: Int = 44
+        sizeDp: Int = 54
     ): FrameLayout {
         val d = ctx.resources.displayMetrics.density
         val sizePx = (sizeDp * d).toInt()
-        val iconPx = ((sizeDp * 0.50f) * d).toInt()
+        val iconPx = ((sizeDp * 0.48f) * d).toInt()
         return FrameLayout(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
             background = GradientDrawable().apply {
@@ -366,7 +404,7 @@ object DesignSystem {
         }
     }
 
-    /** Circular warm-gray sheet dismiss `×` button (#B8BBB6 with white ×, 40dp touch target). */
+    /** Tucked circular warm-gray sheet dismiss `×` button (28dp disc in 40dp touch target, #BDBFB9). */
     fun createSheetCloseButton(
         ctx: Context,
         palette: ThemePalette,
@@ -374,7 +412,7 @@ object DesignSystem {
     ): FrameLayout {
         val d = ctx.resources.displayMetrics.density
         val hitPx = (40 * d).toInt()
-        val discPx = (30 * d).toInt()
+        val discPx = (28 * d).toInt()
         val iconPx = (13 * d).toInt()
         val wrap = FrameLayout(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(hitPx, hitPx)
@@ -406,35 +444,38 @@ object DesignSystem {
         return wrap
     }
 
-    fun applySoftShadow(view: View, palette: ThemePalette) {
+    /** Crisp directional downward shadow (strong spot, minimal ambient to eliminate muddy all-around halos). */
+    fun applyDirectionalShadow(view: View, palette: ThemePalette) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             view.outlineSpotShadowColor = palette.shadowSpot
             view.outlineAmbientShadowColor = palette.shadowAmbient
         }
     }
 
+    fun applySoftShadow(view: View, palette: ThemePalette) = applyDirectionalShadow(view, palette)
+
     /** Apply tabular numerals (`tnum`) so live speed, coordinates, ruler, distances, and counts never jitter. */
     fun applyTabularNumerals(tv: TextView) {
         tv.fontFeatureSettings = "tnum"
     }
 
-    /** Clean bold 15.5sp sentence-case section header matching the design reference. */
+    /** Clean bold 16sp sentence-case section header separated by whitespace (no harsh dividers). */
     fun createSectionHeader(ctx: Context, title: String, palette: ThemePalette): TextView {
         val d = ctx.resources.displayMetrics.density
         return TextView(ctx).apply {
             text = title
-            textSize = 15.5f
+            textSize = 16f
             letterSpacing = -0.01f
             setTypeface(null, Typeface.BOLD)
             setTextColor(palette.textPrimary)
-            setPadding((4 * d).toInt(), (20 * d).toInt(), (4 * d).toInt(), (8 * d).toInt())
+            setPadding((2 * d).toInt(), (20 * d).toInt(), (2 * d).toInt(), (8 * d).toInt())
         }
     }
 
     fun createGroupedCard(
         ctx: Context,
         palette: ThemePalette,
-        radiusDp: Float = 16f,
+        radiusDp: Float = 18f,
         paddingHDp: Int = 14,
         paddingVDp: Int = 6,
         bottomMarginDp: Int = 12
@@ -500,7 +541,6 @@ object DesignSystem {
             btn.setBackgroundColor(activeBgColor)
             btn.strokeWidth = 0
         } else if (onTonalCard) {
-            // Distinct crisp surface on top of #F0EFEA / #2B2D29 grouped cards
             btn.setBackgroundColor(palette.surfaceFloating)
             btn.strokeColor = ColorStateList.valueOf(palette.borderSubtle)
             btn.strokeWidth = (1f * d).toInt().coerceAtLeast(1)
@@ -589,7 +629,7 @@ object DesignSystem {
             background = buildOpaqueDrawable(
                 ctx = ctx,
                 fillColor = if (onTonalCard) palette.surfaceFloating else palette.surfaceTonal,
-                radiusDp = 12f,
+                radiusDp = 14f,
                 strokeColor = palette.borderSubtle,
                 strokeDp = 1f
             )
@@ -598,6 +638,218 @@ object DesignSystem {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
+    }
+
+    /**
+     * Styled rounded action bottom sheet replacing stock Material 3 PopupMenus & picker dialogs.
+     * 28dp top corners, warm #F9F9F7 / #161715 solid canvas, centered 36x4dp drag handle,
+     * header + circular close button, crisp outlined icons, generous 52dp one-handed tap targets,
+     * and distinct red styling for destructive actions.
+     */
+    fun showActionBottomSheet(
+        ctx: Context,
+        palette: ThemePalette,
+        title: String,
+        subtitle: String? = null,
+        actions: List<SheetActionItem>
+    ): BottomSheetDialog {
+        val d = ctx.resources.displayMetrics.density
+        val dialog = BottomSheetDialog(ctx)
+
+        val root = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            background = buildOpaqueDrawable(
+                ctx = ctx,
+                fillColor = palette.surfaceCanvas,
+                radiusDp = 28f,
+                topOnly = true
+            )
+            setPadding((16 * d).toInt(), (10 * d).toInt(), (16 * d).toInt(), (24 * d).toInt())
+        }
+
+        // Centered drag handle (36 x 4dp, #D6D7D3)
+        root.addView(View(ctx).apply {
+            background = GradientDrawable().apply {
+                setColor(palette.handleColor)
+                cornerRadius = 4f * d
+            }
+            layoutParams = LinearLayout.LayoutParams((36 * d).toInt(), (4 * d).toInt()).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = (14 * d).toInt()
+            }
+        })
+
+        // Header row: bold title (+ optional subtitle) + tucked 28dp circular close button
+        val header = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (14 * d).toInt()
+            }
+        }
+        val titleCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (8 * d).toInt()
+            }
+        }
+        titleCol.addView(TextView(ctx).apply {
+            text = title
+            textSize = 19.5f
+            letterSpacing = -0.01f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(palette.textPrimary)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+        })
+        if (!subtitle.isNullOrBlank()) {
+            titleCol.addView(TextView(ctx).apply {
+                text = subtitle
+                textSize = 13f
+                setTextColor(palette.textMuted)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setPadding(0, (2 * d).toInt(), 0, 0)
+            })
+        }
+        header.addView(titleCol)
+        header.addView(createSheetCloseButton(ctx, palette) { dialog.dismiss() })
+        root.addView(header)
+
+        // Scrollable action rows (zero divider lines; clean tonal rows with generous touch targets)
+        val scroll = ScrollView(ctx).apply {
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val listCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val normalItems = actions.filterNot { it.destructive }
+        val destructiveItems = actions.filter { it.destructive }
+
+        fun addActionRow(parent: LinearLayout, item: SheetActionItem, bottomMarginDp: Int) {
+            val rowBg = when {
+                item.destructive -> palette.redSoft
+                item.checked -> palette.accentPrimarySoft
+                else -> palette.surfaceTonal
+            }
+            val iconColor = item.tintOverride ?: when {
+                item.destructive -> palette.red
+                item.checked -> palette.accentPrimary
+                else -> palette.textPrimary
+            }
+            val labelColor = when {
+                item.destructive -> palette.red
+                item.checked -> palette.accentPrimary
+                else -> palette.textPrimary
+            }
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = (52 * d).toInt()
+                setPadding((14 * d).toInt(), (10 * d).toInt(), (14 * d).toInt(), (10 * d).toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = (bottomMarginDp * d).toInt()
+                }
+                UiAnimations.applyRoundedRipple(ctx, this, rowBg, 16f, palette.isDark)
+                UiAnimations.attachSnappyPress(this, 0.985f)
+                setOnClickListener {
+                    dialog.dismiss()
+                    item.onClick()
+                }
+            }
+            val iconCircle = FrameLayout(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams((36 * d).toInt(), (36 * d).toInt()).apply {
+                    marginEnd = (12 * d).toInt()
+                }
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(
+                        when {
+                            item.destructive -> if (palette.isDark) Color.parseColor("#33FF5C52") else Color.parseColor("#24D93025")
+                            item.checked -> if (palette.isDark) Color.parseColor("#33238E5E") else Color.parseColor("#2418794E")
+                            else -> palette.surfaceCanvas
+                        }
+                    )
+                }
+            }
+            iconCircle.addView(ImageView(ctx).apply {
+                setImageResource(item.iconRes)
+                setColorFilter(iconColor)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = FrameLayout.LayoutParams((20 * d).toInt(), (20 * d).toInt(), Gravity.CENTER)
+            })
+            row.addView(iconCircle)
+
+            val txtCol = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = (8 * d).toInt()
+                }
+            }
+            txtCol.addView(TextView(ctx).apply {
+                text = item.title
+                textSize = 15f
+                setTypeface(null, if (item.destructive || item.checked) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(labelColor)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            if (!item.subtitle.isNullOrBlank()) {
+                txtCol.addView(TextView(ctx).apply {
+                    text = item.subtitle
+                    textSize = 12f
+                    setTextColor(if (item.destructive) palette.red else palette.textMuted)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    setPadding(0, (1 * d).toInt(), 0, 0)
+                })
+            }
+            row.addView(txtCol)
+
+            if (item.checked) {
+                row.addView(ImageView(ctx).apply {
+                    setImageResource(R.drawable.ic_check)
+                    setColorFilter(palette.accentPrimary)
+                    layoutParams = LinearLayout.LayoutParams((20 * d).toInt(), (20 * d).toInt())
+                })
+            }
+            parent.addView(row)
+        }
+
+        normalItems.forEachIndexed { idx, item ->
+            val gap = if (idx == normalItems.lastIndex && destructiveItems.isNotEmpty()) 14 else 6
+            addActionRow(listCol, item, gap)
+        }
+        destructiveItems.forEachIndexed { idx, item ->
+            val gap = if (idx == destructiveItems.lastIndex) 0 else 6
+            addActionRow(listCol, item, gap)
+        }
+
+        scroll.addView(listCol)
+        root.addView(scroll)
+
+        dialog.setContentView(root)
+        dialog.setOnShowListener {
+            val sheet = dialog.findViewById<FrameLayout>(com.google.android.material.R.id.design_bottom_sheet)
+            sheet?.setBackgroundColor(Color.TRANSPARENT)
+            dialog.behavior.apply {
+                state = BottomSheetBehavior.STATE_EXPANDED
+                skipCollapsed = true
+            }
+        }
+        dialog.show()
+        return dialog
     }
 
     /** Creates a themed header view for AlertDialogs (19.5sp Bold, tight tracking). */
@@ -632,47 +884,48 @@ object DesignSystem {
         }
     }
 
-    /** Applies 24dp dialog corners, warm canvas surface, contrast typography, and crisp entrance. */
+    /** Applies 28dp rounded corners, solid warm alabaster/charcoal canvas, pill actions, and crisp entrance. */
     fun styleAlertDialog(
         ctx: Context,
         dialog: AlertDialog,
         palette: ThemePalette,
         destructivePositive: Boolean = false
     ) {
+        val d = ctx.resources.displayMetrics.density
         dialog.window?.setBackgroundDrawable(
             buildOpaqueDrawable(
                 ctx = ctx,
                 fillColor = palette.surfaceCanvas,
-                radiusDp = 24f,
-                strokeColor = palette.borderSubtle,
-                strokeDp = 1f
+                radiusDp = 28f,
+                strokeColor = if (palette.isDark) palette.borderSubtle else Color.TRANSPARENT,
+                strokeDp = if (palette.isDark) 1f else 0f
             )
         )
         dialog.findViewById<TextView>(android.R.id.message)?.apply {
             setTextColor(palette.textBody)
             textSize = 14f
-            setLineSpacing(2f * ctx.resources.displayMetrics.density, 1.08f)
+            setLineSpacing(2f * d, 1.10f)
         }
         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
             setTextColor(if (destructivePositive) palette.red else palette.accentPrimary)
             isAllCaps = false
+            textSize = 14.5f
             setTypeface(null, Typeface.BOLD)
         }
         dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {
             setTextColor(palette.textMuted)
             isAllCaps = false
+            textSize = 14.5f
         }
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.apply {
             setTextColor(palette.textPrimary)
             isAllCaps = false
+            textSize = 14.5f
             setTypeface(null, Typeface.BOLD)
         }
         dialog.listView?.let { lv ->
-            lv.divider = GradientDrawable().apply {
-                setColor(palette.borderSubtle)
-                setSize(-1, (1f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(1))
-            }
-            lv.dividerHeight = (1f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+            lv.divider = null
+            lv.dividerHeight = 0
         }
         UiAnimations.animateDialogEnter(dialog.window?.decorView)
     }

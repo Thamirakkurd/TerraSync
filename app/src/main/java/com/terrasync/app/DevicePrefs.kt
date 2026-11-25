@@ -61,6 +61,16 @@ enum class SpeedUnit(val id: String, val label: String, val speedSuffix: String)
     }
 }
 
+enum class MapPinStyle(val id: String, val label: String) {
+    CONCEPT("concept", "Concept Droplet"),
+    CLASSIC("classic", "Classic Teardrop");
+
+    companion object {
+        fun fromId(id: String?): MapPinStyle =
+            entries.firstOrNull { it.id == id } ?: CONCEPT
+    }
+}
+
 object DevicePrefs {
     private const val PREFS = "terrasync_prefs_v2"
     private const val KEY_DEVICE_ID = "device_id"
@@ -96,6 +106,8 @@ object DevicePrefs {
     private const val KEY_WORK_START_MIN = "work_hours_start_min"
     private const val KEY_WORK_END_MIN = "work_hours_end_min"
     private const val KEY_OPERATOR_SETUP_DONE = "operator_setup_prompt_done"
+    private const val KEY_SHOW_ZOOM_BUTTONS = "show_zoom_buttons"
+    private const val KEY_MAP_PIN_STYLE = "map_pin_style"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
 
@@ -352,6 +364,14 @@ object DevicePrefs {
 
     fun isShowExtraMapTools(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, false)
     fun setShowExtraMapTools(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_EXTRA_MAP_TOOLS, show).apply()
+
+    fun isShowZoomButtons(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_ZOOM_BUTTONS, false)
+    fun setShowZoomButtons(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_ZOOM_BUTTONS, show).apply()
+
+    fun getMapPinStyle(ctx: Context): MapPinStyle =
+        MapPinStyle.fromId(prefs(ctx).getString(KEY_MAP_PIN_STYLE, MapPinStyle.CONCEPT.id))
+    fun setMapPinStyle(ctx: Context, style: MapPinStyle) =
+        prefs(ctx).edit().putString(KEY_MAP_PIN_STYLE, style.id).apply()
 
     fun getCachedLayerNames(ctx: Context): Set<String> {
         return prefs(ctx).getStringSet(KEY_CACHED_LAYER_NAMES, emptySet())?.toSet() ?: emptySet()
