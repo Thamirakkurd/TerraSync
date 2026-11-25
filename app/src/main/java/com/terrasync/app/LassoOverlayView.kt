@@ -34,7 +34,7 @@ class LassoOverlayView @JvmOverloads constructor(
     var onLoopCompleted: ((List<PointF>) -> Unit)? = null
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2622C55E")
+        color = Color.parseColor("#2618794E")
         style = Paint.Style.FILL
     }
 
@@ -47,7 +47,7 @@ class LassoOverlayView @JvmOverloads constructor(
     }
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#16A34A")
+        color = Color.parseColor("#18794E")
         style = Paint.Style.STROKE
         strokeWidth = 3.2f * density
         strokeCap = Paint.Cap.ROUND

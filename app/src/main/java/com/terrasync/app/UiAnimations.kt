@@ -85,7 +85,7 @@ object UiAnimations {
     fun attachSpringTouch(view: View) = attachSnappyPress(view)
 
     fun applyRowRipple(ctx: Context, view: View, isDark: Boolean = false) {
-        val rippleColor = Color.parseColor(if (isDark) "#22FFFFFF" else "#141C1C1E")
+        val rippleColor = Color.parseColor(if (isDark) "#22FFFFFF" else "#141C1E1B")
         val mask = GradientDrawable().apply { setColor(Color.WHITE) }
         view.background = RippleDrawable(ColorStateList.valueOf(rippleColor), null, mask)
     }
@@ -101,8 +101,48 @@ object UiAnimations {
             setColor(Color.WHITE)
             cornerRadius = rPx
         }
-        val ripple = Color.parseColor(if (isDark) "#2AFFFFFF" else "#1E1C1C1E")
+        val ripple = Color.parseColor(if (isDark) "#2AFFFFFF" else "#1A1C1E1B")
         view.background = RippleDrawable(ColorStateList.valueOf(ripple), content, mask)
+    }
+
+    /** Smoothly glides the active pill indicator inside the floating bottom navigation capsule. */
+    fun animateNavIndicator(indicator: View, targetX: Float, targetWidth: Int, animate: Boolean) {
+        val lp = indicator.layoutParams
+        if (lp != null && lp.width != targetWidth && targetWidth > 0) {
+            lp.width = targetWidth
+            indicator.layoutParams = lp
+        }
+        indicator.animate().cancel()
+        if (!animate || isReducedMotion(indicator.context)) {
+            indicator.translationX = targetX
+            return
+        }
+        indicator.animate()
+            .translationX(targetX)
+            .setDuration(220L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
+    }
+
+    /** Smoothly animates bottom sheet content swap with subtle vertical glide + fade. */
+    fun animateSheetContentReveal(view: View) {
+        view.animate().cancel()
+        if (isReducedMotion(view.context)) {
+            view.alpha = 1f
+            view.translationY = 0f
+            return
+        }
+        val shift = 10f * view.resources.displayMetrics.density
+        view.alpha = 0f
+        view.translationY = shift
+        view.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(190L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
     }
 
     /** Crisp 180ms confirmation pop for checkmarks, stars, and active badges. */
