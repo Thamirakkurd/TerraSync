@@ -108,7 +108,6 @@ class MainActivity : AppCompatActivity() {
         private const val PINS_LABELS_LAYER = "terrasync-pins-labels-layer"
         private const val SELECTED_SOURCE = "terrasync-selected-source"
         private const val SELECTED_HALO_LAYER = "terrasync-selected-halo-layer"
-        private const val SELECTED_PIN_LAYER = "terrasync-selected-pin-layer"
         private const val PULSE_SOURCE = "terrasync-pulse-source"
         private const val PULSE_LAYER = "terrasync-pulse-layer"
         private const val USER_LOC_SOURCE = "terrasync-userloc-source"
@@ -298,10 +297,9 @@ class MainActivity : AppCompatActivity() {
     private var isRulerMode = false
     private val rulerPoints = mutableListOf<LatLng>()
 
-    // Selected pin or tapped place marker
+    // Selected pin or tapped location sky-blue dot marker
     private var selectedPinId: String? = null
     private var selectedMarkerLatLng: LatLng? = null
-    private var selectedMarkerIcon: String = "pin-target"
     private var pulseAnimator: ValueAnimator? = null
 
     // Custom Route From Origin
@@ -1288,7 +1286,6 @@ class MainActivity : AppCompatActivity() {
         activeSharedPinId = target.pinId.ifBlank { null }
         selectedPinId = null
         selectedMarkerLatLng = LatLng(target.lat, target.lng)
-        selectedMarkerIcon = "pin-target"
         renderSelectedMarker()
         centerUpperHalf(LatLng(target.lat, target.lng), (map?.cameraPosition?.zoom ?: 15.0).coerceAtLeast(16.0))
         showTappedPlaceCard(target.name, "Shared via TerraSync", target.lat, target.lng)
@@ -1494,6 +1491,23 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.textOptional(true)
                 )
             )
+        }
+
+        // Unified solid borderless sky-blue selection dot immediately BELOW bookmark pins
+        if (style.getSource(SELECTED_SOURCE) == null) {
+            style.addSource(GeoJsonSource(SELECTED_SOURCE))
+            style.addLayer(
+                CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
+                    PropertyFactory.circleColor("#5AA8E8"),
+                    PropertyFactory.circleOpacity(0.90f),
+                    PropertyFactory.circleRadius(15.5f),
+                    PropertyFactory.circleStrokeWidth(0f),
+                    PropertyFactory.circleStrokeOpacity(0f)
+                )
+            )
+        }
+
+        if (style.getLayer(PINS_LAYER) == null && style.getSource(PINS_SOURCE) != null) {
             style.addLayer(
                 SymbolLayer(PINS_LAYER, PINS_SOURCE).withProperties(
                     PropertyFactory.iconImage(Expression.get("icon")),
@@ -1536,29 +1550,6 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.textColor("#1E3A8A"),
                     PropertyFactory.textAllowOverlap(true),
                     PropertyFactory.textIgnorePlacement(true)
-                )
-            )
-        }
-
-        if (style.getSource(SELECTED_SOURCE) == null) {
-            style.addSource(GeoJsonSource(SELECTED_SOURCE))
-            style.addLayer(
-                CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
-                    PropertyFactory.circleColor("#5AA8E8"),
-                    PropertyFactory.circleOpacity(0.90f),
-                    PropertyFactory.circleRadius(15.5f),
-                    PropertyFactory.circleStrokeWidth(0f),
-                    PropertyFactory.circleStrokeOpacity(0f)
-                )
-            )
-            style.addLayer(
-                SymbolLayer(SELECTED_PIN_LAYER, SELECTED_SOURCE).withProperties(
-                    PropertyFactory.iconImage(Expression.get("icon")),
-                    PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                    PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
-                    PropertyFactory.iconSize(1.0f),
-                    PropertyFactory.iconAllowOverlap(true),
-                    PropertyFactory.iconIgnorePlacement(true)
                 )
             )
         }
@@ -1631,7 +1622,9 @@ class MainActivity : AppCompatActivity() {
         )
 
         val pinFeatures = ArrayList<Feature>(visiblePins.size)
-        for (pin in visiblePins) {
+        val selId = selectedPinId
+        var selectedPinItem: PinItem? = null
+        fun appendPinFeature(pin: PinItem) {
             val trimmed = pin.name.trim()
             val shortLabel = if (trimmed.length > 22) trimmed.take(21).trimEnd() + "…" else trimmed
             pinFeatures.add(
@@ -1643,6 +1636,14 @@ class MainActivity : AppCompatActivity() {
                 }
             )
         }
+        for (pin in visiblePins) {
+            if (selId != null && pin.id == selId) {
+                selectedPinItem = pin
+                continue
+            }
+            appendPinFeature(pin)
+        }
+        if (selectedPinItem != null) appendPinFeature(selectedPinItem)
         style.getSourceAs<GeoJsonSource>(PINS_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(pinFeatures))
 
@@ -1733,11 +1734,7 @@ class MainActivity : AppCompatActivity() {
         if (!style.isFullyLoaded) return
         val selLoc = selectedMarkerLatLng
         val selFeatures = if (selLoc != null) {
-            listOf(
-                Feature.fromGeometry(Point.fromLngLat(selLoc.longitude, selLoc.latitude)).apply {
-                    addStringProperty("icon", selectedMarkerIcon)
-                }
-            )
+            listOf(Feature.fromGeometry(Point.fromLngLat(selLoc.longitude, selLoc.latitude)))
         } else emptyList()
         style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(selFeatures))
@@ -2160,9 +2157,7 @@ class MainActivity : AppCompatActivity() {
 
         selectedPinId = null
         selectedMarkerLatLng = latLng
-        selectedMarkerIcon = "pin-target"
         renderSelectedMarker()
-        fireStatusPulse(latLng.latitude, latLng.longitude, "#2563EB")
 
         val initialTitle = detectedTitle.ifBlank { "Selected Location" }
         showTappedPlaceCard(initialTitle, detectedSub, latLng.latitude, latLng.longitude)
@@ -2193,8 +2188,8 @@ class MainActivity : AppCompatActivity() {
     private fun selectPinAndOpenCard(pin: PinItem, zoomIfFar: Boolean = false) {
         selectedPinId = pin.id
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
-        selectedMarkerIcon = statusIconId(pin.status)
         renderSelectedMarker()
+        map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
         val targetZoom = if (zoomIfFar) currentZoom.coerceAtLeast(15.8) else currentZoom
         centerUpperHalf(LatLng(pin.lat, pin.lng), targetZoom)
@@ -2298,8 +2293,8 @@ class MainActivity : AppCompatActivity() {
                 val nextPin = stackedPins[nextIdx]
                 selectedPinId = nextPin.id
                 selectedMarkerLatLng = LatLng(nextPin.lat, nextPin.lng)
-                selectedMarkerIcon = statusIconId(nextPin.status)
                 renderSelectedMarker()
+                map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
                 fireStatusPulse(nextPin.lat, nextPin.lng, statusColorHex(nextPin.status))
                 showPinCard(nextPin, animateSwap = true, swapForward = forward)
             }
@@ -2517,7 +2512,6 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         savePinStatusUnified(pin, key, stamp)
                         fireStatusPulse(pin.lat, pin.lng, statusColorHex(key))
-                        selectedMarkerIcon = statusIconId(key)
                         renderMapData()
                         Toast.makeText(this@MainActivity, "Marked $title", Toast.LENGTH_SHORT).show()
                         hideInScreenSheet()
@@ -2802,7 +2796,6 @@ class MainActivity : AppCompatActivity() {
                                     .setMessage("$line\n\nOnly this edit will be removed. The pin stays on the map and its status recalculates from the remaining edits.")
                                     .setPositiveButton("Delete Edit") { _, _ ->
                                         val updated = deletePinHistoryEntryUnified(pin, idx)
-                                        selectedMarkerIcon = statusIconId(updated.status)
                                         renderSelectedMarker()
                                         fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
                                         showPinCard(updated, animateSwap = true)
@@ -2857,7 +2850,6 @@ class MainActivity : AppCompatActivity() {
                             .setMessage("Clears the current status and note while keeping \"${pin.name}\" on the map.")
                             .setPositiveButton("Reset") { _, _ ->
                                 val updated = resetPinStatusUnified(pin)
-                                selectedMarkerIcon = statusIconId(updated.status)
                                 renderSelectedMarker()
                                 fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
                                 showPinCard(updated, animateSwap = true)
@@ -6337,7 +6329,6 @@ class MainActivity : AppCompatActivity() {
                             closeFullPage()
                             selectedPinId = null
                             selectedMarkerLatLng = LatLng(lat, lng)
-                            selectedMarkerIcon = "pin-target"
                             renderSelectedMarker()
                             centerUpperHalf(LatLng(lat, lng), 16.5)
                             showTappedPlaceCard("Coordinates", "", lat, lng)
@@ -6487,7 +6478,6 @@ class MainActivity : AppCompatActivity() {
                                 closeFullPage()
                                 selectedPinId = null
                                 selectedMarkerLatLng = LatLng(place.lat, place.lng)
-                                selectedMarkerIcon = "pin-target"
                                 renderSelectedMarker()
                                 centerUpperHalf(LatLng(place.lat, place.lng), 16.0)
                                 showTappedPlaceCard(place.title, place.subtitle, place.lat, place.lng)
@@ -7781,7 +7771,6 @@ class MainActivity : AppCompatActivity() {
             val stamp = DevicePrefs.getDeviceStamp(this)
             savePinStatusUnified(pin, statusKey, stamp, clean)
             fireStatusPulse(pin.lat, pin.lng, statusColorHex(statusKey))
-            selectedMarkerIcon = statusIconId(statusKey)
             renderMapData()
             val toastMsg = if (isIssue) {
                 "Marked Issue: $clean"
