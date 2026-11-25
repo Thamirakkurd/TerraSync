@@ -30,11 +30,11 @@ object MapCartography {
                 if (!bmp.isRecycled) bmp.recycle()
             }
         }
-        // Teardrop bookmark pins
-        addAndRecycle("pin-pending", MapBitmaps.createTeardropPin(ctx, "#E69500", 1.0f))
-        addAndRecycle("pin-done", MapBitmaps.createTeardropPin(ctx, "#2E8B47", 1.0f))
-        addAndRecycle("pin-issue", MapBitmaps.createTeardropPin(ctx, "#D93025", 1.0f))
-        addAndRecycle("pin-target", MapBitmaps.createTeardropPin(ctx, "#1E88E5", 1.05f))
+        // Compact Organic Maps-style map-tack bookmark pins (consistent base scale across all states)
+        addAndRecycle("pin-pending", MapBitmaps.createBookmarkPin(ctx, "#E69500", 1.0f))
+        addAndRecycle("pin-done", MapBitmaps.createBookmarkPin(ctx, "#2E8B47", 1.0f))
+        addAndRecycle("pin-issue", MapBitmaps.createBookmarkPin(ctx, "#D93025", 1.0f))
+        addAndRecycle("pin-target", MapBitmaps.createBookmarkPin(ctx, "#1E88E5", 1.0f))
 
         // Crisp Organic Maps white rectangular highway shields with thin black borders
         for (len in 1..6) {

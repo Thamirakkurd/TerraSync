@@ -1498,6 +1498,16 @@ class MainActivity : AppCompatActivity() {
                 SymbolLayer(PINS_LAYER, PINS_SOURCE).withProperties(
                     PropertyFactory.iconImage(Expression.get("icon")),
                     PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                    PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
+                    PropertyFactory.iconSize(
+                        Expression.interpolate(
+                            Expression.linear(),
+                            Expression.zoom(),
+                            Expression.stop(7f, 0.72f),
+                            Expression.stop(11f, 0.86f),
+                            Expression.stop(15f, 1.00f)
+                        )
+                    ),
                     PropertyFactory.iconAllowOverlap(true),
                     PropertyFactory.iconIgnorePlacement(true)
                 )
@@ -1553,7 +1563,16 @@ class MainActivity : AppCompatActivity() {
                 SymbolLayer(SELECTED_PIN_LAYER, SELECTED_SOURCE).withProperties(
                     PropertyFactory.iconImage(Expression.get("icon")),
                     PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                    PropertyFactory.iconSize(1.16f),
+                    PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
+                    PropertyFactory.iconSize(
+                        Expression.interpolate(
+                            Expression.linear(),
+                            Expression.zoom(),
+                            Expression.stop(7f, 0.92f),
+                            Expression.stop(11f, 1.10f),
+                            Expression.stop(15f, 1.28f)
+                        )
+                    ),
                     PropertyFactory.iconAllowOverlap(true),
                     PropertyFactory.iconIgnorePlacement(true)
                 )
