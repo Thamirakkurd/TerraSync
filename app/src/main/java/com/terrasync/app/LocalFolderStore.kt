@@ -20,14 +20,31 @@ object LocalFolderStore {
 
     private const val FILE_NAME = "local_folders_v1.json"
     private val lock = Any()
-    private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val ioExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "terrasync-local-store").apply { isDaemon = true }
+    }
     @Volatile private var cachedSnapshot: LocalStoreSnapshot? = null
+    private val pendingWrite = java.util.concurrent.atomic.AtomicReference<LocalStoreSnapshot?>(null)
+    private val writeScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun isLocalLayerId(layerId: String): Boolean = layerId.startsWith("local_")
 
     fun newLocalLayerId(): String = "local_${UUID.randomUUID()}"
 
     private fun storeFile(ctx: Context): File = File(ctx.filesDir, FILE_NAME)
+
+    fun preloadAsync(ctx: Context, onLoaded: ((LocalStoreSnapshot) -> Unit)? = null) {
+        val existing = cachedSnapshot
+        if (existing != null) {
+            onLoaded?.invoke(existing)
+            return
+        }
+        val appCtx = ctx.applicationContext
+        ioExecutor.execute {
+            val snap = loadAll(appCtx)
+            onLoaded?.invoke(snap)
+        }
+    }
 
     fun loadAll(ctx: Context): LocalStoreSnapshot {
         cachedSnapshot?.let { return it }
@@ -100,58 +117,71 @@ object LocalFolderStore {
     private fun writeAll(ctx: Context, snap: LocalStoreSnapshot) {
         val sortedSnap = snap.copy(layers = snap.layers.sortedByDescending { it.updatedAt })
         cachedSnapshot = sortedSnap
+        pendingWrite.set(sortedSnap)
         val appCtx = ctx.applicationContext
-        ioExecutor.execute {
-            runCatching {
-                val root = JSONObject()
-                val lArr = JSONArray()
-                sortedSnap.layers.forEach { l ->
-                    lArr.put(JSONObject().apply {
-                        put("id", l.id)
-                        put("name", l.name)
-                        put("createdBy", l.createdBy)
-                        put("creatorDeviceId", l.creatorDeviceId)
-                        put("updatedAt", l.updatedAt)
-                    })
+        if (writeScheduled.compareAndSet(false, true)) {
+            ioExecutor.execute {
+                while (true) {
+                    writeScheduled.set(false)
+                    val toWrite = pendingWrite.getAndSet(null) ?: break
+                    persistSnapshotToDisk(appCtx, toWrite)
+                    if (pendingWrite.get() == null) break
+                    if (!writeScheduled.compareAndSet(false, true)) break
                 }
-                val pArr = JSONArray()
-                sortedSnap.pins.forEach { p ->
-                    pArr.put(JSONObject().apply {
-                        put("id", p.id)
-                        put("layerId", p.layerId)
-                        put("name", p.name)
-                        put("description", p.description)
-                        put("lat", p.lat)
-                        put("lng", p.lng)
-                        put("status", p.status)
-                        put("issueReason", p.issueReason)
-                        put("updatedAt", p.updatedAt)
-                        put("isEdited", p.isEdited)
-                        put("editedBy", p.editedBy)
-                        put("editedAt", p.editedAt)
-                        put("editHistory", p.editHistory)
-                    })
-                }
-                val tArr = JSONArray()
-                sortedSnap.tracks.forEach { t ->
-                    tArr.put(JSONObject().apply {
-                        put("id", t.id)
-                        put("layerId", t.layerId)
-                        put("name", t.name)
-                        put("coords", t.coords)
-                        put("updatedAt", t.updatedAt)
-                    })
-                }
-                root.put("layers", lArr)
-                root.put("pins", pArr)
-                root.put("tracks", tArr)
-                val tmp = File(appCtx.filesDir, "$FILE_NAME.tmp")
-                tmp.writeText(root.toString(), Charsets.UTF_8)
-                val dst = storeFile(appCtx)
-                if (!tmp.renameTo(dst)) {
-                    tmp.copyTo(dst, overwrite = true)
-                    tmp.delete()
-                }
+            }
+        }
+    }
+
+    private fun persistSnapshotToDisk(appCtx: Context, sortedSnap: LocalStoreSnapshot) {
+        runCatching {
+            val root = JSONObject()
+            val lArr = JSONArray()
+            sortedSnap.layers.forEach { l ->
+                lArr.put(JSONObject().apply {
+                    put("id", l.id)
+                    put("name", l.name)
+                    put("createdBy", l.createdBy)
+                    put("creatorDeviceId", l.creatorDeviceId)
+                    put("updatedAt", l.updatedAt)
+                })
+            }
+            val pArr = JSONArray()
+            sortedSnap.pins.forEach { p ->
+                pArr.put(JSONObject().apply {
+                    put("id", p.id)
+                    put("layerId", p.layerId)
+                    put("name", p.name)
+                    put("description", p.description)
+                    put("lat", p.lat)
+                    put("lng", p.lng)
+                    put("status", p.status)
+                    put("issueReason", p.issueReason)
+                    put("updatedAt", p.updatedAt)
+                    put("isEdited", p.isEdited)
+                    put("editedBy", p.editedBy)
+                    put("editedAt", p.editedAt)
+                    put("editHistory", p.editHistory)
+                })
+            }
+            val tArr = JSONArray()
+            sortedSnap.tracks.forEach { t ->
+                tArr.put(JSONObject().apply {
+                    put("id", t.id)
+                    put("layerId", t.layerId)
+                    put("name", t.name)
+                    put("coords", t.coords)
+                    put("updatedAt", t.updatedAt)
+                })
+            }
+            root.put("layers", lArr)
+            root.put("pins", pArr)
+            root.put("tracks", tArr)
+            val tmp = File(appCtx.filesDir, "$FILE_NAME.tmp")
+            tmp.writeText(root.toString(), Charsets.UTF_8)
+            val dst = storeFile(appCtx)
+            if (!tmp.renameTo(dst)) {
+                tmp.copyTo(dst, overwrite = true)
+                tmp.delete()
             }
         }
     }
@@ -233,8 +263,8 @@ object LocalFolderStore {
             issueReason = "",
             updatedAt = now,
             isEdited = false,
-            editedBy = deviceStamp,
-            editedAt = now,
+            editedBy = "",
+            editedAt = 0L,
             editHistory = ""
         )
         val nextLayers = cur.layers.filterNot { it.id == layerId } + updatedLayer
@@ -257,7 +287,7 @@ object LocalFolderStore {
         val safeStamp = sanitizeHistoryToken(deviceStamp)
         val detail = if (cleanReason.isNotBlank()) "${statusLabel(status)}: $cleanReason" else statusLabel(status)
         val line = "${formatTime(now)} • $safeStamp → $detail"
-        val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
+        val history = PinEditHistoryAudit.prependHistoryLine(line, pin.editHistory)
         val updated = pin.copy(
             status = status,
             issueReason = cleanReason,
@@ -271,6 +301,44 @@ object LocalFolderStore {
         updated
     }
 
+    fun updatePinsStatusBatch(
+        ctx: Context,
+        targetPins: List<PinItem>,
+        status: String,
+        deviceStamp: String,
+        issueReason: String = ""
+    ): List<PinItem> = synchronized(lock) {
+        if (targetPins.isEmpty()) return emptyList()
+        val cur = loadAll(ctx)
+        val now = System.currentTimeMillis()
+        val cleanReason = if (status.equals("issue", true) || status.equals("done", true)) {
+            sanitizeHistoryToken(issueReason)
+        } else ""
+        val safeStamp = sanitizeHistoryToken(deviceStamp)
+        val detail = if (cleanReason.isNotBlank()) "${statusLabel(status)}: $cleanReason" else statusLabel(status)
+        val line = "${formatTime(now)} • $safeStamp → $detail"
+        val targetIds = targetPins.mapTo(HashSet(targetPins.size)) { it.id }
+        val updatedList = ArrayList<PinItem>(targetPins.size)
+        val nextPins = cur.pins.map { existing ->
+            if (existing.id in targetIds) {
+                val history = PinEditHistoryAudit.prependHistoryLine(line, existing.editHistory)
+                existing.copy(
+                    status = status,
+                    issueReason = cleanReason,
+                    updatedAt = now,
+                    isEdited = true,
+                    editedBy = deviceStamp,
+                    editedAt = now,
+                    editHistory = history
+                ).also { updatedList.add(it) }
+            } else {
+                existing
+            }
+        }
+        writeAll(ctx, cur.copy(pins = nextPins))
+        updatedList
+    }
+
     fun updatePinText(
         ctx: Context,
         pin: PinItem,
@@ -281,7 +349,7 @@ object LocalFolderStore {
         val cur = loadAll(ctx)
         val now = System.currentTimeMillis()
         val line = "${formatTime(now)} • ${sanitizeHistoryToken(deviceStamp)} edited text"
-        val history = listOf(line, pin.editHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
+        val history = PinEditHistoryAudit.prependHistoryLine(line, pin.editHistory)
         val updated = pin.copy(
             name = newName.ifBlank { pin.name },
             description = newDesc,
@@ -307,7 +375,9 @@ object LocalFolderStore {
         var newReason = ""
         var newEditedBy = ""
         val newIsEdited = lines.isNotEmpty()
-        val newEditedAt = if (lines.isNotEmpty()) now else 0L
+        val newEditedAt = if (lines.isNotEmpty()) {
+            PinEditHistoryAudit.parseLineTimestampMs(lines.first()).takeIf { it > 0L } ?: now
+        } else 0L
 
         if (latestStatusLine != null) {
             val left = latestStatusLine.substringBefore("→").trim()
@@ -323,7 +393,10 @@ object LocalFolderStore {
             newReason = if (newStatus == "done" || newStatus == "issue") reasonPart else ""
         } else if (lines.isNotEmpty()) {
             val first = lines.first()
-            newEditedBy = first.substringAfter("•", first).substringBefore(" edited text").trim()
+            val afterBullet = first.substringAfter("•", first).trim()
+            newEditedBy = if (afterBullet.endsWith("edited text", ignoreCase = true)) {
+                afterBullet.dropLast("edited text".length).trim()
+            } else afterBullet
         }
 
         val updated = pin.copy(

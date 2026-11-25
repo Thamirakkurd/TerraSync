@@ -40,7 +40,7 @@ data class OfflinePackState(
     val roadStatusText: String = ""
 )
 
-class OfflineMapManager(private val context: Context) {
+class OfflineMapManager(context: Context) {
 
     companion object {
         const val STYLE_STREET_URL = "https://tiles.openfreemap.org/styles/liberty"
@@ -289,7 +289,7 @@ class OfflineMapManager(private val context: Context) {
             isDownloading = true,
             statusText = "Starting map download..."
         )
-        uiListener?.invoke()
+        runOnMain { uiListener?.invoke() }
 
         val def = OfflineTilePyramidRegionDefinition(
             STYLE_STREET_URL,
@@ -308,7 +308,7 @@ class OfflineMapManager(private val context: Context) {
 
             override fun onError(error: String) {
                 states[packId] = getState(packId).copy(isDownloading = false, statusText = "Download failed: $error")
-                uiListener?.invoke()
+                runOnMain { uiListener?.invoke() }
             }
         })
     }
@@ -326,19 +326,20 @@ class OfflineMapManager(private val context: Context) {
                 states[packId] = getState(packId).copy(
                     statusText = "Network notice: ${error.message}"
                 )
-                uiListener?.invoke()
+                runOnMain { uiListener?.invoke() }
             }
 
             override fun mapboxTileCountLimitExceeded(limit: Long) {
                 region.setDownloadState(OfflineRegion.STATE_INACTIVE)
                 states[packId] = getState(packId).copy(isDownloading = false, statusText = "Tile limit reached ($limit)")
-                uiListener?.invoke()
+                runOnMain { uiListener?.invoke() }
             }
         })
         region.setDownloadState(OfflineRegion.STATE_ACTIVE)
     }
 
     fun pauseDownload(packId: String) {
+        pendingDownloads.remove(packId)
         OfflineRoutingEngine.cancelDownload(packId)
         roadProgressNotes.remove(packId)
         val reg = regionHandles[packId]
@@ -353,12 +354,13 @@ class OfflineMapManager(private val context: Context) {
     }
 
     fun deletePack(packId: String, onDone: (String) -> Unit) {
+        pendingDownloads.remove(packId)
         val removedRoads = OfflineRoutingEngine.deletePackRegion(appCtx, packId)
         roadProgressNotes.remove(packId)
         val reg = regionHandles[packId]
         if (reg == null) {
             states[packId] = buildIdleState(packId)
-            uiListener?.invoke()
+            runOnMain { uiListener?.invoke() }
             onDone(if (removedRoads) "Offline roads removed" else "Already removed")
             return
         }
@@ -368,7 +370,7 @@ class OfflineMapManager(private val context: Context) {
             override fun onDelete() {
                 regionHandles.remove(packId)
                 states[packId] = buildIdleState(packId)
-                uiListener?.invoke()
+                runOnMain { uiListener?.invoke() }
                 onDone("Offline map & routing deleted")
             }
 
@@ -428,7 +430,7 @@ class OfflineMapManager(private val context: Context) {
             roadSizeBytes = road?.sizeBytes ?: 0L,
             roadStatusText = roadText
         )
-        uiListener?.invoke()
+        runOnMain { uiListener?.invoke() }
     }
 
     private fun decodePackId(metadata: ByteArray): String? {

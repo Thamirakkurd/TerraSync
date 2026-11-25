@@ -27,6 +27,7 @@ data class PinEditEntry(
 object PinEditHistoryAudit {
 
     private val TIME_PREFIX_REGEX = Regex("""^(\d{1,2}\s+[A-Za-z]{3})\s+(\d{2}):(\d{2})$""")
+    private val WS_REGEX = Regex("\\s+")
     private val MONTH_MAP = mapOf(
         "jan" to Calendar.JANUARY,
         "feb" to Calendar.FEBRUARY,
@@ -68,7 +69,51 @@ object PinEditHistoryAudit {
         val m = TIME_PREFIX_REGEX.matchEntire(timePart) ?: return false
         val hh = m.groupValues[2].toIntOrNull() ?: return false
         val mm = m.groupValues[3].toIntOrNull() ?: return false
+        if (hh !in 0..23 || mm !in 0..59) return false
         return isOutsideWorkingHours(hh * 60 + mm, startMin, endMin)
+    }
+
+    /** Reconstructs an approximate epoch timestamp (ms) from a raw history line, or 0L if unparseable. */
+    fun parseLineTimestampMs(rawLine: String): Long {
+        val timePart = rawLine.substringBefore("•").trim()
+        val m = TIME_PREFIX_REGEX.matchEntire(timePart) ?: return 0L
+        val hh = m.groupValues[2].toIntOrNull() ?: return 0L
+        val mm = m.groupValues[3].toIntOrNull() ?: return 0L
+        if (hh !in 0..23 || mm !in 0..59) return 0L
+        val nowCal = Calendar.getInstance()
+        return reconstructEpoch(
+            dateGroup = m.groupValues[1].trim(),
+            hh = hh,
+            mm = mm,
+            currentYear = nowCal.get(Calendar.YEAR),
+            nowMs = nowCal.timeInMillis,
+            scratchCal = nowCal
+        )
+    }
+
+    /** Prepends a new history line and trims whole lines from the tail so total length never exceeds [maxChars]. */
+    fun prependHistoryLine(newLine: String, existingHistory: String, maxChars: Int = 1500): String {
+        val cleanNew = newLine.trim()
+        val lines = ArrayList<String>()
+        if (cleanNew.isNotBlank()) lines.add(cleanNew)
+        existingHistory.lines().forEach { raw ->
+            val t = raw.trim()
+            if (t.isNotBlank()) lines.add(t)
+        }
+        if (lines.isEmpty()) return ""
+        val sb = StringBuilder()
+        for (line in lines) {
+            val needed = if (sb.isEmpty()) line.length else 1 + line.length
+            if (sb.length + needed > maxChars) {
+                if (sb.isEmpty()) {
+                    sb.append(line.take(maxChars))
+                }
+                break
+            }
+            if (sb.isNotEmpty()) sb.append('\n')
+            sb.append(line)
+        }
+        return sb.toString()
     }
 
     fun collectFolderHistory(
@@ -77,9 +122,11 @@ object PinEditHistoryAudit {
         workEndMin: Int
     ): List<PinEditEntry> {
         val entries = ArrayList<PinEditEntry>(layerPins.size)
-        val nowCal = Calendar.getInstance()
-        val currentYear = nowCal.get(Calendar.YEAR)
-        val nowMs = nowCal.timeInMillis
+        val scratchCal = Calendar.getInstance()
+        val currentYear = scratchCal.get(Calendar.YEAR)
+        val nowMs = scratchCal.timeInMillis
+        val dateFmt = SimpleDateFormat("dd MMM", Locale.US)
+        val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
 
         for (pin in layerPins) {
             val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }
@@ -93,11 +140,14 @@ object PinEditHistoryAudit {
                             workStartMin = workStartMin,
                             workEndMin = workEndMin,
                             currentYear = currentYear,
-                            nowMs = nowMs
+                            nowMs = nowMs,
+                            scratchCal = scratchCal,
+                            dateFmt = dateFmt,
+                            timeFmt = timeFmt
                         )
                     )
                 }
-            } else if (pin.isEdited || pin.editedAt > 0L || !pin.status.equals("pending", ignoreCase = true)) {
+            } else if (pin.isEdited || !pin.status.equals("pending", ignoreCase = true) || pin.issueReason.isNotBlank()) {
                 val ts = when {
                     pin.editedAt > 0L -> pin.editedAt
                     pin.updatedAt > 0L -> pin.updatedAt
@@ -108,11 +158,12 @@ object PinEditHistoryAudit {
                 val fullTime: String
                 val minOfDay: Int?
                 if (ts > 0L) {
-                    val cal = Calendar.getInstance().apply { timeInMillis = ts }
-                    dateGroup = SimpleDateFormat("dd MMM", Locale.US).format(Date(ts))
-                    clockTime = SimpleDateFormat("HH:mm", Locale.US).format(Date(ts))
+                    scratchCal.timeInMillis = ts
+                    val dt = Date(ts)
+                    dateGroup = dateFmt.format(dt)
+                    clockTime = timeFmt.format(dt)
                     fullTime = "$dateGroup $clockTime"
-                    minOfDay = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+                    minOfDay = scratchCal.get(Calendar.HOUR_OF_DAY) * 60 + scratchCal.get(Calendar.MINUTE)
                 } else {
                     dateGroup = "Unknown Date"
                     clockTime = "--:--"
@@ -156,7 +207,10 @@ object PinEditHistoryAudit {
         workStartMin: Int,
         workEndMin: Int,
         currentYear: Int,
-        nowMs: Long
+        nowMs: Long,
+        scratchCal: Calendar,
+        dateFmt: SimpleDateFormat,
+        timeFmt: SimpleDateFormat
     ): PinEditEntry {
         val bulletIdx = rawLine.indexOf('•')
         val timePart = if (bulletIdx > 0) rawLine.substring(0, bulletIdx).trim() else ""
@@ -169,7 +223,7 @@ object PinEditHistoryAudit {
             operatorRaw = rest.substring(0, arrowIdx).trim().ifBlank { pin.editedBy.ifBlank { "Unknown" } }
             actionSummary = rest.substring(arrowIdx + 1).trim().ifBlank { "Updated" }
         } else if (rest.endsWith("edited text", ignoreCase = true)) {
-            operatorRaw = rest.removeSuffix("edited text").trim().ifBlank { pin.editedBy.ifBlank { "Unknown" } }
+            operatorRaw = rest.dropLast("edited text".length).trim().ifBlank { pin.editedBy.ifBlank { "Unknown" } }
             actionSummary = "Edited text"
         } else {
             operatorRaw = pin.editedBy.ifBlank { "Unknown" }
@@ -191,27 +245,30 @@ object PinEditHistoryAudit {
         var sortMs = if (lineIdx == 0 && pin.editedAt > 0L) pin.editedAt else 0L
 
         if (match != null) {
-            dateGroup = match.groupValues[1].trim()
-            val hh = match.groupValues[2].toIntOrNull() ?: 0
-            val mm = match.groupValues[3].toIntOrNull() ?: 0
-            clockTime = "%02d:%02d".format(Locale.US, hh, mm)
-            minOfDay = hh * 60 + mm
+            val hh = match.groupValues[2].toIntOrNull()
+            val mm = match.groupValues[3].toIntOrNull()
+            if (hh != null && mm != null && hh in 0..23 && mm in 0..59) {
+                dateGroup = match.groupValues[1].trim()
+                clockTime = "%02d:%02d".format(Locale.US, hh, mm)
+                minOfDay = hh * 60 + mm
 
-            val reconstructed = reconstructEpoch(dateGroup, hh, mm, currentYear, nowMs)
-            // Keep exact editedAt for the newest history line if it matches the same minute
-            if (lineIdx == 0 && pin.editedAt > 0L) {
-                val cal = Calendar.getInstance().apply { timeInMillis = pin.editedAt }
-                val sameClock = cal.get(Calendar.HOUR_OF_DAY) == hh && cal.get(Calendar.MINUTE) == mm
-                sortMs = if (sameClock) pin.editedAt else reconstructed
-            } else {
-                // Subtract lineIdx ms so multiple edits within the same minute preserve exact order
-                sortMs = reconstructed - lineIdx
+                val reconstructed = reconstructEpoch(dateGroup, hh, mm, currentYear, nowMs, scratchCal)
+                // Keep exact editedAt for the newest history line if it matches the same minute
+                if (lineIdx == 0 && pin.editedAt > 0L) {
+                    scratchCal.timeInMillis = pin.editedAt
+                    val sameClock = scratchCal.get(Calendar.HOUR_OF_DAY) == hh && scratchCal.get(Calendar.MINUTE) == mm
+                    sortMs = if (sameClock) pin.editedAt else reconstructed
+                } else {
+                    // Subtract lineIdx ms so multiple edits within the same minute preserve exact order
+                    sortMs = reconstructed - lineIdx
+                }
             }
         } else if (lineIdx == 0 && pin.editedAt > 0L) {
-            val cal = Calendar.getInstance().apply { timeInMillis = pin.editedAt }
-            dateGroup = SimpleDateFormat("dd MMM", Locale.US).format(Date(pin.editedAt))
-            clockTime = SimpleDateFormat("HH:mm", Locale.US).format(Date(pin.editedAt))
-            minOfDay = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+            scratchCal.timeInMillis = pin.editedAt
+            val dt = Date(pin.editedAt)
+            dateGroup = dateFmt.format(dt)
+            clockTime = timeFmt.format(dt)
+            minOfDay = scratchCal.get(Calendar.HOUR_OF_DAY) * 60 + scratchCal.get(Calendar.MINUTE)
             sortMs = pin.editedAt
         }
 
@@ -233,24 +290,31 @@ object PinEditHistoryAudit {
         )
     }
 
-    private fun reconstructEpoch(dateGroup: String, hh: Int, mm: Int, currentYear: Int, nowMs: Long): Long {
-        val parts = dateGroup.split(Regex("\\s+"))
-        val day = parts.getOrNull(0)?.toIntOrNull() ?: 1
+    private fun reconstructEpoch(
+        dateGroup: String,
+        hh: Int,
+        mm: Int,
+        currentYear: Int,
+        nowMs: Long,
+        scratchCal: Calendar
+    ): Long {
+        val parts = dateGroup.split(WS_REGEX)
+        val day = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(1, 31) ?: 1
         val mon = MONTH_MAP[parts.getOrNull(1)?.lowercase(Locale.US)] ?: Calendar.JANUARY
-        val cal = Calendar.getInstance().apply {
-            set(Calendar.YEAR, currentYear)
-            set(Calendar.MONTH, mon)
-            set(Calendar.DAY_OF_MONTH, day)
-            set(Calendar.HOUR_OF_DAY, hh)
-            set(Calendar.MINUTE, mm)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
+        scratchCal.clear()
+        scratchCal.set(Calendar.YEAR, currentYear)
+        scratchCal.set(Calendar.MONTH, mon)
+        val maxDay = scratchCal.getActualMaximum(Calendar.DAY_OF_MONTH)
+        scratchCal.set(Calendar.DAY_OF_MONTH, day.coerceAtMost(maxDay))
+        scratchCal.set(Calendar.HOUR_OF_DAY, hh)
+        scratchCal.set(Calendar.MINUTE, mm)
+        scratchCal.set(Calendar.SECOND, 0)
+        scratchCal.set(Calendar.MILLISECOND, 0)
         // Handle year boundary (e.g., Dec logs viewed in Jan)
-        if (cal.timeInMillis > nowMs + 7L * 24L * 3600L * 1000L) {
-            cal.add(Calendar.YEAR, -1)
+        if (scratchCal.timeInMillis > nowMs + 7L * 24L * 3600L * 1000L) {
+            scratchCal.add(Calendar.YEAR, -1)
         }
-        return cal.timeInMillis
+        return scratchCal.timeInMillis
     }
 
     private fun extractShortOperator(raw: String): String {

@@ -17,6 +17,11 @@ data class ParsedKml(
 object KmlParser {
 
     private const val MAX_KML_BYTES = 25 * 1024 * 1024
+    private val HTML_BR_REGEX = Regex("(?i)<br\\s*/?>")
+    private val HTML_BLOCK_END_REGEX = Regex("(?i)</(p|div|li|tr)>")
+    private val HTML_TAG_REGEX = Regex("<[^>]+>")
+    private val BARE_AMP_REGEX = Regex("&(?!amp;|lt;|gt;|quot;|apos;|#\\d+;|#x[0-9a-fA-F]+;)")
+    private val CTRL_CHAR_REGEX = Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")
 
     private fun readBoundedBytes(input: InputStream, maxBytes: Int = MAX_KML_BYTES): ByteArray? {
         val out = ByteArrayOutputStream()
@@ -24,7 +29,8 @@ object KmlParser {
         var total = 0
         while (true) {
             val n = input.read(buf)
-            if (n <= 0) break
+            if (n < 0) break
+            if (n == 0) continue
             total += n
             if (total > maxBytes) return null
             out.write(buf, 0, n)
@@ -39,7 +45,15 @@ object KmlParser {
         } else {
             raw
         }
-        return parseKmlXml(kmlBytes, layerId)
+        return runCatching { parseKmlXml(kmlBytes, layerId) }.getOrElse {
+            // Resilient recovery for real-world KMLs containing unescaped '&' or stray control chars
+            val sanitized = String(kmlBytes, Charsets.UTF_8)
+                .replace(CTRL_CHAR_REGEX, "")
+                .replace(BARE_AMP_REGEX, "&amp;")
+                .toByteArray(Charsets.UTF_8)
+            runCatching { parseKmlXml(sanitized, layerId) }
+                .getOrElse { ParsedKml(emptyList(), emptyList(), "") }
+        }
     }
 
     private fun extractKmlFromKmz(bytes: ByteArray): ByteArray? {
@@ -117,15 +131,16 @@ object KmlParser {
     private fun stripHtml(raw: String): String {
         if (!raw.contains('<') && !raw.contains('&')) return raw
         return raw
-            .replace(Regex("(?i)<br\\s*/?>"), "\n")
-            .replace(Regex("(?i)</(p|div|li|tr)>"), "\n")
-            .replace(Regex("<[^>]+>"), "")
+            .replace(HTML_BR_REGEX, "\n")
+            .replace(HTML_BLOCK_END_REGEX, "\n")
+            .replace(HTML_TAG_REGEX, "")
             .replace("&nbsp;", " ")
             .replace("&amp;", "&")
             .replace("&lt;", "<")
             .replace("&gt;", ">")
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
+            .replace("&apos;", "'")
     }
 
     private fun getAttrIgnoreCase(parser: XmlPullParser, name: String): String {
@@ -422,15 +437,26 @@ object KmlParser {
 
     private fun parseCoordinates(raw: String): List<Pair<Double, Double>> {
         val out = mutableListOf<Pair<Double, Double>>()
-        for (token in raw.trim().split(Regex("\\s+"))) {
-            val parts = token.split(",")
-            if (parts.size >= 2) {
-                val lng = parts[0].toDoubleOrNull()
-                val lat = parts[1].toDoubleOrNull()
-                if (lng != null && lat != null && lat in -90.0..90.0 && lng in -180.0..180.0) {
+        val len = raw.length
+        var i = 0
+        while (i < len) {
+            while (i < len && raw[i].isWhitespace()) i++
+            if (i >= len) break
+            var end = i
+            while (end < len && !raw[end].isWhitespace()) end++
+            val c1 = raw.indexOf(',', i)
+            if (c1 in (i + 1) until end) {
+                val c2 = raw.indexOf(',', c1 + 1)
+                val latEnd = if (c2 in (c1 + 1) until end) c2 else end
+                val lng = raw.substring(i, c1).toDoubleOrNull()
+                val lat = raw.substring(c1 + 1, latEnd).toDoubleOrNull()
+                if (lng != null && lat != null && lat.isFinite() && lng.isFinite() &&
+                    lat in -90.0..90.0 && lng in -180.0..180.0
+                ) {
                     out.add(lng to lat)
                 }
             }
+            i = end + 1
         }
         return out
     }

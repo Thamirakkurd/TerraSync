@@ -129,18 +129,19 @@ fun statusLabel(status: String): String = when (status.lowercase()) {
 }
 
 fun formatDistanceShort(meters: Double, unit: SpeedUnit = SpeedUnit.METRIC): String {
+    val safeMeters = if (meters.isFinite() && meters >= 0.0) meters else 0.0
     if (unit == SpeedUnit.IMPERIAL) {
-        val feet = meters * 3.28084
-        val miles = meters / 1609.344
+        val feet = safeMeters * 3.28084
+        val miles = safeMeters / 1609.344
         return when {
             feet < 1000.0 -> "${feet.toInt()} ft"
-            miles < 10.0 -> "${"%.1f".format(miles)} mi"
+            miles < 10.0 -> "${"%.1f".format(java.util.Locale.US, miles)} mi"
             else -> "${miles.toInt()} mi"
         }
     }
     return when {
-        meters < 1000.0 -> "${meters.toInt()} m"
-        meters < 10000.0 -> "${"%.1f".format(meters / 1000.0)} km"
-        else -> "${(meters / 1000.0).toInt()} km"
+        safeMeters < 1000.0 -> "${safeMeters.toInt()} m"
+        safeMeters < 10000.0 -> "${"%.1f".format(java.util.Locale.US, safeMeters / 1000.0)} km"
+        else -> "${(safeMeters / 1000.0).toInt()} km"
     }
 }

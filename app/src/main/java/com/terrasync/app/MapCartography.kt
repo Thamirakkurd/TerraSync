@@ -342,7 +342,7 @@ object MapCartography {
 
         val suppressBaseExpr = Expression.not(Expression.any(isMosqueExpr, isCustomBadgePoiExpr))
 
-        // Suppress duplicates on base style POI layers
+        // Suppress duplicates on base style POI layers (idempotent across repeated label-language toggles)
         for (layer in style.layers) {
             if (layer is SymbolLayer &&
                 layer.id != MOSQUES_LAYER_ID &&
@@ -355,17 +355,20 @@ object MapCartography {
                         layer.setFilter(suppressBaseExpr)
                     } else {
                         val existingJson = existing.toString()
-                        val isLegacyFilter = !existingJson.contains("[\"get\"") &&
-                            !existingJson.contains("[\"match\"") &&
-                            !existingJson.contains("[\"case\"")
-                        if (isLegacyFilter) {
-                            layer.setFilter(
-                                Expression.raw(
-                                    """["all",$existingJson,["!in","subclass","mosque","muslim","islam","fuel","bus_stop","bus_station","viewpoint","hospital","clinic","pharmacy"]]"""
+                        val alreadySuppressed = existingJson.contains("\"mosque\"") && existingJson.contains("\"bus_stop\"")
+                        if (!alreadySuppressed) {
+                            val isLegacyFilter = !existingJson.contains("[\"get\"") &&
+                                !existingJson.contains("[\"match\"") &&
+                                !existingJson.contains("[\"case\"")
+                            if (isLegacyFilter) {
+                                layer.setFilter(
+                                    Expression.raw(
+                                        """["all",$existingJson,["!in","subclass","mosque","muslim","islam","fuel","bus_stop","bus_station","viewpoint","hospital","clinic","pharmacy"]]"""
+                                    )
                                 )
-                            )
-                        } else {
-                            layer.setFilter(Expression.all(existing, suppressBaseExpr))
+                            } else {
+                                layer.setFilter(Expression.all(existing, suppressBaseExpr))
+                            }
                         }
                     }
                 }

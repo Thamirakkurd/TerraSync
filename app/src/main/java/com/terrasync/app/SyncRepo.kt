@@ -2,6 +2,7 @@ package com.terrasync.app
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
@@ -45,9 +46,41 @@ class SyncRepo(context: Context? = null) {
     private val liveListenerStates = mutableMapOf<String, Boolean>()
     private var connected: Boolean = false
     private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     init {
         ensureAuthenticated()
+        registerNetworkMonitor()
+    }
+
+    private fun registerNetworkMonitor() {
+        val ctx = appCtx ?: return
+        runCatching {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    mainHandler.post {
+                        val next = isOnline() && (liveListenerStates.isEmpty() || liveListenerStates.values.any { it })
+                        if (next != connected) {
+                            connected = next
+                            emit()
+                        }
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    mainHandler.post {
+                        val next = isOnline() && (liveListenerStates.isEmpty() || liveListenerStates.values.any { it })
+                        if (next != connected) {
+                            connected = next
+                            emit()
+                        }
+                    }
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        }
     }
 
     fun currentUid(): String? = runCatching { auth?.currentUser?.uid }.getOrNull()
@@ -273,8 +306,23 @@ class SyncRepo(context: Context? = null) {
     fun stopListening() {
         layerRegs.values.flatten().forEach { it.remove() }
         layerRegs.clear()
+        layerMap.clear()
+        pinsByLayer.clear()
+        tracksByLayer.clear()
+        liveListenerStates.clear()
         listenerCallback = null
         mainHandler.removeCallbacksAndMessages(null)
+        val cb = networkCallback
+        networkCallback = null
+        if (cb != null) {
+            val ctx = appCtx
+            if (ctx != null) {
+                runCatching {
+                    val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                    cm.unregisterNetworkCallback(cb)
+                }
+            }
+        }
     }
 
     fun generateShareCode(): String {
@@ -453,9 +501,13 @@ class SyncRepo(context: Context? = null) {
     }
 
     fun joinLayerByCode(rawCode: String, onDone: (Boolean, String, String?) -> Unit) {
-        val code = rawCode.trim().uppercase().replace("-", "")
+        val code = rawCode.trim().uppercase().replace("-", "").replace(" ", "")
         if (code.length < 4) {
             onDone(false, "Enter a valid share code", null)
+            return
+        }
+        if (!isOnline()) {
+            onDone(false, "Internet connection required to join a shared folder", null)
             return
         }
         db.collection("layers")
@@ -481,7 +533,7 @@ class SyncRepo(context: Context? = null) {
     }
 
     private fun buildHistory(newLine: String, existingHistory: String): String {
-        return listOf(newLine, existingHistory).filter { it.isNotBlank() }.joinToString("\n").take(1500)
+        return PinEditHistoryAudit.prependHistoryLine(newLine, existingHistory)
     }
 
     private fun updatePinWithHistory(
@@ -521,7 +573,7 @@ class SyncRepo(context: Context? = null) {
         deviceStamp: String,
         issueReason: String = "",
         onError: ((String) -> Unit)? = null
-    ) {
+    ): PinItem {
         val now = System.currentTimeMillis()
         val cleanReason = if (status.equals("issue", ignoreCase = true) || status.equals("done", ignoreCase = true)) {
             sanitizeHistoryToken(issueReason)
@@ -543,6 +595,71 @@ class SyncRepo(context: Context? = null) {
             ),
             onError = onError
         )
+        return pin.copy(
+            status = status,
+            issueReason = cleanReason,
+            updatedAt = now,
+            isEdited = true,
+            editedBy = deviceStamp,
+            editedAt = now,
+            editHistory = buildHistory(line, pin.editHistory)
+        )
+    }
+
+    fun updatePinsStatusBatch(
+        targetPins: List<PinItem>,
+        status: String,
+        deviceStamp: String,
+        issueReason: String = "",
+        onError: ((String) -> Unit)? = null
+    ): List<PinItem> {
+        if (targetPins.isEmpty()) return emptyList()
+        val now = System.currentTimeMillis()
+        val cleanReason = if (status.equals("issue", ignoreCase = true) || status.equals("done", ignoreCase = true)) {
+            sanitizeHistoryToken(issueReason)
+        } else ""
+        val safeStamp = sanitizeHistoryToken(deviceStamp)
+        val detail = if (cleanReason.isNotBlank()) "${statusLabel(status)}: $cleanReason" else statusLabel(status)
+        val line = "${formatTime(now)} • $safeStamp → $detail"
+        val updatedPins = ArrayList<PinItem>(targetPins.size)
+        val reported = AtomicBoolean(false)
+
+        targetPins.chunked(400).forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { pin ->
+                val mergedHistory = buildHistory(line, pin.editHistory)
+                val ref = db.collection("pins").document(pin.id)
+                batch.update(
+                    ref,
+                    mapOf(
+                        "status" to status,
+                        "issueReason" to cleanReason,
+                        "updatedAt" to now,
+                        "isEdited" to true,
+                        "editedBy" to deviceStamp,
+                        "editedAt" to now,
+                        "editHistory" to mergedHistory
+                    )
+                )
+                updatedPins.add(
+                    pin.copy(
+                        status = status,
+                        issueReason = cleanReason,
+                        updatedAt = now,
+                        isEdited = true,
+                        editedBy = deviceStamp,
+                        editedAt = now,
+                        editHistory = mergedHistory
+                    )
+                )
+            }
+            batch.commit().addOnFailureListener { e ->
+                if (reported.compareAndSet(false, true)) {
+                    onError?.invoke(e.message ?: "Failed to update selected pins")
+                }
+            }
+        }
+        return updatedPins
     }
 
     fun updatePinText(
@@ -551,15 +668,16 @@ class SyncRepo(context: Context? = null) {
         newDesc: String,
         deviceStamp: String,
         onError: ((String) -> Unit)? = null
-    ) {
+    ): PinItem {
         val now = System.currentTimeMillis()
+        val resolvedName = newName.ifBlank { pin.name }
         val line = "${formatTime(now)} • ${sanitizeHistoryToken(deviceStamp)} edited text"
         updatePinWithHistory(
             pinId = pin.id,
             newHistoryLine = line,
             fallbackHistory = pin.editHistory,
             baseFields = mapOf(
-                "name" to newName.ifBlank { pin.name },
+                "name" to resolvedName,
                 "description" to newDesc,
                 "updatedAt" to now,
                 "isEdited" to true,
@@ -567,6 +685,15 @@ class SyncRepo(context: Context? = null) {
                 "editedAt" to now
             ),
             onError = onError
+        )
+        return pin.copy(
+            name = resolvedName,
+            description = newDesc,
+            updatedAt = now,
+            isEdited = true,
+            editedBy = deviceStamp,
+            editedAt = now,
+            editHistory = buildHistory(line, pin.editHistory)
         )
     }
 
@@ -606,8 +733,8 @@ class SyncRepo(context: Context? = null) {
             "issueReason" to "",
             "updatedAt" to now,
             "isEdited" to false,
-            "editedBy" to deviceStamp,
-            "editedAt" to now,
+            "editedBy" to "",
+            "editedAt" to 0L,
             "editHistory" to ""
         )
 
@@ -669,7 +796,9 @@ class SyncRepo(context: Context? = null) {
         var newReason = ""
         var newEditedBy = ""
         val newIsEdited = lines.isNotEmpty()
-        val newEditedAt = if (lines.isNotEmpty()) now else 0L
+        val newEditedAt = if (lines.isNotEmpty()) {
+            PinEditHistoryAudit.parseLineTimestampMs(lines.first()).takeIf { it > 0L } ?: now
+        } else 0L
 
         if (latestStatusLine != null) {
             val left = latestStatusLine.substringBefore("→").trim()
@@ -685,7 +814,10 @@ class SyncRepo(context: Context? = null) {
             newReason = if (newStatus == "done" || newStatus == "issue") reasonPart else ""
         } else if (lines.isNotEmpty()) {
             val first = lines.first()
-            newEditedBy = first.substringAfter("•", first).substringBefore(" edited text").trim()
+            val afterBullet = first.substringAfter("•", first).trim()
+            newEditedBy = if (afterBullet.endsWith("edited text", ignoreCase = true)) {
+                afterBullet.dropLast("edited text".length).trim()
+            } else afterBullet
         }
 
         return mapOf(

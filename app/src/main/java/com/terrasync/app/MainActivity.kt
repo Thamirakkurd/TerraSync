@@ -164,6 +164,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private data class SharedPinTarget(val lat: Double, val lng: Double, val name: String, val pinId: String)
+    private data class PendingRouteReq(
+        val destLat: Double,
+        val destLng: Double,
+        val destTitle: String,
+        val mode: TravelMode,
+        val requestedAtMs: Long
+    )
 
     private lateinit var mapView: MapView
     private lateinit var topCluster: LinearLayout
@@ -244,6 +251,12 @@ class MainActivity : AppCompatActivity() {
     private var statusBarInsetTop = 0
     private var navBarInsetBottom = 0
     private var imeInsetBottom = 0
+    private var sideInsetLeft = 0
+    private var sideInsetRight = 0
+    private var activeSheetPeekDp = 280
+    private var sheetQuickSelectPinId: String? = null
+    private var pendingRouteReq: PendingRouteReq? = null
+    private val uploadingLayerIds = mutableSetOf<String>()
     private var activePageCleanup: (() -> Unit)? = null
     private var webSearchSeq = 0
     private var pendingSharedPin: SharedPinTarget? = null
@@ -374,6 +387,7 @@ class MainActivity : AppCompatActivity() {
         offlineMaps = OfflineMapManager(this).apply { refreshAll() }
         repo = SyncRepo(applicationContext)
         RoutingEngine.appContext = applicationContext
+        LocalFolderStore.preloadAsync(applicationContext)
         setContentView(R.layout.activity_main)
 
         visibleStatuses = DevicePrefs.getVisibleStatuses(this).toMutableSet()
@@ -394,24 +408,44 @@ class MainActivity : AppCompatActivity() {
 
         val root = findViewById<ViewGroup>(R.id.rootContainer)
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-            val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val navOnly = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             statusBarInsetTop = sys.top
-            navBarInsetBottom = sys.bottom
+            navBarInsetBottom = navOnly.bottom
             imeInsetBottom = ime.bottom
-            (topCluster.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(10)
-            (navBanner.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(10)
-            (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = sys.bottom + dp(10)
-            (inScreenSheet.layoutParams as ViewGroup.MarginLayoutParams).topMargin = sys.top + dp(12)
-            sheetContent.setPadding(dp(16), 0, dp(16), sys.bottom + dp(20))
-            if (pageOverlayContainer.childCount > 0) {
-                pageOverlayContainer.getChildAt(0).setPadding(0, statusBarInsetTop, 0, maxOf(navBarInsetBottom, imeInsetBottom))
+            sideInsetLeft = sys.left
+            sideInsetRight = sys.right
+            (topCluster.layoutParams as ViewGroup.MarginLayoutParams).apply {
+                topMargin = statusBarInsetTop + dp(10)
+                marginStart = sideInsetLeft + dp(12)
+                marginEnd = sideInsetRight + dp(64)
+            }
+            (navBanner.layoutParams as ViewGroup.MarginLayoutParams).apply {
+                topMargin = statusBarInsetTop + dp(10)
+                marginStart = sideInsetLeft + dp(12)
+                marginEnd = sideInsetRight + dp(12)
+            }
+            (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).apply {
+                bottomMargin = navBarInsetBottom + dp(10)
+                marginStart = sideInsetLeft
+                marginEnd = sideInsetRight
+            }
+            (inScreenSheet.layoutParams as ViewGroup.MarginLayoutParams).apply {
+                topMargin = statusBarInsetTop + dp(12)
+                marginStart = sideInsetLeft
+                marginEnd = sideInsetRight
+            }
+            sheetContent.setPadding(dp(16), 0, dp(16), navBarInsetBottom + dp(20))
+            val pageBottom = maxOf(navBarInsetBottom, imeInsetBottom)
+            for (i in 0 until pageOverlayContainer.childCount) {
+                pageOverlayContainer.getChildAt(i).setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, pageBottom)
             }
             topCluster.requestLayout()
             navBanner.requestLayout()
             bottomDock.requestLayout()
             inScreenSheet.requestLayout()
-            map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(12), dp(14), 0)
+            map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(12), sideInsetRight + dp(14), 0)
             insets
         }
 
@@ -422,6 +456,8 @@ class MainActivity : AppCompatActivity() {
             addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
                 override fun onStateChanged(bottomSheet: View, newState: Int) {
                     if (newState == BottomSheetBehavior.STATE_HIDDEN) {
+                        sheetQuickSelectPinId = null
+                        pendingRouteReq = null
                         clearSelectedMarker()
                         if (previewRoute != null && activeNavRoute == null) {
                             routeRequestSeq++
@@ -801,6 +837,7 @@ class MainActivity : AppCompatActivity() {
         }
         DesignSystem.applyNavBannerSurface(this, navBanner, p)
         tvNavMeta.setTextColor(p.navBannerSub)
+        if (isLassoMode) updateLassoUi()
     }
 
     private fun setupClickListeners() {
@@ -906,6 +943,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMultiStatusFilterDialog() {
+        sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
 
@@ -1099,6 +1137,15 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                    val qsPinId = sheetQuickSelectPinId
+                    if (qsPinId != null) {
+                        val freshPin = pins.find { it.id == qsPinId }
+                        sheetQuickSelectPinId = null
+                        if (freshPin != null) {
+                            showPinCard(freshPin, animateSwap = true)
+                            return
+                        }
+                    }
                     hideInScreenSheet()
                     return
                 }
@@ -1717,6 +1764,7 @@ class MainActivity : AppCompatActivity() {
         lassoMoveMapMode = false
         if (enabled) {
             hideInScreenSheet()
+            UiAnimations.fadeShow(bottomDock, 160L)
             bottomIconRow.visibility = View.GONE
             UiAnimations.showSlideBottom(lassoCard)
             lassoOverlay.visibility = View.VISIBLE
@@ -1880,6 +1928,7 @@ class MainActivity : AppCompatActivity() {
         isRulerMode = enabled
         if (enabled) {
             hideInScreenSheet()
+            UiAnimations.fadeShow(bottomDock, 160L)
             bottomIconRow.visibility = View.GONE
             UiAnimations.showSlideBottom(rulerCard)
             updateRulerUi()
@@ -2029,8 +2078,9 @@ class MainActivity : AppCompatActivity() {
                     tappedResolvedTitle = bestTitle
                     tappedResolvedSub = bestSub
                     tappedTitleView?.text = bestTitle
+                    val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
                     val distText = currentLocation?.let {
-                        "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude))} away"
+                        "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)} away"
                     } ?: ""
                     val subLine = listOf(bestSub, distText).filter { it.isNotBlank() }.joinToString(" • ")
                     tappedSubView?.text = subLine
@@ -2082,6 +2132,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInScreenSheet(peekDp: Int = 280) {
+        activeSheetPeekDp = peekDp
         UiAnimations.fadeHide(bottomDock, 120L)
         val maxPeek = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(dp(180))
         sheetBehavior.peekHeight = minOf(dp(peekDp) + navBarInsetBottom, maxPeek)
@@ -2102,6 +2153,7 @@ class MainActivity : AppCompatActivity() {
     // --- Polished Pin Card (Stacked Cycler, Route To / Route From, Owner-Only Delete) ---
 
     private fun showPinCard(pin: PinItem, animateSwap: Boolean = false) {
+        sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
         val txtPrimary = p.textPrimary
@@ -2719,6 +2771,7 @@ class MainActivity : AppCompatActivity() {
     // --- Tap-Anywhere Place Card (With Route To & Route From) ---
 
     private fun showTappedPlaceCard(title: String, subtitle: String, lat: Double, lng: Double) {
+        sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
         val txtPrimary = p.textPrimary
@@ -2891,9 +2944,11 @@ class MainActivity : AppCompatActivity() {
             startLiveGpsUpdates(forceRestart = staleStream)
             val loc = currentLocation
             if (loc == null || locationAgeMs(loc) > 120_000L) {
-                Toast.makeText(this, "Acquiring fresh GPS fix before building route...", Toast.LENGTH_SHORT).show()
+                pendingRouteReq = PendingRouteReq(destLat, destLng, destTitle, modeOverride, System.currentTimeMillis())
+                Toast.makeText(this, "Acquiring fresh GPS fix — route will build automatically...", Toast.LENGTH_SHORT).show()
                 return
             }
+            pendingRouteReq = null
             startLat = loc.latitude
             startLng = loc.longitude
             startLabel = "My Location"
@@ -2934,6 +2989,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showRoutePreviewCard(route: NavRoute, startLabel: String, destLat: Double, destLng: Double, destTitle: String) {
+        sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
         val txtPrimary = p.textPrimary
@@ -3210,7 +3266,7 @@ class MainActivity : AppCompatActivity() {
         val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
         if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
             lastSpokenStepIdx = navCurrentStepIdx
-            speakPrompt("In ${formatDistanceShort(distToStep)}, ${step.instruction}")
+            speakPrompt("In ${formatDistanceShort(distToStep, unit)}, ${step.instruction}")
         }
 
         if (isFollowingGps) {
@@ -3449,6 +3505,15 @@ class MainActivity : AppCompatActivity() {
         currentLocation = loc
         updateSpeedBadge(loc)
 
+        // Automatically fulfill a queued Route To request once a fresh GPS fix arrives
+        val queuedRoute = pendingRouteReq
+        if (queuedRoute != null && locationAgeMs(loc) <= 120_000L) {
+            pendingRouteReq = null
+            if (System.currentTimeMillis() - queuedRoute.requestedAtMs <= 20_000L && activeNavRoute == null) {
+                openRoutePreview(queuedRoute.destLat, queuedRoute.destLng, queuedRoute.destTitle, queuedRoute.mode)
+            }
+        }
+
         gpsAnim?.cancel()
         if (isActivityResumed) {
             gpsAnim = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -3631,7 +3696,7 @@ class MainActivity : AppCompatActivity() {
             layoutDirection = if (AppStrings.isRtl(this@MainActivity)) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
             setBackgroundColor(p.pageBackdrop)
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            setPadding(0, statusBarInsetTop, 0, maxOf(navBarInsetBottom, imeInsetBottom))
+            setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, maxOf(navBarInsetBottom, imeInsetBottom))
         }
 
         val appBar = LinearLayout(this).apply {
@@ -3695,7 +3760,7 @@ class MainActivity : AppCompatActivity() {
             layoutDirection = if (AppStrings.isRtl(this@MainActivity)) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
             setBackgroundColor(bg)
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-            setPadding(0, statusBarInsetTop, 0, maxOf(navBarInsetBottom, imeInsetBottom))
+            setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, maxOf(navBarInsetBottom, imeInsetBottom))
         }
 
         val appBar = LinearLayout(this).apply {
@@ -5115,9 +5180,9 @@ class MainActivity : AppCompatActivity() {
                 .setItems(items) { _, which ->
                     val stamp = DevicePrefs.getDeviceStamp(this)
                     when (which) {
-                        0 -> chosen.forEach { savePinStatusUnified(it, "pending", stamp) }
-                        1 -> chosen.forEach { savePinStatusUnified(it, "done", stamp) }
-                        2 -> chosen.forEach { savePinStatusUnified(it, "issue", stamp, "Flagged in bulk") }
+                        0 -> savePinsStatusBatchUnified(chosen, "pending", stamp)
+                        1 -> savePinsStatusBatchUnified(chosen, "done", stamp)
+                        2 -> savePinsStatusBatchUnified(chosen, "issue", stamp, "Flagged in bulk")
                         3 -> {
                             DevicePrefs.addLocalSentPinIds(this, chosen.map { it.id })
                             updateSentToggleUi()
@@ -6033,7 +6098,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (isFinishing || isDestroyed || seq != webSearchSeq) return@runOnUiThread
                     btnWebSearch.isEnabled = true
-                    btnWebSearch.text = "Search Map Places"
+                    btnWebSearch.text = AppStrings.searchMapPlaces(this)
                     webResultsBox.removeAllViews()
                     if (!err.isNullOrBlank()) {
                         Toast.makeText(this, err, Toast.LENGTH_LONG).show()
@@ -7040,9 +7105,21 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                     btnDel.setOnClickListener {
-                        offlineMaps.deletePack(packId) { msg ->
-                            runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                        val st = offlineMaps.getState(packId)
+                        if (!st.isDownloaded && !st.isDownloading && !st.hasRoadGraph && !st.isRoadDownloading && st.completedResources == 0L) {
+                            Toast.makeText(this@MainActivity, "Nothing downloaded for $title", Toast.LENGTH_SHORT).show()
+                            return@setOnClickListener
                         }
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Delete \"$title\" Offline Pack?")
+                            .setMessage("This removes the downloaded offline map tiles and road graph for $title from this phone.")
+                            .setPositiveButton("Delete") { _, _ ->
+                                offlineMaps.deletePack(packId) { msg ->
+                                    runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                                }
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
                     }
 
                     btnRow.addView(btnDl)
@@ -7244,6 +7321,7 @@ class MainActivity : AppCompatActivity() {
     // --- Field Quick-Select Bottom Sheet (Organic Maps Style: Done / Issue Presets) ---
 
     private fun showFieldQuickSelectSheet(pin: PinItem, isIssue: Boolean) {
+        sheetQuickSelectPinId = pin.id
         val p = currentPalette()
         val night = p.isDark
         val accentColor = if (isIssue) p.red else p.green
@@ -7266,7 +7344,10 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
             setPadding(dp(10), dp(10), dp(10), dp(10))
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            setOnClickListener { showPinCard(pin, animateSwap = true) }
+            setOnClickListener {
+                val fresh = pins.find { it.id == pin.id } ?: pin
+                showPinCard(fresh, animateSwap = true)
+            }
         })
         val titleCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -7390,7 +7471,10 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 0.8f).apply { marginEnd = dp(8) }
             DesignSystem.styleSegmentedButton(this, false, p)
             UiAnimations.attachSnappyPress(this)
-            setOnClickListener { showPinCard(pin, animateSwap = true) }
+            setOnClickListener {
+                val fresh = pins.find { it.id == pin.id } ?: pin
+                showPinCard(fresh, animateSwap = true)
+            }
         })
         btnRow.addView(MaterialButton(this).apply {
             text = if (isIssue) "Save Issue" else "Save Done"
@@ -7462,6 +7546,7 @@ class MainActivity : AppCompatActivity() {
                     devId
                 )
                 DevicePrefs.setLayerVisible(this, savedPin.layerId, true)
+                ensurePinVisibleOnMap(savedPin)
                 applyMergedFoldersAndRender()
                 fireStatusPulse(savedPin.lat, savedPin.lng, "#F59E0B")
                 Toast.makeText(this, "Saved \"${savedPin.name}\" locally", Toast.LENGTH_SHORT).show()
@@ -7673,10 +7758,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun confirmUploadLocalToCloud(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
+        if (layer.id in uploadingLayerIds) {
+            Toast.makeText(this, "Already uploading \"${layer.name}\"...", Toast.LENGTH_SHORT).show()
+            return
+        }
         AlertDialog.Builder(this)
             .setTitle("Upload \"${layer.name}\" to Cloud?")
             .setMessage("Creates a live shared folder with a 6-character code for your teams and replaces the local-only copy.")
             .setPositiveButton("Upload") { _, _ ->
+                if (!uploadingLayerIds.add(layer.id)) return@setPositiveButton
+                Toast.makeText(this, "Uploading \"${layer.name}\" to cloud...", Toast.LENGTH_SHORT).show()
                 val newCloudId = UUID.randomUUID().toString()
                 val stamp = DevicePrefs.getDeviceStamp(this)
                 val devId = DevicePrefs.getDeviceId(this)
@@ -7687,6 +7778,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 repo.importLayer(newCloudId, layer.name, stamp, devId, parsed, requireServerCommit = true) { ok, msg, _ ->
                     runOnUiThread {
+                        uploadingLayerIds.remove(layer.id)
                         if (isFinishing || isDestroyed) return@runOnUiThread
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         if (ok) {
@@ -7739,13 +7831,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyOptimisticCloudPinUpdate(updated: PinItem) {
+        if (cloudPins.any { it.id == updated.id }) {
+            cloudPins = cloudPins.map { if (it.id == updated.id) updated else it }
+        }
+        applyMergedFoldersAndRender()
+    }
+
     private fun savePinStatusUnified(pin: PinItem, status: String, stamp: String, reason: String = "") {
         if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
             LocalFolderStore.updatePinStatus(this, pin, status, stamp, reason)
             applyMergedFoldersAndRender()
         } else {
-            repo.updatePinStatus(pin, status, stamp, reason, ::notifySyncError)
+            val updated = repo.updatePinStatus(pin, status, stamp, reason, ::notifySyncError)
+            applyOptimisticCloudPinUpdate(updated)
         }
+    }
+
+    private fun savePinsStatusBatchUnified(targetPins: List<PinItem>, status: String, stamp: String, reason: String = "") {
+        if (targetPins.isEmpty()) return
+        val localPins = targetPins.filter { LocalFolderStore.isLocalLayerId(it.layerId) }
+        val remotePins = targetPins.filterNot { LocalFolderStore.isLocalLayerId(it.layerId) }
+        if (localPins.isNotEmpty()) {
+            LocalFolderStore.updatePinsStatusBatch(this, localPins, status, stamp, reason)
+        }
+        if (remotePins.isNotEmpty()) {
+            val updatedCloud = repo.updatePinsStatusBatch(remotePins, status, stamp, reason, ::notifySyncError)
+            val byId = updatedCloud.associateBy { it.id }
+            cloudPins = cloudPins.map { byId[it.id] ?: it }
+        }
+        applyMergedFoldersAndRender()
     }
 
     private fun savePinTextUnified(pin: PinItem, newName: String, newDesc: String, stamp: String) {
@@ -7753,7 +7868,8 @@ class MainActivity : AppCompatActivity() {
             LocalFolderStore.updatePinText(this, pin, newName, newDesc, stamp)
             applyMergedFoldersAndRender()
         } else {
-            repo.updatePinText(pin, newName, newDesc, stamp, ::notifySyncError)
+            val updated = repo.updatePinText(pin, newName, newDesc, stamp, ::notifySyncError)
+            applyOptimisticCloudPinUpdate(updated)
         }
     }
 
@@ -7763,7 +7879,9 @@ class MainActivity : AppCompatActivity() {
             applyMergedFoldersAndRender()
             updated
         } else {
-            repo.deletePinHistoryEntry(pin, idx, ::notifySyncError)
+            val updated = repo.deletePinHistoryEntry(pin, idx, ::notifySyncError)
+            applyOptimisticCloudPinUpdate(updated)
+            updated
         }
     }
 
@@ -7773,7 +7891,9 @@ class MainActivity : AppCompatActivity() {
             applyMergedFoldersAndRender()
             updated
         } else {
-            repo.resetPinStatusToPending(pin, ::notifySyncError)
+            val updated = repo.resetPinStatusToPending(pin, ::notifySyncError)
+            applyOptimisticCloudPinUpdate(updated)
+            updated
         }
     }
 
@@ -7784,6 +7904,8 @@ class MainActivity : AppCompatActivity() {
             applyMergedFoldersAndRender()
         } else {
             repo.deletePin(pin.id, ::notifySyncError)
+            cloudPins = cloudPins.filterNot { it.id == pin.id }
+            applyMergedFoldersAndRender()
         }
     }
 
@@ -7796,7 +7918,9 @@ class MainActivity : AppCompatActivity() {
             LocalFolderStore.deletePins(this, localIds)
         }
         if (cloudIds.isNotEmpty()) {
+            val dropSet = cloudIds.toSet()
             repo.deletePinsBatch(cloudIds, ::notifySyncError)
+            cloudPins = cloudPins.filterNot { it.id in dropSet }
         }
         applyMergedFoldersAndRender()
     }
@@ -8106,9 +8230,18 @@ class MainActivity : AppCompatActivity() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         applyResponsiveChromeSizing()
+        updateScaleBar()
+        if (::sheetBehavior.isInitialized && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+            val maxPeek = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(dp(180))
+            sheetBehavior.peekHeight = minOf(dp(activeSheetPeekDp) + navBarInsetBottom, maxPeek)
+        }
         if (DevicePrefs.getThemeMode(this) == "auto") {
             applyMapChromeTheme()
             if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
+            val curPinId = selectedPinId
+            if (curPinId != null && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                pins.find { it.id == curPinId }?.let { showPinCard(it, animateSwap = false) }
+            }
         }
     }
 

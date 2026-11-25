@@ -11,6 +11,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -23,10 +24,15 @@ object RoutingEngine {
     @Volatile var userAgent: String = "TerraSync/2.8.0 (https://github.com/Thamirakkurd/TerraSync)"
     @Volatile var appContext: Context? = null
 
-    val ioExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(3)
+    val ioExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(4) { r ->
+        Thread(r, "terrasync-io").apply { isDaemon = true }
+    }
 
     val sharedOkHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val req = chain.request().newBuilder()
                     .header("User-Agent", userAgent)
@@ -326,6 +332,10 @@ object RoutingEngine {
                     val pt = coordsArr.getJSONArray(i)
                     geom.add(pt.getDouble(0) to pt.getDouble(1))
                 }
+                if (geom.size < 2) {
+                    lastError = "Empty OSRM geometry"
+                    continue
+                }
                 var geomTotal = 0.0
                 for (i in 0 until geom.size - 1) {
                     geomTotal += haversineMeters(geom[i].second, geom[i].first, geom[i + 1].second, geom[i + 1].first)
@@ -458,6 +468,10 @@ object RoutingEngine {
 
     fun reverseGeocode(lat: Double, lng: Double, onResult: (PlaceResult?) -> Unit) {
         ioExecutor.execute {
+            if (!isNetworkAvailable(appContext)) {
+                onResult(null)
+                return@execute
+            }
             val result = runCatching {
                 val urlStr = "https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=json&zoom=18&addressdetails=1"
                 val acceptLang = appContext?.let { ctx ->
@@ -497,9 +511,10 @@ object RoutingEngine {
         val r = 6371000.0
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)
-        val a = sin(dLat / 2) * sin(dLat / 2) +
-            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2) * sin(dLon / 2)
-        return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+        val a = (sin(dLat / 2) * sin(dLat / 2) +
+            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2) * sin(dLon / 2))
+            .coerceIn(0.0, 1.0)
+        return 2 * r * atan2(sqrt(a), sqrt(1.0 - a))
     }
 
     fun trackRouteProgress(

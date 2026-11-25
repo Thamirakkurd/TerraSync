@@ -71,6 +71,8 @@ object OfflineRoutingEngine {
 
     private val graphCacheLock = Any()
     @Volatile private var cachedGraph: RoadGraph? = null
+    private data class CachedHeader(val lastModified: Long, val sizeBytes: Long, val region: OfflineRoadRegion)
+    private val headerCache = ConcurrentHashMap<String, CachedHeader>()
     private val activeDownloads = ConcurrentHashMap<String, AtomicBoolean>()
 
     private fun dir(ctx: Context): File = File(ctx.filesDir, "offline_routes").apply { mkdirs() }
@@ -81,8 +83,12 @@ object OfflineRoutingEngine {
     fun packFileName(packId: String): String = "pack_${safeName(packId)}.tsr"
 
     fun getPackRegion(ctx: Context, packId: String): OfflineRoadRegion? {
-        val f = File(dir(ctx), packFileName(packId))
-        if (!f.exists() || !f.isFile) return null
+        val fileName = packFileName(packId)
+        val f = File(dir(ctx), fileName)
+        if (!f.exists() || !f.isFile) {
+            headerCache.remove(fileName)
+            return null
+        }
         return readHeader(f)
     }
 
@@ -104,6 +110,7 @@ object OfflineRoutingEngine {
 
     fun deleteRegion(ctx: Context, fileName: String): Boolean {
         val f = File(dir(ctx), fileName)
+        headerCache.remove(fileName)
         synchronized(graphCacheLock) {
             if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
         }
@@ -116,6 +123,12 @@ object OfflineRoutingEngine {
     }
 
     private fun readHeader(file: File): OfflineRoadRegion? {
+        val lm = file.lastModified()
+        val len = file.length()
+        val cached = headerCache[file.name]
+        if (cached != null && cached.lastModified == lm && cached.sizeBytes == len) {
+            return cached.region
+        }
         return runCatching {
             DataInputStream(GZIPInputStream(BufferedInputStream(FileInputStream(file)))).use { dis ->
                 val magic = dis.readInt()
@@ -137,9 +150,11 @@ object OfflineRoutingEngine {
                     maxLng = maxLng,
                     nodeCount = nodeCount,
                     edgeCount = edgeCount,
-                    sizeBytes = file.length(),
+                    sizeBytes = len,
                     downloadedAt = downloadedAt
-                )
+                ).also { reg ->
+                    headerCache[file.name] = CachedHeader(lm, len, reg)
+                }
             }
         }.getOrNull()
     }
@@ -498,13 +513,20 @@ object OfflineRoutingEngine {
                 synchronized(graphCacheLock) {
                     if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
                 }
+                headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
                 onDone(meta, null)
-            } catch (e: Exception) {
-                onDone(null, e.message ?: "Failed to compile offline graph")
+            } catch (oom: OutOfMemoryError) {
+                onDone(null, "Not enough memory to process road data")
+            } catch (t: Throwable) {
+                onDone(null, t.message ?: "Failed to compile offline graph")
             } finally {
                 activeDownloads.remove(jobKey, cancelFlag)
             }
-        }.start()
+        }.apply {
+            name = "terrasync-road-dl-$jobKey"
+            isDaemon = true
+            start()
+        }
     }
 
     private data class Quad(val car: Boolean, val bike: Boolean, val walk: Boolean, val speed: Float)
@@ -554,11 +576,43 @@ object OfflineRoutingEngine {
         mode: TravelMode,
         modeFlag: Int
     ): Pair<NavRoute?, String?> {
-        val startNode = findNearestNode(g, startLat, startLng, modeFlag, needIncoming = false)
-        val endNode = findNearestNode(g, endLat, endLng, modeFlag, needIncoming = true)
-        if (startNode < 0 || endNode < 0) {
+        val startCandidates = findNearestNodes(g, startLat, startLng, modeFlag, needIncoming = false, maxCount = 3)
+        val endCandidates = findNearestNodes(g, endLat, endLng, modeFlag, needIncoming = true, maxCount = 3)
+        if (startCandidates.isEmpty() || endCandidates.isEmpty()) {
             return null to "No nearby road in offline map"
         }
+
+        // Try closest pair first, then fall back to secondary nearby nodes if snapped onto a disconnected OSM stub
+        val pairs = buildList {
+            add(startCandidates[0] to endCandidates[0])
+            for (s in startCandidates) {
+                for (e in endCandidates) {
+                    if (s == startCandidates[0] && e == endCandidates[0]) continue
+                    add(s to e)
+                }
+            }
+        }
+
+        var lastError = "No offline road connection found between points"
+        for ((startNode, endNode) in pairs) {
+            val res = runAStarBetweenNodes(g, startNode, endNode, startLat, startLng, endLat, endLng, mode, modeFlag)
+            if (res.first != null) return res
+            if (!res.second.isNullOrBlank()) lastError = res.second!!
+        }
+        return null to lastError
+    }
+
+    private fun runAStarBetweenNodes(
+        g: RoadGraph,
+        startNode: Int,
+        endNode: Int,
+        startLat: Double,
+        startLng: Double,
+        endLat: Double,
+        endLng: Double,
+        mode: TravelMode,
+        modeFlag: Int
+    ): Pair<NavRoute?, String?> {
         if (startNode == endNode) {
             val geom = listOf(startLng to startLat, endLng to endLat)
             val d = RoutingEngine.haversineMeters(startLat, startLng, endLat, endLng)
@@ -577,6 +631,7 @@ object OfflineRoutingEngine {
             TravelMode.BICYCLE -> 22.0 / 3.6
             TravelMode.WALKING -> 5.5 / 3.6
         }
+        val invMaxSpeed = 0.985 / maxSpeedMps // slight safety margin keeps equirectangular heuristic admissible
 
         class QNode(val u: Int, val f: Double) : Comparable<QNode> {
             override fun compareTo(other: QNode): Int = f.compareTo(other.f)
@@ -584,9 +639,17 @@ object OfflineRoutingEngine {
 
         val endLatD = g.lats[endNode].toDouble()
         val endLngD = g.lngs[endNode].toDouble()
-        val pq = PriorityQueue<QNode>()
+        val mPerDegLng = 111320.0 * cos(Math.toRadians((startLat + endLatD) * 0.5))
+
+        fun fastHeuristicSec(lat: Float, lng: Float): Double {
+            val dy = (lat - endLatD) * 111132.0
+            val dx = (lng - endLngD) * mPerDegLng
+            return sqrt(dx * dx + dy * dy) * invMaxSpeed
+        }
+
+        val pq = PriorityQueue<QNode>(256)
         gScore[startNode] = 0.0
-        pq.add(QNode(startNode, RoutingEngine.haversineMeters(g.lats[startNode].toDouble(), g.lngs[startNode].toDouble(), endLatD, endLngD) / maxSpeedMps))
+        pq.add(QNode(startNode, fastHeuristicSec(g.lats[startNode], g.lngs[startNode])))
 
         var found = false
         while (pq.isNotEmpty()) {
@@ -614,8 +677,7 @@ object OfflineRoutingEngine {
                             gScore[v] = tentative
                             prevNode[v] = u
                             prevEdge[v] = e
-                            val h = RoutingEngine.haversineMeters(g.lats[v].toDouble(), g.lngs[v].toDouble(), endLatD, endLngD) / maxSpeedMps
-                            pq.add(QNode(v, tentative + h))
+                            pq.add(QNode(v, tentative + fastHeuristicSec(g.lats[v], g.lngs[v])))
                         }
                     }
                 }
@@ -683,25 +745,49 @@ object OfflineRoutingEngine {
         return NavRoute(geom, totalDist, totalDur, steps, mode, "Offline") to null
     }
 
-    private fun findNearestNode(g: RoadGraph, lat: Double, lng: Double, modeFlag: Int, needIncoming: Boolean = false): Int {
-        var bestIdx = -1
-        var bestDistSq = 3500.0 * 3500.0
+    private fun findNearestNodes(
+        g: RoadGraph,
+        lat: Double,
+        lng: Double,
+        modeFlag: Int,
+        needIncoming: Boolean = false,
+        maxCount: Int = 3
+    ): List<Int> {
+        val maxDistSq = 3500.0 * 3500.0
         val cosLat = cos(Math.toRadians(lat))
         val mPerDegLng = 111320.0 * cosLat
         val flagsArr = if (needIncoming) g.nodeInFlags else g.nodeOutFlags
+        val bestIdx = IntArray(maxCount) { -1 }
+        val bestDistSq = DoubleArray(maxCount) { maxDistSq }
+        var worstPos = 0
+
         for (i in g.lats.indices) {
             if ((flagsArr[i].toInt() and modeFlag) == 0) continue
             val dLat = (g.lats[i] - lat) * 111132.0
             val dLatSq = dLat * dLat
-            if (dLatSq >= bestDistSq) continue
+            val limit = bestDistSq[worstPos]
+            if (dLatSq >= limit) continue
             val dLng = (g.lngs[i] - lng) * mPerDegLng
             val dSq = dLatSq + dLng * dLng
-            if (dSq < bestDistSq) {
-                bestDistSq = dSq
-                bestIdx = i
+            if (dSq < limit) {
+                bestIdx[worstPos] = i
+                bestDistSq[worstPos] = dSq
+                // Recompute worst slot among the small top-K array
+                var maxD = bestDistSq[0]
+                var maxP = 0
+                for (k in 1 until maxCount) {
+                    if (bestDistSq[k] > maxD) {
+                        maxD = bestDistSq[k]
+                        maxP = k
+                    }
+                }
+                worstPos = maxP
             }
         }
-        return bestIdx
+        return (0 until maxCount)
+            .filter { bestIdx[it] >= 0 }
+            .sortedBy { bestDistSq[it] }
+            .map { bestIdx[it] }
     }
 
     private fun bearingDeg(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {

@@ -84,14 +84,20 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
     init {
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onCreate(owner: LifecycleOwner) {
+                LocalFolderStore.preloadAsync(carContext)
                 val joined = DevicePrefs.getJoinedLayerIds(carContext)
                 repo.syncJoinedLayers(joined) { newLayers, newPins, _, _ ->
                     if (destroyed) return@syncJoinedLayers
-                    val local = LocalFolderStore.loadAll(carContext)
-                    layers = (newLayers + local.layers).sortedByDescending { it.updatedAt }
-                    pins = newPins + local.pins
-                    loaded = true
-                    mainHandler.post { if (!destroyed) invalidate() }
+                    LocalFolderStore.preloadAsync(carContext) { local ->
+                        if (destroyed) return@preloadAsync
+                        mainHandler.post {
+                            if (destroyed) return@post
+                            layers = (newLayers + local.layers).sortedByDescending { it.updatedAt }
+                            pins = newPins + local.pins
+                            loaded = true
+                            invalidate()
+                        }
+                    }
                 }
             }
 
@@ -277,6 +283,7 @@ private class TerraSyncCarPinDetailScreen(
 ) : Screen(carContext) {
 
     private var currentStatus = pin.status
+    private var currentReason = pin.issueReason
 
     override fun onGetTemplate(): Template {
         val paneBuilder = Pane.Builder()
@@ -289,15 +296,15 @@ private class TerraSyncCarPinDetailScreen(
             .addRow(
                 Row.Builder()
                     .setTitle("Coordinates")
-                    .addText("${"%.6f".format(pin.lat)}, ${"%.6f".format(pin.lng)}")
+                    .addText("${"%.6f".format(java.util.Locale.US, pin.lat)}, ${"%.6f".format(java.util.Locale.US, pin.lng)}")
                     .build()
             )
 
-        if (pin.issueReason.isNotBlank() && (currentStatus.equals("issue", true) || currentStatus.equals("done", true))) {
+        if (currentReason.isNotBlank() && (currentStatus.equals("issue", true) || currentStatus.equals("done", true))) {
             paneBuilder.addRow(
                 Row.Builder()
                     .setTitle(if (currentStatus.equals("done", true)) "Done Note" else "Issue")
-                    .addText(pin.issueReason)
+                    .addText(currentReason)
                     .build()
             )
         } else if (pin.description.isNotBlank()) {
@@ -336,6 +343,7 @@ private class TerraSyncCarPinDetailScreen(
                         repo.updatePinStatus(pin, "done", stamp)
                     }
                     currentStatus = "done"
+                    currentReason = ""
                     onMarkedDone()
                     CarToast.makeText(carContext, "Marked Done", CarToast.LENGTH_SHORT).show()
                     invalidate()
