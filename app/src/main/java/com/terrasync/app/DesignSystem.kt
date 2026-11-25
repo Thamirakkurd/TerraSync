@@ -105,10 +105,10 @@ object DesignSystem {
     fun palette(isDark: Boolean): ThemePalette {
         return if (isDark) {
             val canvas = Color.parseColor("#161715")
-            val floating = Color.parseColor("#20221F")
-            val frosted = Color.parseColor("#E3212320")
-            val frostedTray = Color.parseColor("#DC1B1D1A")
-            val navPill = Color.parseColor("#2A2C28")
+            val floating = Color.parseColor("#222421")
+            val frosted = Color.parseColor("#222421")
+            val frostedTray = Color.parseColor("#222421")
+            val navPill = Color.parseColor("#2E302C")
             val tonal = Color.parseColor("#2B2D29")
             val primary = Color.parseColor("#238E5E")
             val primarySoft = Color.parseColor("#26238E5E")
@@ -137,7 +137,7 @@ object DesignSystem {
                 textBody = textBdy,
                 textMuted = textMut,
                 onDarkSurface = Color.WHITE,
-                inactiveNavIcon = Color.parseColor("#E2E3DE"),
+                inactiveNavIcon = Color.parseColor("#ECECE7"),
                 pageBackdrop = canvas,
                 cardSurface = tonal,
                 cardBorder = border,
@@ -160,15 +160,15 @@ object DesignSystem {
                 rippleColor = Color.parseColor("#28FFFFFF"),
                 navBannerBg = Color.parseColor("#165E3D"),
                 navBannerSub = Color.parseColor("#CBEAD9"),
-                shadowSpot = Color.parseColor("#D8000000"),
-                shadowAmbient = Color.parseColor("#22000000"),
-                floatingBorder = Color.parseColor("#2AFFFFFF")
+                shadowSpot = Color.parseColor("#E6000000"),
+                shadowAmbient = Color.parseColor("#38000000"),
+                floatingBorder = Color.parseColor("#363A34")
             )
         } else {
             val canvas = Color.parseColor("#F9F9F7")
             val floating = Color.parseColor("#FFFFFF")
-            val frosted = Color.parseColor("#E8F8F8F5")
-            val frostedTray = Color.parseColor("#E0F6F6F2")
+            val frosted = Color.parseColor("#F3F5F1")
+            val frostedTray = Color.parseColor("#F3F5F1")
             val navPill = Color.parseColor("#FFFFFF")
             val tonal = Color.parseColor("#F1F1EE")
             val primary = Color.parseColor("#18794E")
@@ -221,9 +221,9 @@ object DesignSystem {
                 rippleColor = Color.parseColor("#1A1C1E1B"),
                 navBannerBg = Color.parseColor("#18794E"),
                 navBannerSub = Color.parseColor("#D4F1E2"),
-                shadowSpot = Color.parseColor("#6B000000"),
-                shadowAmbient = Color.parseColor("#08000000"),
-                floatingBorder = Color.parseColor("#1E1C1E1B")
+                shadowSpot = Color.parseColor("#88000000"),
+                shadowAmbient = Color.parseColor("#1A000000"),
+                floatingBorder = Color.parseColor("#E2E6DF")
             )
         }
     }
@@ -260,15 +260,15 @@ object DesignSystem {
     }
 
     /**
-     * Frosted floating map control (~90% warm-white translucency in Light / warm charcoal in Dark)
-     * with delicate edge hairline and clean directional downward drop shadow.
+     * Opaque milky-matte floating map control (#F3F5F1 Light / #222421 Dark)
+     * with full hardware outline alpha so crisp directional downward drop shadows render cleanly.
      */
     fun applyFloatingControl(
         ctx: Context,
         view: View,
         palette: ThemePalette,
         radiusDp: Float,
-        elevationDp: Float = 5f,
+        elevationDp: Float = 6f,
         activeFillColor: Int? = null
     ) {
         val d = ctx.resources.displayMetrics.density
@@ -288,6 +288,7 @@ object DesignSystem {
         }
         val ripple = if (activeFillColor != null) Color.parseColor("#30FFFFFF") else palette.rippleColor
         view.background = RippleDrawable(ColorStateList.valueOf(ripple), content, mask)
+        view.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
         view.elevation = elevationDp * d
         applyDirectionalShadow(view, palette)
         UiAnimations.attachSnappyPress(view)
@@ -295,14 +296,15 @@ object DesignSystem {
 
     /**
      * Floating overlay surface: solid calm canvas for Bottom Sheets (topOnly=true),
-     * softly frosted translucent surface for floating map trays/cards (topOnly=false).
+     * opaque milky-matte sage-tinted off-white for floating map trays/cards (topOnly=false)
+     * with proper ViewOutlineProvider.BACKGROUND for crisp downward elevation shadows.
      */
     fun applyFloatingSurface(
         ctx: Context,
         view: View,
         palette: ThemePalette,
         radiusDp: Float = 20f,
-        elevationDp: Float = 7f,
+        elevationDp: Float = 8f,
         topOnly: Boolean = false,
         fillOverride: Int? = null,
         strokeOverride: Int? = null
@@ -318,6 +320,7 @@ object DesignSystem {
             strokeColor = stroke,
             strokeDp = if (stroke != Color.TRANSPARENT) 0.75f else 0f
         )
+        view.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
         view.elevation = elevationDp * d
         view.clipToOutline = true
         applyDirectionalShadow(view, palette)
@@ -651,7 +654,9 @@ object DesignSystem {
         palette: ThemePalette,
         title: String,
         subtitle: String? = null,
-        actions: List<SheetActionItem>
+        actions: List<SheetActionItem>,
+        dimAmount: Float? = null,
+        extraContent: ((LinearLayout) -> Unit)? = null
     ): BottomSheetDialog {
         val d = ctx.resources.displayMetrics.density
         val dialog = BottomSheetDialog(ctx)
@@ -835,11 +840,13 @@ object DesignSystem {
             val gap = if (idx == destructiveItems.lastIndex) 0 else 6
             addActionRow(listCol, item, gap)
         }
+        extraContent?.invoke(listCol)
 
         scroll.addView(listCol)
         root.addView(scroll)
 
         dialog.setContentView(root)
+        dimAmount?.let { dialog.window?.setDimAmount(it) }
         dialog.setOnShowListener {
             val sheet = dialog.findViewById<FrameLayout>(com.google.android.material.R.id.design_bottom_sheet)
             sheet?.setBackgroundColor(Color.TRANSPARENT)

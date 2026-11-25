@@ -692,23 +692,19 @@ object UiAnimations {
             .start()
     }
 
+    /** Crisp 120ms in-place alpha crossfade for stacked pin swaps without sheet dismissal or layout jank. */
     fun animateContentSwap(view: View, forward: Boolean = true) {
         view.animate().cancel()
+        view.translationX = 0f
         if (isReducedMotion(view.context)) {
             view.alpha = 1f
-            view.translationX = 0f
             return
         }
-        val dir = if (forward) 1f else -1f
-        val shift = 18f * view.resources.displayMetrics.density * dir
-        view.alpha = 0f
-        view.translationX = shift
+        view.alpha = 0.35f
         view.animate()
             .alpha(1f)
-            .translationX(0f)
-            .setDuration(170L)
-            .setInterpolator(EMPHASIZED_DECELERATE)
-            .withLayer()
+            .setDuration(120L)
+            .setInterpolator(FAST_OUT_SLOW_IN)
             .start()
     }
 

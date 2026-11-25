@@ -45,21 +45,21 @@
                 android:layout_width="52dp"
                 android:layout_height="52dp"
                 android:contentDescription="Sync Status"
-                android:padding="13dp"
+                android:padding="11dp"
                 android:scaleType="fitCenter"
                 android:src="@drawable/ic_cloud_sync" />
 
             <TextView
                 android:id="@+id/btnSentToggle"
                 android:layout_width="wrap_content"
-                android:layout_height="46dp"
+                android:layout_height="44dp"
                 android:layout_marginStart="10dp"
                 android:clickable="true"
                 android:ellipsize="end"
                 android:focusable="true"
                 android:gravity="center"
                 android:maxLines="1"
-                android:maxWidth="136dp"
+                android:maxWidth="188dp"
                 android:paddingStart="14dp"
                 android:paddingEnd="14dp"
                 android:text="All Pins"
@@ -77,10 +77,12 @@
                 android:id="@+id/btnCompass"
                 android:layout_width="52dp"
                 android:layout_height="52dp"
+                android:alpha="0"
                 android:contentDescription="Reset Compass North"
-                android:padding="11dp"
+                android:padding="9dp"
                 android:scaleType="fitCenter"
-                android:src="@drawable/ic_compass_dial" />
+                android:src="@drawable/ic_compass_dial"
+                android:visibility="invisible" />
         </LinearLayout>
 
         <!-- Custom Route-From Indicator Banner -->
@@ -297,11 +299,12 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Right Chrome Column: Optional Extra Tools + Optional Slim Vertical Zoom Pill + Quarter-Circle Arc -->
+            <!-- Right Chrome Column: Lifted +10dp for clean breathing room above bottom nav tray -->
             <LinearLayout
                 android:id="@+id/rightChromeColumn"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_marginBottom="10dp"
                 android:clipChildren="false"
                 android:clipToPadding="false"
                 android:gravity="end|bottom"
@@ -313,23 +316,12 @@
                     android:layout_height="52dp"
                     android:layout_marginBottom="10dp"
                     android:contentDescription="Circle Select Sent Pins"
-                    android:padding="13dp"
+                    android:padding="11dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_lasso"
                     android:visibility="gone" />
 
-                <ImageButton
-                    android:id="@+id/btnImport"
-                    android:layout_width="52dp"
-                    android:layout_height="52dp"
-                    android:layout_marginBottom="10dp"
-                    android:contentDescription="Import KML or KMZ"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_import_file"
-                    android:visibility="gone" />
-
-                <!-- Option B: Slim Frosted Vertical + / - Pill (Default OFF; toggled via Settings) -->
+                <!-- Option B: Slim Milky-Matte Vertical + / - Pill (Default OFF; toggled via Settings) -->
                 <LinearLayout
                     android:id="@+id/zoomPillContainer"
                     android:layout_width="46dp"
@@ -345,7 +337,7 @@
                         android:layout_height="45dp"
                         android:background="@android:color/transparent"
                         android:contentDescription="Zoom In"
-                        android:padding="12dp"
+                        android:padding="10dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_plus" />
 
@@ -360,12 +352,12 @@
                         android:layout_height="45dp"
                         android:background="@android:color/transparent"
                         android:contentDescription="Zoom Out"
-                        android:padding="12dp"
+                        android:padding="10dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_minus" />
                 </LinearLayout>
 
-                <!-- Concept Quarter-Circle Arc (52dp Frosted Circles) around Oversized 66dp Dark Primary FAB -->
+                <!-- Concept Quarter-Circle Arc (52dp Milky-Matte Circles) around Oversized 66dp Dark Primary FAB -->
                 <FrameLayout
                     android:id="@+id/rightArcCluster"
                     android:layout_width="138dp"
@@ -380,8 +372,8 @@
                         android:layout_height="52dp"
                         android:layout_gravity="bottom|end"
                         android:layout_marginBottom="78dp"
-                        android:contentDescription="Map Style"
-                        android:padding="13dp"
+                        android:contentDescription="Map Style &amp; Layers"
+                        android:padding="11dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_layers" />
 
@@ -394,7 +386,7 @@
                         android:layout_marginEnd="59dp"
                         android:layout_marginBottom="59dp"
                         android:contentDescription="Measure Distance"
-                        android:padding="13dp"
+                        android:padding="11dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_ruler" />
 
@@ -406,7 +398,7 @@
                         android:layout_gravity="bottom|end"
                         android:layout_marginEnd="78dp"
                         android:contentDescription="Filter Pins"
-                        android:padding="13dp"
+                        android:padding="11dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_filter" />
 
@@ -417,7 +409,7 @@
                         android:layout_height="66dp"
                         android:layout_gravity="bottom|end"
                         android:contentDescription="My Location"
-                        android:padding="19dp"
+                        android:padding="17dp"
                         android:scaleType="fitCenter"
                         android:src="@drawable/ic_my_location" />
                 </FrameLayout>
@@ -652,7 +644,7 @@
                     android:layout_marginEnd="5dp"
                     android:layout_weight="1"
                     android:contentDescription="Search"
-                    android:padding="12dp"
+                    android:padding="10dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_search" />
 
@@ -663,7 +655,7 @@
                     android:layout_marginEnd="5dp"
                     android:layout_weight="1"
                     android:contentDescription="Bookmarks"
-                    android:padding="12dp"
+                    android:padding="10dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_bookmarks_list" />
 
@@ -674,7 +666,7 @@
                     android:layout_marginEnd="5dp"
                     android:layout_weight="1"
                     android:contentDescription="Settings"
-                    android:padding="12dp"
+                    android:padding="10dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_settings" />
 
@@ -684,7 +676,7 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:contentDescription="About"
-                    android:padding="12dp"
+                    android:padding="10dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_info" />
             </LinearLayout>
@@ -722,8 +714,10 @@
             android:layout_marginBottom="12dp" />
 
         <androidx.core.widget.NestedScrollView
+            android:id="@+id/sheetScrollView"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content">
+            android:layout_height="wrap_content"
+            android:fillViewport="false">
 
             <LinearLayout
                 android:id="@+id/sheetContent"

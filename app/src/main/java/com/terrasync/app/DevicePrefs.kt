@@ -369,7 +369,7 @@ object DevicePrefs {
     fun setShowZoomButtons(ctx: Context, show: Boolean) = prefs(ctx).edit().putBoolean(KEY_SHOW_ZOOM_BUTTONS, show).apply()
 
     fun getMapPinStyle(ctx: Context): MapPinStyle =
-        MapPinStyle.fromId(prefs(ctx).getString(KEY_MAP_PIN_STYLE, MapPinStyle.CONCEPT.id))
+        MapPinStyle.fromId(prefs(ctx).getString(KEY_MAP_PIN_STYLE, MapPinStyle.CLASSIC.id))
     fun setMapPinStyle(ctx: Context, style: MapPinStyle) =
         prefs(ctx).edit().putString(KEY_MAP_PIN_STYLE, style.id).apply()
 

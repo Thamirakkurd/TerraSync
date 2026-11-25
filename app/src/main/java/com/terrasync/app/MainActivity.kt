@@ -217,7 +217,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnZoomIn: ImageButton
     private lateinit var btnZoomOut: ImageButton
     private lateinit var btnLocate: ImageButton
-    private lateinit var btnImport: ImageButton
     private lateinit var btnTabSearch: ImageButton
     private lateinit var btnTabBookmarks: ImageButton
     private lateinit var btnTabSettings: ImageButton
@@ -229,6 +228,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fullScreenSwipeUpCatcher: View
     private var activeOpenNavTab: Int = -1
     private var isFullScreenMapMode: Boolean = false
+    private var isCompassVisible: Boolean = false
+    private var isSwappingSheetInPlace: Boolean = false
     private lateinit var speedBadge: LinearLayout
     private lateinit var tvSpeedValue: TextView
     private lateinit var tvSpeedUnit: TextView
@@ -249,6 +250,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var inScreenSheet: LinearLayout
     private lateinit var sheetDragHandle: View
+    private lateinit var sheetScrollView: androidx.core.widget.NestedScrollView
     private lateinit var sheetContent: LinearLayout
     private lateinit var sheetBehavior: BottomSheetBehavior<LinearLayout>
     private lateinit var pageOverlayContainer: FrameLayout
@@ -299,8 +301,10 @@ class MainActivity : AppCompatActivity() {
     private var activeTappedLatLng: LatLng? = null
     private var tappedTitleView: TextView? = null
     private var tappedSubView: TextView? = null
+    private var tappedDistView: TextView? = null
     private var tappedResolvedTitle: String = ""
     private var tappedResolvedSub: String = ""
+    private var sheetOpenSeq: Int = 0
     private var lastGpsFixTimeMs: Long = 0L
 
     // Local-only Sent Tracking & Circle-Select State
@@ -487,7 +491,16 @@ class MainActivity : AppCompatActivity() {
                 marginStart = insetStart
                 marginEnd = insetEnd
             }
-            sheetContent.setPadding(dp(16), 0, dp(16), navBarInsetBottom + dp(20))
+            val sheetBottomInset = maxOf(navBarInsetBottom, imeInsetBottom)
+            sheetContent.setPadding(dp(16), 0, dp(16), sheetBottomInset + dp(20))
+            if (imeInsetBottom > 0 && ::sheetBehavior.isInitialized && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                if (sheetBehavior.state != BottomSheetBehavior.STATE_EXPANDED) {
+                    sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+                }
+                if (::sheetScrollView.isInitialized) {
+                    sheetScrollView.post { sheetScrollView.fullScroll(View.FOCUS_DOWN) }
+                }
+            }
             val pageBottom = maxOf(navBarInsetBottom, imeInsetBottom)
             for (i in 0 until pageOverlayContainer.childCount) {
                 pageOverlayContainer.getChildAt(i).setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, pageBottom)
@@ -533,7 +546,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onSlide(bottomSheet: View, slideOffset: Float) {
                     if (UiAnimations.isReducedMotion(this@MainActivity)) return
-                    if (isFullScreenMapMode || isRulerMode || isLassoMode || activeNavRoute != null) return
+                    if (isSwappingSheetInPlace || isFullScreenMapMode || isRulerMode || isLassoMode || activeNavRoute != null) return
                     bottomDock.animate().cancel()
                     if (slideOffset < -0.15f) {
                         val reveal = ((-slideOffset - 0.15f) / 0.85f).coerceIn(0f, 1f)
@@ -566,12 +579,11 @@ class MainActivity : AppCompatActivity() {
 
             loadMapStyle()
             updateScaleBar()
+            updateCompassForBearing(m.cameraPosition.bearing, animate = false)
 
             m.addOnCameraMoveListener {
                 updateScaleBar()
-                if (::btnCompass.isInitialized) {
-                    btnCompass.rotation = (-m.cameraPosition.bearing).toFloat()
-                }
+                updateCompassForBearing(m.cameraPosition.bearing, animate = true)
                 if (isLassoMode && lassoPendingPinIds.isNotEmpty()) {
                     clearLassoSelection()
                 }
@@ -643,6 +655,19 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(8), dp(22), dp(4))
         }
+        box.addView(TextView(this).apply {
+            text = "تیما خو بنڤیسە"
+            textSize = 18.5f
+            textDirection = View.TEXT_DIRECTION_RTL
+            gravity = Gravity.RIGHT
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(p.textPrimary)
+            setPadding(0, 0, 0, dp(6))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        })
         box.addView(TextView(this).apply {
             text = "Enter your operator or team name (e.g. Team 212, Ali, Supervisor) so every pin edit and cloud submission is stamped accurately."
             textSize = 13.5f
@@ -749,7 +774,6 @@ class MainActivity : AppCompatActivity() {
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
         btnLocate = findViewById(R.id.btnLocate)
-        btnImport = findViewById(R.id.btnImport)
         applyExtraMapToolsVisibility()
         applyZoomButtonsVisibility()
         applyResponsiveChromeSizing()
@@ -796,6 +820,7 @@ class MainActivity : AppCompatActivity() {
         DesignSystem.applyTabularNumerals(tvNavMeta)
         inScreenSheet = findViewById(R.id.inScreenSheet)
         sheetDragHandle = findViewById(R.id.sheetDragHandle)
+        sheetScrollView = findViewById(R.id.sheetScrollView)
         sheetContent = findViewById(R.id.sheetContent)
         pageOverlayContainer = findViewById(R.id.pageOverlayContainer)
     }
@@ -852,6 +877,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Auto-hides the top-right Compass when facing North (~0°) and smoothly fades/scales it in on rotation. */
+    private fun updateCompassForBearing(bearing: Double, animate: Boolean = true) {
+        if (!::btnCompass.isInitialized) return
+        val norm = ((bearing % 360.0) + 540.0) % 360.0 - 180.0
+        val shouldShow = kotlin.math.abs(norm) > 1.2 && !isFullScreenMapMode
+        btnCompass.rotation = (-bearing).toFloat()
+        if (shouldShow == isCompassVisible) {
+            if (!shouldShow && btnCompass.visibility != View.INVISIBLE) {
+                btnCompass.visibility = View.INVISIBLE
+                btnCompass.alpha = 0f
+                btnCompass.isEnabled = false
+            }
+            return
+        }
+        isCompassVisible = shouldShow
+        btnCompass.animate().cancel()
+        if (shouldShow) {
+            btnCompass.isEnabled = true
+            btnCompass.visibility = View.VISIBLE
+            if (!animate || UiAnimations.isReducedMotion(this)) {
+                btnCompass.alpha = 1f
+                btnCompass.scaleX = 1f
+                btnCompass.scaleY = 1f
+                return
+            }
+            btnCompass.alpha = 0f
+            btnCompass.scaleX = 0.84f
+            btnCompass.scaleY = 0.84f
+            btnCompass.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(165L)
+                .setInterpolator(UiAnimations.EMPHASIZED_DECELERATE)
+                .withLayer()
+                .start()
+        } else {
+            btnCompass.isEnabled = false
+            if (!animate || UiAnimations.isReducedMotion(this)) {
+                btnCompass.alpha = 0f
+                btnCompass.scaleX = 0.84f
+                btnCompass.scaleY = 0.84f
+                btnCompass.visibility = View.INVISIBLE
+                return
+            }
+            btnCompass.animate()
+                .alpha(0f)
+                .scaleX(0.84f)
+                .scaleY(0.84f)
+                .setDuration(150L)
+                .setInterpolator(UiAnimations.FAST_EXIT)
+                .withLayer()
+                .withEndAction {
+                    if (!isCompassVisible) btnCompass.visibility = View.INVISIBLE
+                }
+                .start()
+        }
+    }
+
     /**
      * 120fps GPU-only Full-Screen Clean Map Mode:
      * Top controls glide UP, right-side arc + FAB glide RIGHT, bottom dock + scale bar glide DOWN.
@@ -881,6 +965,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (activeNavRoute == null) {
                 UiAnimations.animateChromeSlide(topCluster, hide = false, shiftY = topShift, durationMs = dur)
+                map?.cameraPosition?.bearing?.let { updateCompassForBearing(it, animate = false) }
             }
             UiAnimations.animateChromeSlide(rightChromeColumn, hide = false, shiftX = rightShift, durationMs = dur)
             UiAnimations.animateChromeSlide(leftBottomColumn, hide = false, shiftY = bottomShift, durationMs = dur)
@@ -963,17 +1048,17 @@ class MainActivity : AppCompatActivity() {
         val scaleColor = Color.parseColor(if (darkMapBg) "#F4F4F0" else "#1C1E1B")
         val scaleHaloColor = Color.parseColor(if (darkMapBg) "#CC161715" else "#E6F9F9F7")
 
-        // Frosted 52dp circular utility controls (#E8F8F8F5 Light / #E3212320 Dark + directional downward shadow)
-        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 26f, 5f)
-        DesignSystem.applyFloatingControl(this, btnCompass, p, 26f, 5f)
-        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 26f, 5f)
-        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 26f, 5f)
+        // Opaque milky-matte 52dp circular utility controls (#F3F5F1 Light / #222421 Dark + directional downward shadows)
+        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 26f, 6f)
+        DesignSystem.applyFloatingControl(this, btnCompass, p, 26f, 6f)
+        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 26f, 6f)
+        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 26f, 6f)
         DesignSystem.applyFloatingControl(
             this,
             btnLasso,
             p,
             26f,
-            5f,
+            6f,
             activeFillColor = if (isLassoMode) p.accentPrimary else null
         )
         DesignSystem.applyFloatingControl(
@@ -981,22 +1066,21 @@ class MainActivity : AppCompatActivity() {
             btnRuler,
             p,
             26f,
-            5f,
+            6f,
             activeFillColor = if (isRulerMode) p.accentPrimary else null
         )
-        DesignSystem.applyFloatingControl(this, btnImport, p, 26f, 5f)
 
-        // Custom frosted compass dial with apricot-orange North tick (#F0651F)
+        // Custom milky-matte compass dial with apricot-orange North tick (#F0651F)
         btnCompass.setImageResource(if (night) R.drawable.ic_compass_dial_dark else R.drawable.ic_compass_dial)
         btnCompass.clearColorFilter()
 
-        // Option B: Slim Frosted Vertical Zoom Pill (46dp wide, 23dp radius)
+        // Option B: Slim Milky-Matte Vertical Zoom Pill (46dp wide, 23dp radius)
         DesignSystem.applyFloatingSurface(
             this,
             zoomPillContainer,
             p,
             radiusDp = 23f,
-            elevationDp = 5f,
+            elevationDp = 6f,
             fillOverride = p.surfaceFrosted,
             strokeOverride = p.floatingBorder
         )
@@ -1006,13 +1090,13 @@ class MainActivity : AppCompatActivity() {
         UiAnimations.attachSnappyPress(btnZoomIn, 0.90f)
         UiAnimations.attachSnappyPress(btnZoomOut, 0.90f)
 
-        // Two-Layer Floating Bottom Navigation Bar: Frosted Outer Tray (62dp, 31dp radius, 6dp padding) + 4 Neutral White Inner Pills
+        // Two-Layer Floating Bottom Navigation Bar: Opaque Milky-Matte Outer Tray + 4 Crisp White Inner Pills
         DesignSystem.applyFloatingSurface(
             this,
             bottomNavDock,
             p,
             radiusDp = 31f,
-            elevationDp = 8f,
+            elevationDp = 9f,
             fillOverride = p.surfaceFrostedTray,
             strokeOverride = p.floatingBorder
         )
@@ -1031,7 +1115,6 @@ class MainActivity : AppCompatActivity() {
         updateSentToggleUi()
         btnZoomIn.setColorFilter(iconTint)
         btnZoomOut.setColorFilter(iconTint)
-        btnImport.setColorFilter(p.accentPrimary)
         updateFilterIconTint()
         updateLocationIconTint()
         btnSyncStatus.setColorFilter(if (isLiveConnected) p.accentPrimary else p.amber)
@@ -1134,8 +1217,9 @@ class MainActivity : AppCompatActivity() {
             DesignSystem.showActionBottomSheet(
                 ctx = this,
                 palette = p,
-                title = "Map Style",
-                subtitle = "Choose cartography style",
+                title = "Map Layers",
+                subtitle = "Style and visual map overlays",
+                dimAmount = 0.18f,
                 actions = MapStyleMode.entries.map { mode ->
                     SheetActionItem(
                         title = mode.label,
@@ -1151,24 +1235,78 @@ class MainActivity : AppCompatActivity() {
                             Toast.makeText(this, mode.label, Toast.LENGTH_SHORT).show()
                         }
                     }
+                },
+                extraContent = { listCol ->
+                    listCol.addView(DesignSystem.createSectionHeader(this, "Visual Overlays", p).apply {
+                        setPadding(dp(4), dp(14), dp(4), dp(8))
+                    })
+                    val overlayCard = DesignSystem.createGroupedCard(
+                        this,
+                        p,
+                        radiusDp = 18f,
+                        paddingHDp = 14,
+                        paddingVDp = 4,
+                        bottomMarginDp = 4
+                    )
+                    overlayCard.addView(
+                        DesignSystem.createSettingsSwitchRow(
+                            ctx = this,
+                            title = "Mountain Hillshading",
+                            subtitle = "Organic terrain relief shading",
+                            checked = DevicePrefs.isHillshadeEnabled(this),
+                            palette = p
+                        ) { enabled ->
+                            DevicePrefs.setHillshadeEnabled(this, enabled)
+                            map?.style?.let { st -> if (st.isFullyLoaded) applyHillshadeSettings(st) }
+                        }
+                    )
+                    overlayCard.addView(
+                        DesignSystem.createSettingsSwitchRow(
+                            ctx = this,
+                            title = "3D Buildings",
+                            subtitle = "Extruded building footprints in urban areas",
+                            checked = DevicePrefs.is3dBuildingsEnabled(this),
+                            palette = p
+                        ) { enabled ->
+                            DevicePrefs.set3dBuildingsEnabled(this, enabled)
+                            map?.style?.let { st -> if (st.isFullyLoaded) apply3dBuildingsToggle(st) }
+                        }
+                    )
+                    overlayCard.addView(
+                        DesignSystem.createSettingsSwitchRow(
+                            ctx = this,
+                            title = "Elevation Contour Lines",
+                            subtitle = "100 m / 500 m / 1000 m contour lines & labels",
+                            checked = DevicePrefs.isContoursEnabled(this),
+                            palette = p
+                        ) { enabled ->
+                            DevicePrefs.setContoursEnabled(this, enabled)
+                            val m = map
+                            val st = m?.style
+                            if (st != null && st.isFullyLoaded) {
+                                contourManager.attachLayers(st, isDarkMapUi(), enabled)
+                                contourManager.setVisible(st, enabled)
+                                if (enabled) contourManager.scheduleUpdate(m, true, mapStyleMode == MapStyleMode.VECTOR)
+                            }
+                        }
+                    )
+                    listCol.addView(overlayCard)
                 }
             )
         }
 
         btnStatusFilter.setOnClickListener { showMultiStatusFilterDialog() }
         btnSentToggle.setOnClickListener {
-            hideSentPins = !hideSentPins
-            DevicePrefs.setHideSentPins(this, hideSentPins)
+            // Tapping the active-filter pill clears active status / unsent filters cleanly back to All Pins
+            visibleStatuses.clear()
+            visibleStatuses.addAll(ALL_STATUSES)
+            DevicePrefs.setVisibleStatuses(this, visibleStatuses)
+            hideSentPins = false
+            DevicePrefs.setHideSentPins(this, false)
             updateSentToggleUi()
-            UiAnimations.animateScalePop(btnSentToggle, 0.92f, 160L)
+            updateFilterIconTint()
             renderMapData()
-            val sentCount = activeLocalSentCount()
-            val msg = if (hideSentPins) {
-                if (sentCount > 0) "Showing unsent pins only ($sentCount sent hidden)" else "Unsent Only mode (no pins marked sent yet)"
-            } else {
-                "Showing all pins"
-            }
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Showing all pins", Toast.LENGTH_SHORT).show()
         }
         btnLasso.setOnClickListener { toggleLassoMode(!isLassoMode) }
         btnLassoModeToggle.setOnClickListener { toggleLassoMoveMapMode() }
@@ -1194,8 +1332,6 @@ class MainActivity : AppCompatActivity() {
         btnZoomOut.setOnClickListener {
             map?.let { m -> m.animateCamera(CameraUpdateFactory.zoomTo((m.cameraPosition.zoom - 1.0).coerceAtLeast(3.0)), 250) }
         }
-
-        btnImport.setOnClickListener { kmlPicker.launch(arrayOf("*/*")) }
 
         btnLocate.setOnClickListener {
             if (!hasLocationPermission()) {
@@ -1296,6 +1432,7 @@ class MainActivity : AppCompatActivity() {
             updatingUi = false
             DevicePrefs.setVisibleStatuses(this, visibleStatuses)
             updateFilterIconTint()
+            updateSentToggleUi()
             renderMapData()
         }
 
@@ -1415,8 +1552,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         UiAnimations.animateSheetContentReveal(sheetContent)
-        showInScreenSheet(peekDp = 420)
-        sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        showInScreenSheet(peekDp = 420, expandToFit = true)
     }
 
     private fun setupBackNavigation() {
@@ -1690,9 +1826,12 @@ class MainActivity : AppCompatActivity() {
                     val distText = currentLocation?.let {
                         "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)} away"
                     } ?: ""
-                    val subLine = listOf(bestSub, distText).filter { it.isNotBlank() }.joinToString(" • ")
-                    tappedSubView?.text = subLine
-                    tappedSubView?.visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
+                    tappedSubView?.text = bestSub
+                    tappedSubView?.visibility = if (bestSub.isNotBlank()) View.VISIBLE else View.GONE
+                    tappedDistView?.text = if (distText.isNotBlank()) {
+                        if (bestSub.isNotBlank()) " • $distText" else distText
+                    } else ""
+                    tappedDistView?.visibility = if (distText.isNotBlank()) View.VISIBLE else View.GONE
                 }
             }
         }
@@ -1900,20 +2039,6 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // Unified solid borderless sky-blue selection dot immediately BELOW bookmark pins
-        if (style.getSource(SELECTED_SOURCE) == null) {
-            style.addSource(GeoJsonSource(SELECTED_SOURCE))
-            style.addLayer(
-                CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
-                    PropertyFactory.circleColor("#5AA8E8"),
-                    PropertyFactory.circleOpacity(0.90f),
-                    PropertyFactory.circleRadius(15.5f),
-                    PropertyFactory.circleStrokeWidth(0f),
-                    PropertyFactory.circleStrokeOpacity(0f)
-                )
-            )
-        }
-
         if (style.getLayer(PINS_LAYER) == null && style.getSource(PINS_SOURCE) != null) {
             style.addLayer(
                 SymbolLayer(PINS_LAYER, PINS_SOURCE).withProperties(
@@ -1925,6 +2050,23 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.iconIgnorePlacement(true)
                 )
             )
+        }
+
+        // Unified solid borderless sky-blue selection dot strictly BELOW bookmark pins
+        if (style.getSource(SELECTED_SOURCE) == null) {
+            style.addSource(GeoJsonSource(SELECTED_SOURCE))
+            val haloLayer = CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
+                PropertyFactory.circleColor("#5AA8E8"),
+                PropertyFactory.circleOpacity(0.90f),
+                PropertyFactory.circleRadius(15.5f),
+                PropertyFactory.circleStrokeWidth(0f),
+                PropertyFactory.circleStrokeOpacity(0f)
+            )
+            if (style.getLayer(PINS_LAYER) != null) {
+                style.addLayerBelow(haloLayer, PINS_LAYER)
+            } else {
+                style.addLayer(haloLayer)
+            }
         }
 
         // Ruler Measurement Layers (Line + Numbered Waypoints)
@@ -2255,16 +2397,36 @@ class MainActivity : AppCompatActivity() {
     // --- Local-Only Sent Pin Tracking & Draw-a-Circle (Lasso) Selection ---
 
     private fun updateSentToggleUi() {
+        if (!::btnSentToggle.isInitialized) return
         val p = currentPalette()
-        if (hideSentPins) {
-            btnSentToggle.text = "Unsent Only"
-            btnSentToggle.setTextColor(Color.WHITE)
-            DesignSystem.applyFloatingControl(this, btnSentToggle, p, 24f, 4f, activeFillColor = p.accentPrimary)
-        } else {
-            btnSentToggle.text = "All Pins"
-            btnSentToggle.setTextColor(p.textPrimary)
-            DesignSystem.applyFloatingControl(this, btnSentToggle, p, 24f, 4f)
+        val hasStatusFilter = !visibleStatuses.containsAll(ALL_STATUSES)
+        val hasAnyFilter = hasStatusFilter || hideSentPins
+        if (!hasAnyFilter) {
+            btnSentToggle.visibility = View.GONE
+            updateFilterIconTint()
+            return
         }
+        val parts = mutableListOf<String>()
+        if (hasStatusFilter) {
+            if (visibleStatuses.isEmpty()) {
+                parts.add("Hidden")
+            } else {
+                if ("pending" in visibleStatuses) parts.add(AppStrings.pending(this))
+                if ("done" in visibleStatuses) parts.add(AppStrings.done(this))
+                if ("issue" in visibleStatuses) parts.add(AppStrings.issue(this))
+            }
+        }
+        if (hideSentPins) parts.add("Unsent")
+        val pillColor = when {
+            visibleStatuses == setOf("pending") && !hideSentPins -> p.amber
+            visibleStatuses == setOf("done") && !hideSentPins -> p.green
+            visibleStatuses == setOf("issue") && !hideSentPins -> p.red
+            else -> p.accentPrimary
+        }
+        btnSentToggle.text = "${parts.joinToString(" • ")} ×"
+        btnSentToggle.setTextColor(Color.WHITE)
+        DesignSystem.applyFloatingControl(this, btnSentToggle, p, 22f, 6f, activeFillColor = pillColor)
+        btnSentToggle.visibility = View.VISIBLE
         updateFilterIconTint()
     }
 
@@ -2590,7 +2752,10 @@ class MainActivity : AppCompatActivity() {
         selectedPinId = pin.id
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
         renderSelectedMarker()
-        map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
+        // Only re-sort PINS_SOURCE when stacked pins share this coordinate; avoids single-pin tile flicker behind the blue halo
+        if (findExactStackedPins(pin).size > 1) {
+            map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
+        }
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
         val targetZoom = if (zoomIfFar) currentZoom.coerceAtLeast(15.8) else currentZoom
         centerUpperHalf(LatLng(pin.lat, pin.lng), targetZoom)
@@ -2605,6 +2770,7 @@ class MainActivity : AppCompatActivity() {
         activeTappedLatLng = null
         tappedTitleView = null
         tappedSubView = null
+        tappedDistView = null
         if (hadSelection) renderSelectedMarker()
     }
 
@@ -2628,16 +2794,58 @@ class MainActivity : AppCompatActivity() {
         m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 240)
     }
 
-    private fun showInScreenSheet(peekDp: Int = 280) {
+    private fun showInScreenSheet(
+        peekDp: Int = 280,
+        inPlace: Boolean = false,
+        expandToFit: Boolean = false
+    ) {
         activeSheetPeekDp = peekDp
-        bottomDock.translationY = 0f
-        UiAnimations.fadeHide(bottomDock, 120L)
-        val maxPeek = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(dp(180))
-        sheetBehavior.peekHeight = minOf(dp(peekDp) + navBarInsetBottom, maxPeek)
-        sheetBehavior.state = BottomSheetBehavior.STATE_COLLAPSED
+        val bottomClearance = maxOf(navBarInsetBottom, imeInsetBottom)
+        val screenH = resources.displayMetrics.heightPixels
+        val targetPeek = if (expandToFit) {
+            val availW = (resources.displayMetrics.widthPixels - sideInsetLeft - sideInsetRight).coerceAtLeast(dp(240))
+            inScreenSheet.measure(
+                View.MeasureSpec.makeMeasureSpec(availW, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            val measured = inScreenSheet.measuredHeight.coerceAtLeast(dp(peekDp) + bottomClearance)
+            minOf(measured, (screenH * 0.78f).toInt().coerceAtLeast(dp(240)))
+        } else {
+            val maxPeek = (screenH * 0.68f).toInt().coerceAtLeast(dp(200))
+            minOf(dp(peekDp) + bottomClearance, maxPeek)
+        }
+
+        val alreadyOpen = sheetBehavior.state == BottomSheetBehavior.STATE_COLLAPSED ||
+            sheetBehavior.state == BottomSheetBehavior.STATE_EXPANDED
+        if (alreadyOpen) {
+            isSwappingSheetInPlace = true
+            if (::sheetScrollView.isInitialized && !inPlace) sheetScrollView.scrollTo(0, 0)
+            sheetBehavior.setPeekHeight(targetPeek, false)
+            if (expandToFit && sheetBehavior.state != BottomSheetBehavior.STATE_EXPANDED) {
+                sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+            }
+            inScreenSheet.post { isSwappingSheetInPlace = false }
+        } else {
+            bottomDock.translationY = 0f
+            UiAnimations.fadeHide(bottomDock, 120L)
+            if (::sheetScrollView.isInitialized) sheetScrollView.scrollTo(0, 0)
+            sheetBehavior.setPeekHeight(targetPeek, false)
+            inScreenSheet.requestLayout()
+            val openToken = ++sheetOpenSeq
+            inScreenSheet.post {
+                if (!isFinishing && !isDestroyed && openToken == sheetOpenSeq) {
+                    sheetBehavior.state = if (expandToFit) {
+                        BottomSheetBehavior.STATE_EXPANDED
+                    } else {
+                        BottomSheetBehavior.STATE_COLLAPSED
+                    }
+                }
+            }
+        }
     }
 
     private fun hideInScreenSheet() {
+        sheetOpenSeq++
         sheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
     }
 
@@ -2761,7 +2969,7 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(2)
-                bottomMargin = dp(16)
+                bottomMargin = dp(8)
             }
         }
         val pinBadge = DesignSystem.createHeaderBadge(
@@ -2786,7 +2994,7 @@ class MainActivity : AppCompatActivity() {
         val titleCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(4)
+                marginEnd = dp(8)
             }
         }
         titleCol.addView(TextView(this).apply {
@@ -2797,35 +3005,90 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
             maxLines = 2
-            ellipsize = TextUtils.TruncateAt.MIDDLE
+            ellipsize = TextUtils.TruncateAt.END
         })
-        titleCol.addView(TextView(this).apply {
-            text = "$layerName$distText"
+        val subRow = object : LinearLayout(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                if (childCount == 2 && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+                    val avail = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+                    val distChild = getChildAt(1)
+                    if (distChild.visibility == View.VISIBLE) {
+                        distChild.measure(MeasureSpec.makeMeasureSpec(avail, MeasureSpec.AT_MOST), heightMeasureSpec)
+                        (getChildAt(0) as? TextView)?.maxWidth = (avail - distChild.measuredWidth).coerceAtLeast(dp(56))
+                    } else {
+                        (getChildAt(0) as? TextView)?.maxWidth = avail
+                    }
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        subRow.addView(TextView(this).apply {
+            text = layerName
             textSize = 12.5f
             setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
             maxLines = 1
-            ellipsize = TextUtils.TruncateAt.MIDDLE
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, dp(2), 0, 0)
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         })
-        val coordRow = LinearLayout(this).apply {
+        if (distText.isNotBlank()) {
+            subRow.addView(TextView(this).apply {
+                text = distText
+                textSize = 12.5f
+                setTextColor(p.accentPrimary)
+                setTypeface(null, Typeface.BOLD)
+                maxLines = 1
+                DesignSystem.applyTabularNumerals(this)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            })
+        }
+        titleCol.addView(subRow)
+        headerRow.addView(titleCol)
+        headerRow.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
+        sheetContent.addView(headerRow)
+
+        // Full-width Coordinates + Unclipped Copy / Star / Share Utility Row
+        val coordActionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
         }
-        coordRow.addView(TextView(this).apply {
+        coordActionRow.addView(TextView(this).apply {
             text = "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}"
-            textSize = 12.5f
+            textSize = 13f
             setTextColor(txtSub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             DesignSystem.applyTabularNumerals(this)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
         })
-        coordRow.addView(ImageButton(this).apply {
+        coordActionRow.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_copy)
             setColorFilter(p.accentPrimary)
             contentDescription = "Copy Coordinates"
-            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginStart = dp(4) }
-            setPadding(dp(5), dp(5), dp(5), dp(5))
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(2) }
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             UiAnimations.attachSnappyPress(this, 0.90f)
@@ -2833,14 +3096,13 @@ class MainActivity : AppCompatActivity() {
                 copyToClipboard("GPS", "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}")
             }
         })
-        titleCol.addView(coordRow)
-        headerRow.addView(titleCol)
 
         var starred = DevicePrefs.isBookmarked(this, pin.id)
-        headerRow.addView(ImageButton(this).apply {
+        coordActionRow.addView(ImageButton(this).apply {
             setImageResource(if (starred) R.drawable.ic_star_filled else R.drawable.ic_star_outline)
             if (!starred) setColorFilter(p.iconMuted)
-            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
+            contentDescription = if (starred) "Unstar Pin" else "Star Pin"
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(2) }
             setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
@@ -2857,9 +3119,10 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        headerRow.addView(ImageButton(this).apply {
+        coordActionRow.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_share)
             setColorFilter(p.iconTint)
+            contentDescription = "Share Pin"
             layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
             setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -2873,9 +3136,7 @@ class MainActivity : AppCompatActivity() {
                 }, "Share TerraSync Pin"))
             }
         })
-
-        headerRow.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
-        sheetContent.addView(headerRow)
+        sheetContent.addView(coordActionRow)
 
         // 3. Active Status Banner (Issue / Done note)
         if (pinStatus == PinStatus.ISSUE && pin.issueReason.isNotBlank()) {
@@ -3336,8 +3597,8 @@ class MainActivity : AppCompatActivity() {
             UiAnimations.animateSheetContentReveal(sheetContent)
         }
 
-        val peekHeight = if (stackedPins.size > 1) 355 else 315
-        showInScreenSheet(peekDp = peekHeight)
+        val peekHeight = if (stackedPins.size > 1) 405 else 355
+        showInScreenSheet(peekDp = peekHeight, inPlace = animateSwap)
     }
 
     // --- Tap-Anywhere Place Card (With Route To & Route From) ---
@@ -3363,7 +3624,7 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(2)
-                bottomMargin = dp(16)
+                bottomMargin = dp(8)
             }
         }
         header.addView(
@@ -3375,51 +3636,110 @@ class MainActivity : AppCompatActivity() {
         val distText = currentLocation?.let {
             "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, lat, lng), unit)} away"
         } ?: ""
-        val subLine = listOf(subtitle, distText).filter { it.isNotBlank() }.joinToString(" • ")
 
         val titleCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(4)
+                marginEnd = dp(8)
             }
         }
         tappedTitleView = TextView(this).apply {
             text = title
-            textSize = 20f
+            textSize = 19.5f
             letterSpacing = -0.01f
+            setLineSpacing(0f, 1.12f)
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
         titleCol.addView(tappedTitleView)
+        val tappedSubRow = object : LinearLayout(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                if (childCount == 2 && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+                    val avail = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+                    val distChild = getChildAt(1)
+                    if (distChild.visibility == View.VISIBLE) {
+                        distChild.measure(MeasureSpec.makeMeasureSpec(avail, MeasureSpec.AT_MOST), heightMeasureSpec)
+                        (getChildAt(0) as? TextView)?.maxWidth = (avail - distChild.measuredWidth).coerceAtLeast(dp(56))
+                    } else {
+                        (getChildAt(0) as? TextView)?.maxWidth = avail
+                    }
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
         tappedSubView = TextView(this).apply {
-            text = subLine
+            text = subtitle
             textSize = 12.5f
             setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, dp(2), 0, 0)
-            visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            visibility = if (subtitle.isNotBlank()) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         }
-        titleCol.addView(tappedSubView)
+        tappedDistView = TextView(this).apply {
+            text = if (distText.isNotBlank()) {
+                if (subtitle.isNotBlank()) " • $distText" else distText
+            } else ""
+            textSize = 12.5f
+            setTextColor(p.accentPrimary)
+            setTypeface(null, Typeface.BOLD)
+            maxLines = 1
+            DesignSystem.applyTabularNumerals(this)
+            visibility = if (distText.isNotBlank()) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        tappedSubRow.addView(tappedSubView)
+        tappedSubRow.addView(tappedDistView)
+        titleCol.addView(tappedSubRow)
+        header.addView(titleCol)
+        header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
+        sheetContent.addView(header)
+
+        // Full-width Coordinates + Unclipped Copy & Share Utility Row
         val tappedCoordRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
         }
         tappedCoordRow.addView(TextView(this).apply {
             text = "${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}"
-            textSize = 12.5f
+            textSize = 13f
             setTextColor(txtSub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             DesignSystem.applyTabularNumerals(this)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
         })
         tappedCoordRow.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_copy)
             setColorFilter(p.accentPrimary)
             contentDescription = "Copy Coordinates"
-            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginStart = dp(4) }
-            setPadding(dp(5), dp(5), dp(5), dp(5))
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(2) }
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             UiAnimations.attachSnappyPress(this, 0.90f)
@@ -3427,13 +3747,11 @@ class MainActivity : AppCompatActivity() {
                 copyToClipboard("GPS", "${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}")
             }
         })
-        titleCol.addView(tappedCoordRow)
-        header.addView(titleCol)
-
-        header.addView(ImageButton(this).apply {
+        tappedCoordRow.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_share)
             setColorFilter(p.iconTint)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            contentDescription = "Share Place"
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
             setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
@@ -3446,8 +3764,7 @@ class MainActivity : AppCompatActivity() {
                 }, "Share TerraSync Place"))
             }
         })
-        header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
-        sheetContent.addView(header)
+        sheetContent.addView(tappedCoordRow)
 
         val routeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3551,7 +3868,7 @@ class MainActivity : AppCompatActivity() {
         sheetContent.addView(btnRow)
 
         UiAnimations.animateSheetContentReveal(sheetContent)
-        showInScreenSheet(peekDp = 285)
+        showInScreenSheet(peekDp = 315)
     }
 
     // --- Route Preview (Route From + Car / Bicycle / Walk Modes) & Active Navigation ---
@@ -3622,48 +3939,70 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun travelModeIconRes(mode: TravelMode): Int = when (mode) {
+        TravelMode.CAR -> R.drawable.ic_mode_car
+        TravelMode.WALKING -> R.drawable.ic_mode_walk
+        TravelMode.BICYCLE -> R.drawable.ic_mode_bike
+    }
+
     private fun showRoutePreviewCard(route: NavRoute, startLabel: String, destLat: Double, destLng: Double, destTitle: String) {
         sheetQuickSelectPinId = null
         val p = currentPalette()
-        val night = p.isDark
         val txtPrimary = p.textPrimary
         val txtSub = p.textSecondary
-        val chipBg = p.chipSurface
 
         sheetContent.removeAllViews()
 
         val etaMin = (route.totalDurationSeconds / 60.0).toInt().coerceAtLeast(1)
         val distStr = formatDistanceShort(route.totalDistanceMeters, DevicePrefs.getSpeedUnit(this))
-        val modeColor = Color.parseColor(route.mode.routeColorHex)
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+            }
         }
         val titleCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
         }
         val metaRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        metaRow.addView(TextView(this).apply {
-            text = "${route.mode.icon} $etaMin min"
-            textSize = 15.5f
-            setTextColor(Color.WHITE)
-            setTypeface(null, Typeface.BOLD)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(dp(10), dp(4), dp(10), dp(4))
+        val etaBadge = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(11), dp(5), dp(12), dp(5))
             background = GradientDrawable().apply {
-                setColor(modeColor)
-                cornerRadius = dp(10).toFloat()
+                setColor(p.accentPrimary)
+                cornerRadius = dp(18).toFloat()
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(8) }
+            ).apply { marginEnd = dp(10) }
+        }
+        etaBadge.addView(ImageView(this).apply {
+            setImageResource(travelModeIconRes(route.mode))
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(17), dp(17)).apply { marginEnd = dp(6) }
         })
+        etaBadge.addView(TextView(this).apply {
+            text = "$etaMin min"
+            textSize = 15f
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            DesignSystem.applyTabularNumerals(this)
+        })
+        metaRow.addView(etaBadge)
         metaRow.addView(TextView(this).apply {
             text = distStr
             textSize = 15.5f
@@ -3672,24 +4011,24 @@ class MainActivity : AppCompatActivity() {
             DesignSystem.applyTabularNumerals(this)
         })
         val engTextColor = when {
-            route.engineLabel.contains("Offline", true) -> p.green
-            route.engineLabel.contains("Valhalla", true) -> p.accent
+            route.engineLabel.contains("Offline", true) -> p.accentPrimary
+            route.engineLabel.contains("Valhalla", true) -> p.accentPrimary
             else -> p.textSecondary
         }
         val engBgColor = when {
-            route.engineLabel.contains("Offline", true) -> p.greenSoft
-            route.engineLabel.contains("Valhalla", true) -> p.accentSoft
-            else -> p.chipSurface
+            route.engineLabel.contains("Offline", true) -> p.accentPrimarySoft
+            route.engineLabel.contains("Valhalla", true) -> p.accentPrimarySoft
+            else -> p.surfaceTonal
         }
         metaRow.addView(TextView(this).apply {
             text = route.engineLabel
             textSize = 11f
             setTextColor(engTextColor)
             setTypeface(null, Typeface.BOLD)
-            setPadding(dp(8), dp(3), dp(8), dp(3))
+            setPadding(dp(9), dp(3), dp(9), dp(3))
             background = GradientDrawable().apply {
                 setColor(engBgColor)
-                cornerRadius = dp(8).toFloat()
+                cornerRadius = dp(10).toFloat()
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -3699,11 +4038,11 @@ class MainActivity : AppCompatActivity() {
         titleCol.addView(metaRow)
         titleCol.addView(TextView(this).apply {
             text = "$startLabel → $destTitle"
-            textSize = 12.5f
+            textSize = 13f
             setTextColor(txtSub)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.MIDDLE
-            setPadding(0, dp(4), 0, 0)
+            setPadding(0, dp(6), 0, 0)
         })
         header.addView(titleCol)
 
@@ -3715,7 +4054,7 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(header)
 
-        // Travel Mode Switcher (Car / Bicycle / Walk)
+        // Travel Mode Switcher (Car / Walk / Bicycle) — warm espresso/stone pills with crisp outlined vectors
         val modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             isBaselineAligned = false
@@ -3724,15 +4063,18 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(10)
-                bottomMargin = dp(10)
+                topMargin = dp(14)
+                bottomMargin = dp(12)
             }
         }
         TravelMode.entries.forEachIndexed { idx, mode ->
             val active = mode == route.mode
+            val fgColor = if (active) p.onActionDark else p.textPrimary
+            val bgColor = if (active) p.actionDark else p.surfaceTonal
             modeRow.addView(MaterialButton(this).apply {
-                text = "${mode.icon} ${mode.label}"
-                textSize = 12.5f
+                text = mode.label
+                textSize = 13f
+                setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
                 isAllCaps = false
                 setSingleLine(true)
                 ellipsize = TextUtils.TruncateAt.END
@@ -3743,12 +4085,19 @@ class MainActivity : AppCompatActivity() {
                 minimumWidth = 0
                 minHeight = 0
                 minimumHeight = 0
-                setPadding(dp(6), 0, dp(6), 0)
-                setTextColor(if (active) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (active) Color.parseColor(mode.routeColorHex) else chipBg)
-                cornerRadius = dp(10)
-                layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
-                    if (idx < TravelMode.entries.lastIndex) marginEnd = dp(6)
+                elevation = 0f
+                stateListAnimator = null
+                setPadding(dp(8), 0, dp(10), 0)
+                setIconResource(travelModeIconRes(mode))
+                iconSize = dp(18)
+                iconPadding = dp(6)
+                iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+                iconTint = android.content.res.ColorStateList.valueOf(fgColor)
+                setTextColor(fgColor)
+                backgroundTintList = android.content.res.ColorStateList.valueOf(bgColor)
+                cornerRadius = dp(22)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                    if (idx < TravelMode.entries.lastIndex) marginEnd = dp(8)
                 }
                 UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
@@ -3762,10 +4111,16 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             isBaselineAligned = false
             gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(4)
+            }
         }
         btnRow.addView(MaterialButton(this).apply {
             text = if (routeOriginLatLng != null) "Navigate from GPS" else "Start Navigation"
-            textSize = 13.5f
+            textSize = 14f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3777,9 +4132,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(23)
+            cornerRadius = dp(24)
             DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1.4f).apply { marginEnd = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1.4f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 if (routeOriginLatLng != null) {
@@ -3792,7 +4147,7 @@ class MainActivity : AppCompatActivity() {
         })
         btnRow.addView(MaterialButton(this).apply {
             text = "External"
-            textSize = 13.5f
+            textSize = 14f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3804,9 +4159,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(23)
+            cornerRadius = dp(24)
             DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(46), 0.8f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 0.8f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 val label = Uri.encode(destTitle)
@@ -3817,7 +4172,7 @@ class MainActivity : AppCompatActivity() {
         sheetContent.addView(btnRow)
 
         UiAnimations.animateSheetContentReveal(sheetContent)
-        showInScreenSheet(peekDp = 265)
+        showInScreenSheet(peekDp = 310, inPlace = true, expandToFit = true)
     }
 
     private fun moveCameraForNavigation(loc: Location, durationMs: Int = 500) {
@@ -3975,7 +4330,6 @@ class MainActivity : AppCompatActivity() {
             bottomNavDock.visibility = View.GONE
             btnRuler.visibility = View.GONE
             btnLasso.visibility = View.GONE
-            btnImport.visibility = View.GONE
             UiAnimations.fadeShow(bottomDock, 180L)
         } else {
             UiAnimations.hideSlideTop(navBanner)
@@ -4214,10 +4568,10 @@ class MainActivity : AppCompatActivity() {
     private fun updateLocationIconTint() {
         val p = currentPalette()
         if (isFollowingGps) {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 9f, activeFillColor = p.accentPrimary)
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 10f, activeFillColor = p.accentPrimary)
             btnLocate.setColorFilter(Color.WHITE)
         } else {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 9f, activeFillColor = p.actionDark)
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 10f, activeFillColor = p.actionDark)
             btnLocate.setColorFilter(p.onActionDark)
         }
     }
@@ -7858,7 +8212,7 @@ class MainActivity : AppCompatActivity() {
                     navCard,
                     title = "Default Routing Mode",
                     subtitle = "Used for Route To previews and turn-by-turn navigation",
-                    options = TravelMode.entries.map { it.id to "${it.icon} ${it.label}" },
+                    options = TravelMode.entries.map { it.id to it.label },
                     selectedId = travelMode.id,
                     activeColor = { p.accentPrimary }
                 ) { id ->
@@ -7937,7 +8291,7 @@ class MainActivity : AppCompatActivity() {
                 addCardSwitch(
                     fieldCard,
                     title = "Quick Map Tools",
-                    subtitle = "Show All Pins filter pill, Lasso circle-select, and quick Import",
+                    subtitle = "Show Lasso circle-select tool on the map",
                     checked = DevicePrefs.isShowExtraMapTools(this)
                 ) {
                     DevicePrefs.setShowExtraMapTools(this, it)
@@ -8567,6 +8921,8 @@ class MainActivity : AppCompatActivity() {
             setHintTextColor(p.textSecondary)
             setPadding(dp(14), dp(12), dp(14), dp(12))
             minLines = 1
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             if (PinStatus.fromRaw(pin.status).key == statusKey) {
                 setText(pin.issueReason)
             }
@@ -8579,6 +8935,20 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(10) }
         }
+        fun keepReasonVisibleAboveKeyboard() {
+            if (sheetBehavior.state != BottomSheetBehavior.STATE_EXPANDED) {
+                sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+            }
+            sheetScrollView.postDelayed({
+                if (!isFinishing && !isDestroyed) {
+                    sheetScrollView.fullScroll(View.FOCUS_DOWN)
+                }
+            }, 140L)
+        }
+        etReason.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) keepReasonVisibleAboveKeyboard()
+        }
+        etReason.setOnClickListener { keepReasonVisibleAboveKeyboard() }
 
         var committed = false
         fun commitSelection(noteText: String) {
@@ -8695,8 +9065,7 @@ class MainActivity : AppCompatActivity() {
         sheetContent.addView(btnRow)
 
         UiAnimations.animateContentSwap(sheetContent)
-        showInScreenSheet(peekDp = 420)
-        sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+        showInScreenSheet(peekDp = 420, inPlace = true, expandToFit = true)
     }
 
     private fun showEditPinDialog(pin: PinItem) {
@@ -9155,9 +9524,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyExtraMapToolsVisibility() {
         val show = DevicePrefs.isShowExtraMapTools(this)
         val vis = if (show) View.VISIBLE else View.GONE
-        if (::btnSentToggle.isInitialized) btnSentToggle.visibility = vis
         if (::btnLasso.isInitialized) btnLasso.visibility = vis
-        if (::btnImport.isInitialized) btnImport.visibility = vis
         if (!show && isLassoMode) toggleLassoMode(false)
     }
 
@@ -9470,8 +9837,8 @@ class MainActivity : AppCompatActivity() {
         val compact = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val utilSize = dp(if (compact) 44 else 52)
         val locSize = dp(if (compact) 56 else 66)
-        val utilPad = dp(if (compact) 11 else 13)
-        val locPad = dp(if (compact) 16 else 19)
+        val utilPad = dp(if (compact) 9 else 11)
+        val locPad = dp(if (compact) 14 else 17)
         val arcBox = dp(if (compact) 118 else 138)
         val arcCardOffset = dp(if (compact) 66 else 78)
         val arcDiagOffset = dp(if (compact) 50 else 59)
@@ -9493,13 +9860,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         sizeCircle(btnSyncStatus, utilSize, utilPad)
-        if (::btnCompass.isInitialized) sizeCircle(btnCompass, utilSize, dp(if (compact) 9 else 11))
+        if (::btnCompass.isInitialized) sizeCircle(btnCompass, utilSize, dp(if (compact) 8 else 9))
         sizeCircle(btnStyleToggle, utilSize, utilPad, marginEndPx = 0, marginBottomPx = arcCardOffset)
         sizeCircle(btnRuler, utilSize, utilPad, marginEndPx = arcDiagOffset, marginBottomPx = arcDiagOffset)
         sizeCircle(btnStatusFilter, utilSize, utilPad, marginEndPx = arcCardOffset, marginBottomPx = 0)
         sizeCircle(btnLocate, locSize, locPad, marginEndPx = 0, marginBottomPx = 0)
         sizeCircle(btnLasso, utilSize, utilPad, marginBottomPx = dp(if (compact) 6 else 10))
-        sizeCircle(btnImport, utilSize, utilPad, marginBottomPx = dp(if (compact) 6 else 10))
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
