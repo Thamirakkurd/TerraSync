@@ -18,12 +18,14 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
+import kotlin.math.roundToLong
 import kotlin.math.sinh
 import kotlin.math.tan
 
@@ -49,6 +51,12 @@ class ContourOverlayManager {
     private data class TileGrid(val z: Int, val x: Int, val y: Int, val n: Int, val elev: FloatArray)
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val contourExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "terrasync-contours").apply {
+            priority = Thread.MIN_PRIORITY
+            isDaemon = true
+        }
+    }
     private val tileCache = LruCache<String, TileGrid>(18)
     private val seq = AtomicInteger(0)
     private var pendingRunnable: Runnable? = null
@@ -206,7 +214,7 @@ class ContourOverlayManager {
         if (vpKey == lastViewportKey) return
 
         val mySeq = seq.incrementAndGet()
-        RoutingEngine.ioExecutor.execute {
+        contourExecutor.execute {
             if (seq.get() != mySeq) return@execute
             val features = ArrayList<Feature>(256)
             for ((z, x, y) in selectedTiles) {
@@ -218,10 +226,12 @@ class ContourOverlayManager {
             val fc = FeatureCollection.fromFeatures(features)
             mainHandler.post {
                 if (seq.get() != mySeq) return@post
-                val curStyle = map.style ?: return@post
-                if (!curStyle.isFullyLoaded) return@post
-                lastViewportKey = vpKey
-                curStyle.getSourceAs<GeoJsonSource>(CONTOURS_SOURCE)?.setGeoJson(fc)
+                runCatching {
+                    val curStyle = map.style ?: return@post
+                    if (!curStyle.isFullyLoaded) return@post
+                    lastViewportKey = vpKey
+                    curStyle.getSourceAs<GeoJsonSource>(CONTOURS_SOURCE)?.setGeoJson(fc)
+                }
             }
         }
     }
@@ -245,13 +255,16 @@ class ContourOverlayManager {
             val w = bmp.width
             val h = bmp.height
             if (w <= 0 || h <= 0) return null
+            val pixels = IntArray(w * h)
+            bmp.getPixels(pixels, 0, w, 0, 0, w, h)
             val n = GRID_N
             val elev = FloatArray((n + 1) * (n + 1))
             for (gy in 0..n) {
                 val py = ((gy * (h - 1)) / n).coerceIn(0, h - 1)
+                val rowOff = py * w
                 for (gx in 0..n) {
                     val px = ((gx * (w - 1)) / n).coerceIn(0, w - 1)
-                    val pixel = bmp.getPixel(px, py)
+                    val pixel = pixels[rowOff + px]
                     val r = (pixel shr 16) and 0xFF
                     val g = (pixel shr 8) and 0xFF
                     val b = pixel and 0xFF
@@ -302,8 +315,8 @@ class ContourOverlayManager {
 
         // Quantized key to stitch adjacent segments into clean polylines for smooth line labels
         fun ptKey(lng: Double, lat: Double): Long {
-            val qx = (lng * 100000.0).toLong()
-            val qy = (lat * 100000.0).toLong()
+            val qx = (lng * 100000.0).roundToLong()
+            val qy = (lat * 100000.0).roundToLong()
             return (qx shl 32) xor (qy and 0xFFFFFFFFL)
         }
 

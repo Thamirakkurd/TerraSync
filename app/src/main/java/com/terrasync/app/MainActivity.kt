@@ -129,6 +129,15 @@ class MainActivity : AppCompatActivity() {
             "No Bill"
         )
 
+        private val SCALE_STEPS_METRIC = doubleArrayOf(
+            5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
+            10000.0, 20000.0, 50000.0, 100000.0, 200000.0
+        )
+        private val SCALE_STEPS_IMPERIAL = doubleArrayOf(
+            20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2640.0, 5280.0, 10560.0,
+            26400.0, 52800.0, 105600.0, 264000.0
+        )
+
         private const val STYLE_SATELLITE = """
         {
           "version": 8,
@@ -239,6 +248,12 @@ class MainActivity : AppCompatActivity() {
     private var layers: List<LayerItem> = emptyList()
     private var pins: List<PinItem> = emptyList()
     private var tracks: List<TrackItem> = emptyList()
+    private var pinById: Map<String, PinItem> = emptyMap()
+    private var layerById: Map<String, LayerItem> = emptyMap()
+    private var pinsByLayerId: Map<String, List<PinItem>> = emptyMap()
+    private var tracksByLayerId: Map<String, List<TrackItem>> = emptyMap()
+    private var dataVersion: Long = 0L
+    private val trackPointCache = HashMap<String, Pair<Long, List<Point>>>()
     private var cloudLayers: List<LayerItem> = emptyList()
     private var cloudPins: List<PinItem> = emptyList()
     private var cloudTracks: List<TrackItem> = emptyList()
@@ -246,6 +261,10 @@ class MainActivity : AppCompatActivity() {
     private var isLiveConnected = false
     private var mapStyleMode: MapStyleMode = MapStyleMode.VECTOR
     private var travelMode: TravelMode = TravelMode.CAR
+    private var cachedScaleBarEnabled: Boolean = true
+    private var cachedSpeedUnit: SpeedUnit = SpeedUnit.METRIC
+    private var lastScaleLabel: String = ""
+    private var lastScaleWidthPx: Int = -1
     private var isFollowingGps = false
     private var hasAutoZoomedInitial = false
     private var statusBarInsetTop = 0
@@ -394,6 +413,8 @@ class MainActivity : AppCompatActivity() {
         hideSentPins = DevicePrefs.isHideSentPins(this)
         mapStyleMode = DevicePrefs.getMapStyleMode(this)
         travelMode = DevicePrefs.getTravelMode(this)
+        cachedScaleBarEnabled = DevicePrefs.isScaleBarEnabled(this)
+        cachedSpeedUnit = DevicePrefs.getSpeedUnit(this)
 
         bindViews()
         applyMapChromeTheme()
@@ -462,7 +483,7 @@ class MainActivity : AppCompatActivity() {
                         if (previewRoute != null && activeNavRoute == null) {
                             routeRequestSeq++
                             previewRoute = null
-                            renderMapData()
+                            renderRouteOverlay()
                         }
                         if (activeNavRoute == null) {
                             resetMapPadding()
@@ -1120,7 +1141,7 @@ class MainActivity : AppCompatActivity() {
                 if (previewRoute != null) {
                     routeRequestSeq++
                     previewRoute = null
-                    renderMapData()
+                    renderRouteOverlay()
                     hideInScreenSheet()
                     return
                 }
@@ -1139,7 +1160,7 @@ class MainActivity : AppCompatActivity() {
                 if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
                     val qsPinId = sheetQuickSelectPinId
                     if (qsPinId != null) {
-                        val freshPin = pins.find { it.id == qsPinId }
+                        val freshPin = pinById[qsPinId]
                         sheetQuickSelectPinId = null
                         if (freshPin != null) {
                             showPinCard(freshPin, animateSwap = true)
@@ -1220,7 +1241,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openSharedPinTarget(target: SharedPinTarget) {
-        val matched = if (target.pinId.isNotBlank()) pins.find { it.id == target.pinId } else null
+        val matched = if (target.pinId.isNotBlank()) pinById[target.pinId] else null
         if (matched != null) {
             activeSharedPinId = null
             ensurePinVisibleOnMap(matched)
@@ -1231,7 +1252,7 @@ class MainActivity : AppCompatActivity() {
         selectedPinId = null
         selectedMarkerLatLng = LatLng(target.lat, target.lng)
         selectedMarkerIcon = "pin-target"
-        renderMapData()
+        renderSelectedMarker()
         centerUpperHalf(LatLng(target.lat, target.lng), (map?.cameraPosition?.zoom ?: 15.0).coerceAtLeast(16.0))
         showTappedPlaceCard(target.name, "Shared via TerraSync", target.lat, target.lng)
     }
@@ -1533,50 +1554,67 @@ class MainActivity : AppCompatActivity() {
         return if (stack.any { it.id == pin.id }) stack else listOf(pin)
     }
 
-    private fun renderMapData() {
-        val p = currentPalette()
-        btnSyncStatus.setColorFilter(if (isLiveConnected) p.green else p.amber)
+    private fun parseTrackPointsCached(t: TrackItem): List<Point> {
+        val cached = trackPointCache[t.id]
+        if (cached != null && cached.first == t.updatedAt) return cached.second
+        val pts = ArrayList<Point>()
+        val raw = t.coords
+        var start = 0
+        val len = raw.length
+        while (start < len) {
+            val semi = raw.indexOf(';', start).let { if (it < 0) len else it }
+            val comma = raw.indexOf(',', start)
+            if (comma in (start + 1) until semi) {
+                val lng = raw.substring(start, comma).trim().toDoubleOrNull()
+                val lat = raw.substring(comma + 1, semi).trim().toDoubleOrNull()
+                if (lng != null && lat != null && lat.isFinite() && lng.isFinite()) {
+                    pts.add(Point.fromLngLat(lng, lat))
+                }
+            }
+            start = semi + 1
+        }
+        trackPointCache[t.id] = t.updatedAt to pts
+        return pts
+    }
 
+    private fun renderPinsAndTracks(style: Style) {
         val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
         val visiblePins = getVisiblePins()
         val visibleTracks = tracks.filter { it.layerId !in hiddenLayerIds }
-
-        val style = map?.style ?: return
-        if (!style.isFullyLoaded) return
 
         val showTitles = DevicePrefs.isShowBookmarkTitles(this)
         style.getLayer(PINS_LABELS_LAYER)?.setProperties(
             PropertyFactory.visibility(if (showTitles) Property.VISIBLE else Property.NONE)
         )
 
-        val pinFeatures = visiblePins.map { p ->
-            val shortLabel = p.name.trim().let {
-                if (it.length > 22) it.take(21).trimEnd() + "…" else it
-            }
-            Feature.fromGeometry(Point.fromLngLat(p.lng, p.lat)).apply {
-                addStringProperty("id", p.id)
-                addStringProperty("name", p.name)
-                addStringProperty("label", shortLabel)
-                addStringProperty("icon", statusIconId(p.status))
-            }
+        val pinFeatures = ArrayList<Feature>(visiblePins.size)
+        for (pin in visiblePins) {
+            val trimmed = pin.name.trim()
+            val shortLabel = if (trimmed.length > 22) trimmed.take(21).trimEnd() + "…" else trimmed
+            pinFeatures.add(
+                Feature.fromGeometry(Point.fromLngLat(pin.lng, pin.lat)).apply {
+                    addStringProperty("id", pin.id)
+                    addStringProperty("name", pin.name)
+                    addStringProperty("label", shortLabel)
+                    addStringProperty("icon", statusIconId(pin.status))
+                }
+            )
         }
         style.getSourceAs<GeoJsonSource>(PINS_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(pinFeatures))
 
-        val trackFeatures = visibleTracks.mapNotNull { t ->
-            val pts = t.coords.split(";").mapNotNull { pair ->
-                val parts = pair.split(",")
-                if (parts.size == 2) {
-                    val lng = parts[0].toDoubleOrNull()
-                    val lat = parts[1].toDoubleOrNull()
-                    if (lng != null && lat != null) Point.fromLngLat(lng, lat) else null
-                } else null
-            }
-            if (pts.size >= 2) Feature.fromGeometry(LineString.fromLngLats(pts)) else null
+        val trackFeatures = ArrayList<Feature>(visibleTracks.size)
+        for (t in visibleTracks) {
+            val pts = parseTrackPointsCached(t)
+            if (pts.size >= 2) trackFeatures.add(Feature.fromGeometry(LineString.fromLngLats(pts)))
         }
         style.getSourceAs<GeoJsonSource>(TRACKS_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(trackFeatures))
+    }
 
+    private fun renderRouteOverlay(styleArg: Style? = null) {
+        val style = styleArg ?: map?.style ?: return
+        if (!style.isFullyLoaded) return
         val routeToShow = activeNavRoute ?: previewRoute
         val displayGeom = if (activeNavRoute != null && (activeNavTrimmedGeom?.size ?: 0) >= 2) {
             activeNavTrimmedGeom!!
@@ -1627,8 +1665,11 @@ class MainActivity : AppCompatActivity() {
         } else emptyList()
         style.getSourceAs<GeoJsonSource>(ROUTE_PILL_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(pillFeatures))
+    }
 
-        // Ruler features
+    private fun renderRulerOverlay(styleArg: Style? = null) {
+        val style = styleArg ?: map?.style ?: return
+        if (!style.isFullyLoaded) return
         val rulerLineFeatures = if (rulerPoints.size >= 2) {
             listOf(Feature.fromGeometry(LineString.fromLngLats(rulerPoints.map { Point.fromLngLat(it.longitude, it.latitude) })))
         } else emptyList()
@@ -1642,7 +1683,11 @@ class MainActivity : AppCompatActivity() {
         }
         style.getSourceAs<GeoJsonSource>(RULER_POINTS_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(rulerPointFeatures))
+    }
 
+    private fun renderSelectedMarker(styleArg: Style? = null) {
+        val style = styleArg ?: map?.style ?: return
+        if (!style.isFullyLoaded) return
         val selLoc = selectedMarkerLatLng
         val selFeatures = if (selLoc != null) {
             listOf(
@@ -1653,6 +1698,19 @@ class MainActivity : AppCompatActivity() {
         } else emptyList()
         style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(selFeatures))
+    }
+
+    private fun renderMapData() {
+        val p = currentPalette()
+        btnSyncStatus.setColorFilter(if (isLiveConnected) p.green else p.amber)
+
+        val style = map?.style ?: return
+        if (!style.isFullyLoaded) return
+
+        renderPinsAndTracks(style)
+        renderRouteOverlay(style)
+        renderRulerOverlay(style)
+        renderSelectedMarker(style)
 
         if (currentLocation != null) {
             updateGpsLayerFeature(displayedLat, displayedLng, displayedBearing)
@@ -1938,28 +1996,28 @@ class MainActivity : AppCompatActivity() {
             if (activeNavRoute == null && !isLassoMode) UiAnimations.showSlideBottom(bottomIconRow)
         }
         applyMapChromeTheme()
-        renderMapData()
+        renderRulerOverlay()
     }
 
     private fun addRulerPoint(latLng: LatLng) {
         rulerPoints.add(latLng)
         fireStatusPulse(latLng.latitude, latLng.longitude, "#2563EB")
         updateRulerUi()
-        renderMapData()
+        renderRulerOverlay()
     }
 
     private fun undoRulerPoint() {
         if (rulerPoints.isNotEmpty()) {
             rulerPoints.removeAt(rulerPoints.lastIndex)
             updateRulerUi()
-            renderMapData()
+            renderRulerOverlay()
         }
     }
 
     private fun resetRulerPoints() {
         rulerPoints.clear()
         updateRulerUi()
-        renderMapData()
+        renderRulerOverlay()
     }
 
     private fun updateRulerUi() {
@@ -2024,7 +2082,7 @@ class MainActivity : AppCompatActivity() {
 
         val pinHits = m.queryRenderedFeatures(hitBox, PINS_LAYER, PINS_LABELS_LAYER)
         val pin = pinHits
-            .mapNotNull { hit -> hit.getStringProperty("id")?.let { id -> pins.find { it.id == id } } }
+            .mapNotNull { hit -> hit.getStringProperty("id")?.let { id -> pinById[id] } }
             .distinctBy { it.id }
             .minByOrNull { candidate ->
                 val pt = m.projection.toScreenLocation(LatLng(candidate.lat, candidate.lng))
@@ -2061,7 +2119,7 @@ class MainActivity : AppCompatActivity() {
         selectedPinId = null
         selectedMarkerLatLng = latLng
         selectedMarkerIcon = "pin-target"
-        renderMapData()
+        renderSelectedMarker()
         fireStatusPulse(latLng.latitude, latLng.longitude, "#2563EB")
 
         val initialTitle = detectedTitle.ifBlank { "Selected Location" }
@@ -2094,7 +2152,7 @@ class MainActivity : AppCompatActivity() {
         selectedPinId = pin.id
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
         selectedMarkerIcon = statusIconId(pin.status)
-        renderMapData()
+        renderSelectedMarker()
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
         val targetZoom = if (zoomIfFar) currentZoom.coerceAtLeast(15.8) else currentZoom
         centerUpperHalf(LatLng(pin.lat, pin.lng), targetZoom)
@@ -2102,13 +2160,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearSelectedMarker() {
+        val hadSelection = selectedPinId != null || selectedMarkerLatLng != null
         selectedPinId = null
         selectedMarkerLatLng = null
         activeSharedPinId = null
         activeTappedLatLng = null
         tappedTitleView = null
         tappedSubView = null
-        renderMapData()
+        if (hadSelection) renderSelectedMarker()
     }
 
     private fun centerUpperHalf(target: LatLng, zoom: Double) {
@@ -2210,7 +2269,7 @@ class MainActivity : AppCompatActivity() {
                     selectedPinId = nextPin.id
                     selectedMarkerLatLng = LatLng(nextPin.lat, nextPin.lng)
                     selectedMarkerIcon = statusIconId(nextPin.status)
-                    renderMapData()
+                    renderSelectedMarker()
                     fireStatusPulse(nextPin.lat, nextPin.lng, statusColorHex(nextPin.status))
                     showPinCard(nextPin, animateSwap = true)
                 }
@@ -2287,7 +2346,7 @@ class MainActivity : AppCompatActivity() {
         sheetContent.addView(headerRow)
 
         // 3. Folder + Distance + Coordinates
-        val layer = layers.find { it.id == pin.layerId }
+        val layer = layerById[pin.layerId]
         val layerName = layer?.name ?: "Field Pin"
         val speedUnit = DevicePrefs.getSpeedUnit(this)
         val distText = currentLocation?.let {
@@ -2973,7 +3032,7 @@ class MainActivity : AppCompatActivity() {
                 previewRoute = route
                 navDestLatLng = LatLng(destLat, destLng)
                 navDestName = destTitle
-                renderMapData()
+                renderRouteOverlay()
 
                 val pts = route.geometry.map { LatLng(it.second, it.first) }
                 if (pts.size >= 2) {
@@ -3082,7 +3141,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 routeRequestSeq++
                 previewRoute = null
-                renderMapData()
+                renderRouteOverlay()
                 hideInScreenSheet()
             }
         })
@@ -3214,7 +3273,7 @@ class MainActivity : AppCompatActivity() {
         isFollowingGps = true
         updateLocationIconTint()
         updateSpeedBadge(loc)
-        renderMapData()
+        renderRouteOverlay()
         updateNavigationProgress(loc, route, LatLng(destLat, destLng))
         moveCameraForNavigation(loc, 650)
     }
@@ -3302,7 +3361,7 @@ class MainActivity : AppCompatActivity() {
                     navLastSegIdx = 0
                     navCurrentStepIdx = if (newRoute.steps.size > 1) 1 else 0
                     lastSpokenStepIdx = -1
-                    renderMapData()
+                    renderRouteOverlay()
                     currentLocation?.let { latest ->
                         updateNavigationProgress(latest, newRoute, dest)
                     }
@@ -3344,7 +3403,7 @@ class MainActivity : AppCompatActivity() {
         navCurrentStepIdx = 0
         applyNavigationChrome(false)
         updateSpeedBadge(currentLocation)
-        renderMapData()
+        renderRouteOverlay()
         map?.let { m ->
             val cam = CameraPosition.Builder()
                 .target(m.cameraPosition.target)
@@ -3515,7 +3574,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         gpsAnim?.cancel()
-        if (isActivityResumed) {
+        val movedMeters = if (prevLoc == null) Double.MAX_VALUE else {
+            RoutingEngine.haversineMeters(prevLat, prevLng, loc.latitude, loc.longitude)
+        }
+        val shouldAnimateGps = isActivityResumed &&
+            !UiAnimations.isReducedMotion(this) &&
+            (movedMeters >= 0.35 || kotlin.math.abs(deltaBearing) >= 1.5f)
+        if (shouldAnimateGps) {
             gpsAnim = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 450L
                 interpolator = DecelerateInterpolator()
@@ -3536,6 +3601,9 @@ class MainActivity : AppCompatActivity() {
             displayedLat = loc.latitude
             displayedLng = loc.longitude
             displayedBearing = targetBearing
+            if (prevLoc == null || movedMeters >= 0.1 || kotlin.math.abs(deltaBearing) >= 0.5f) {
+                updateGpsLayerFeature(displayedLat, displayedLng, displayedBearing)
+            }
         }
 
         val activeRoute = activeNavRoute
@@ -3566,46 +3634,51 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateScaleBar() {
         if (::scaleBarContainer.isInitialized) {
-            if (!DevicePrefs.isScaleBarEnabled(this)) {
-                scaleBarContainer.visibility = View.GONE
+            if (!cachedScaleBarEnabled) {
+                if (scaleBarContainer.visibility != View.GONE) scaleBarContainer.visibility = View.GONE
                 return
-            } else {
+            } else if (scaleBarContainer.visibility != View.VISIBLE) {
                 scaleBarContainer.visibility = View.VISIBLE
             }
         }
         val m = map ?: return
         val center = m.cameraPosition.target ?: return
         val mpp = m.projection.getMetersPerPixelAtLatitude(center.latitude)
-        if (mpp <= 0.0) return
+        if (mpp <= 0.0 || !mpp.isFinite()) return
         val density = resources.displayMetrics.density
         val maxPx = 110f * density
         val maxMeters = mpp * maxPx
 
-        val unit = DevicePrefs.getSpeedUnit(this)
-        if (unit == SpeedUnit.IMPERIAL) {
-            val stepsFt = doubleArrayOf(20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2640.0, 5280.0, 10560.0, 26400.0, 52800.0, 105600.0, 264000.0)
+        val label: String
+        val widthPx: Int
+        if (cachedSpeedUnit == SpeedUnit.IMPERIAL) {
             val maxFt = maxMeters * 3.28084
-            val chosenFt = stepsFt.lastOrNull { it <= maxFt } ?: 20.0
+            var chosenFt = SCALE_STEPS_IMPERIAL[0]
+            for (s in SCALE_STEPS_IMPERIAL) {
+                if (s <= maxFt) chosenFt = s else break
+            }
             val chosenMeters = chosenFt / 3.28084
-            val widthPx = (chosenMeters / mpp).toInt().coerceIn(dp(32), dp(120))
-            tvScaleLabel.text = when {
+            widthPx = (chosenMeters / mpp).toInt().coerceIn(dp(32), dp(120))
+            label = when {
                 chosenFt >= 5280.0 -> "${(chosenFt / 5280.0).toInt()} mi"
                 chosenFt == 2640.0 -> "0.5 mi"
                 else -> "${chosenFt.toInt()} ft"
             }
-            if (scaleBarLine.layoutParams.width != widthPx) {
-                scaleBarLine.layoutParams.width = widthPx
-                scaleBarLine.requestLayout()
+        } else {
+            var chosen = SCALE_STEPS_METRIC[0]
+            for (s in SCALE_STEPS_METRIC) {
+                if (s <= maxMeters) chosen = s else break
             }
-            return
+            widthPx = (chosen / mpp).toInt().coerceIn(dp(32), dp(120))
+            label = if (chosen >= 1000.0) "${(chosen / 1000.0).toInt()} km" else "${chosen.toInt()} m"
         }
 
-        val steps = doubleArrayOf(5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0, 50000.0, 100000.0, 200000.0)
-        val chosen = steps.lastOrNull { it <= maxMeters } ?: 5.0
-        val widthPx = (chosen / mpp).toInt().coerceIn(dp(32), dp(120))
-
-        tvScaleLabel.text = if (chosen >= 1000.0) "${(chosen / 1000.0).toInt()} km" else "${chosen.toInt()} m"
-        if (scaleBarLine.layoutParams.width != widthPx) {
+        if (label != lastScaleLabel) {
+            lastScaleLabel = label
+            tvScaleLabel.text = label
+        }
+        if (kotlin.math.abs(widthPx - lastScaleWidthPx) >= 2) {
+            lastScaleWidthPx = widthPx
             scaleBarLine.layoutParams.width = widthPx
             scaleBarLine.requestLayout()
         }
@@ -4140,8 +4213,8 @@ class MainActivity : AppCompatActivity() {
             val orderedLayers = layers.sortedByDescending { DevicePrefs.isLayerPinned(this, it.id) }
             orderedLayers.forEach { layer ->
                 addDividerIfNeeded()
-                val layerPins = pins.filter { it.layerId == layer.id }
-                val layerTracks = tracks.filter { it.layerId == layer.id }
+                val layerPins = pinsByLayerId[layer.id].orEmpty()
+                val layerTracks = tracksByLayerId[layer.id].orEmpty()
                 val visible = DevicePrefs.isLayerVisible(this, layer.id)
                 val isPinned = DevicePrefs.isLayerPinned(this, layer.id)
                 val isLocal = LocalFolderStore.isLocalLayerId(layer.id)
@@ -4528,8 +4601,11 @@ class MainActivity : AppCompatActivity() {
         val dividerColor = p.divider
 
         fun currentSourcePins(): List<PinItem> = when {
-            layer != null -> pins.filter { it.layerId == layer.id }
-            title == "Starred" -> pins.filter { it.id in DevicePrefs.getBookmarks(this) }
+            layer != null -> pinsByLayerId[layer.id].orEmpty()
+            title == "Starred" -> {
+                val bm = DevicePrefs.getBookmarks(this)
+                pins.filter { it.id in bm }
+            }
             else -> sourcePins
         }
 
@@ -4890,9 +4966,40 @@ class MainActivity : AppCompatActivity() {
 
         var displayLimit = 150
         var latestFiltered: List<PinItem> = emptyList()
+        var cachedAnalysisKey: Pair<String, Long>? = null
+        var cachedDupExtras: Set<String> = emptySet()
+        var cachedSameCoordExtras: Set<String> = emptySet()
+        var cachedClusterSizes: Map<String, Int> = emptyMap()
+
+        fun ensureAnalysisCached(filtered: List<PinItem>) {
+            val key = filterKey to dataVersion
+            if (cachedAnalysisKey == key) return
+            cachedAnalysisKey = key
+            cachedDupExtras = findDuplicateExtraIds(filtered)
+            val (sameExtras, sizes) = analyzeSameCoordClusters(filtered)
+            cachedSameCoordExtras = sameExtras
+            cachedClusterSizes = sizes
+        }
+
+        fun syncAutoSelectButtons() {
+            btnAutoDuplicates.text = "Duplicates (${cachedDupExtras.size})"
+            btnAutoSameCoords.text = "Same Coords (${cachedSameCoordExtras.size})"
+            DesignSystem.styleSegmentedButton(
+                btnAutoDuplicates,
+                selectionMode && cachedDupExtras.isNotEmpty() && selectedPinIds.containsAll(cachedDupExtras) && selectedPinIds.size == cachedDupExtras.size,
+                p,
+                p.amber
+            )
+            DesignSystem.styleSegmentedButton(
+                btnAutoSameCoords,
+                selectionMode && cachedSameCoordExtras.isNotEmpty() && selectedPinIds.containsAll(cachedSameCoordExtras) && selectedPinIds.size == cachedSameCoordExtras.size,
+                p,
+                p.accent
+            )
+        }
 
         fun updateSelectionBarState() {
-            val liveIds = currentSourcePins().map { it.id }.toSet()
+            val liveIds = currentSourcePins().mapTo(HashSet()) { it.id }
             selectedPinIds.retainAll(liveIds)
             val cnt = selectedPinIds.size
             btnSelectMode.text = if (selectionMode) "Done" else "Select"
@@ -4906,6 +5013,7 @@ class MainActivity : AppCompatActivity() {
                 b.isEnabled = hasAny
                 b.alpha = if (hasAny) 1f else 0.45f
             }
+            syncAutoSelectButtons()
         }
 
         fun renderPinRows() {
@@ -4917,27 +5025,13 @@ class MainActivity : AppCompatActivity() {
 
             listCard.removeAllViews()
             val loc = currentLocation
-            val unit = DevicePrefs.getSpeedUnit(this)
+            val unit = cachedSpeedUnit
             val allInFolder = currentSourcePins()
             val filtered = allInFolder.filter { filterKey == "all" || it.status.equals(filterKey, true) }
             latestFiltered = filtered
 
-            val dupExtras = findDuplicateExtraIds(filtered)
-            val (sameCoordExtras, clusterSizes) = analyzeSameCoordClusters(filtered)
-            btnAutoDuplicates.text = "Duplicates (${dupExtras.size})"
-            btnAutoSameCoords.text = "Same Coords (${sameCoordExtras.size})"
-            DesignSystem.styleSegmentedButton(
-                btnAutoDuplicates,
-                selectionMode && dupExtras.isNotEmpty() && selectedPinIds.containsAll(dupExtras) && selectedPinIds.size == dupExtras.size,
-                p,
-                p.amber
-            )
-            DesignSystem.styleSegmentedButton(
-                btnAutoSameCoords,
-                selectionMode && sameCoordExtras.isNotEmpty() && selectedPinIds.containsAll(sameCoordExtras) && selectedPinIds.size == sameCoordExtras.size,
-                p,
-                p.accent
-            )
+            ensureAnalysisCached(filtered)
+            val clusterSizes = cachedClusterSizes
 
             updateSelectionBarState()
 
@@ -4969,8 +5063,9 @@ class MainActivity : AppCompatActivity() {
                 if (idx > 0) {
                     listCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
                 }
-                val isSelected = pin.id in selectedPinIds
+                var isSelected = pin.id in selectedPinIds
                 val sameCount = clusterSizes[pin.id] ?: 0
+                var checkBadge: TextView? = null
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
@@ -4983,8 +5078,28 @@ class MainActivity : AppCompatActivity() {
                     }
                     setOnClickListener {
                         if (selectionMode) {
-                            if (!selectedPinIds.add(pin.id)) selectedPinIds.remove(pin.id)
-                            renderPinRows()
+                            isSelected = if (selectedPinIds.add(pin.id)) true else {
+                                selectedPinIds.remove(pin.id)
+                                false
+                            }
+                            if (isSelected) {
+                                setBackgroundColor(p.accentSoft)
+                            } else {
+                                UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                            }
+                            checkBadge?.let { badge ->
+                                badge.text = if (isSelected) "✓" else ""
+                                badge.background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    if (isSelected) {
+                                        setColor(p.accent)
+                                    } else {
+                                        setColor(Color.TRANSPARENT)
+                                        setStroke(dp(2), p.iconMuted)
+                                    }
+                                }
+                            }
+                            updateSelectionBarState()
                         } else {
                             ensurePinVisibleOnMap(pin)
                             closeFullPage()
@@ -5002,7 +5117,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 if (selectionMode) {
-                    row.addView(TextView(this).apply {
+                    val badge = TextView(this).apply {
                         text = if (isSelected) "✓" else ""
                         textSize = 13f
                         setTypeface(null, Typeface.BOLD)
@@ -5018,7 +5133,9 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                         layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(12) }
-                    })
+                    }
+                    checkBadge = badge
+                    row.addView(badge)
                 } else {
                     row.addView(View(this).apply {
                         background = GradientDrawable().apply {
@@ -5126,7 +5243,8 @@ class MainActivity : AppCompatActivity() {
             renderPinRows()
         }
         btnAutoDuplicates.setOnClickListener {
-            val extras = findDuplicateExtraIds(latestFiltered)
+            ensureAnalysisCached(latestFiltered)
+            val extras = cachedDupExtras
             selectedPinIds.clear()
             selectedPinIds.addAll(extras)
             renderPinRows()
@@ -5138,7 +5256,8 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
         btnAutoSameCoords.setOnClickListener {
-            val (extras, _) = analyzeSameCoordClusters(latestFiltered)
+            ensureAnalysisCached(latestFiltered)
+            val extras = cachedSameCoordExtras
             selectedPinIds.clear()
             selectedPinIds.addAll(extras)
             renderPinRows()
@@ -5428,7 +5547,7 @@ class MainActivity : AppCompatActivity() {
             val workStart = DevicePrefs.getWorkStartMinutes(this)
             val workEnd = DevicePrefs.getWorkEndMinutes(this)
             val windowStr = "${PinEditHistoryAudit.formatMinutes(workStart)} – ${PinEditHistoryAudit.formatMinutes(workEnd)}"
-            val layerPins = pins.filter { it.layerId == layer.id }
+            val layerPins = pinsByLayerId[layer.id].orEmpty()
             val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPins, workStart, workEnd)
             currentEntries = allEntries
 
@@ -5979,7 +6098,7 @@ class MainActivity : AppCompatActivity() {
                             selectedPinId = null
                             selectedMarkerLatLng = LatLng(lat, lng)
                             selectedMarkerIcon = "pin-target"
-                            renderMapData()
+                            renderSelectedMarker()
                             centerUpperHalf(LatLng(lat, lng), 16.5)
                             showTappedPlaceCard("Coordinates", "", lat, lng)
                         }
@@ -6129,7 +6248,7 @@ class MainActivity : AppCompatActivity() {
                                 selectedPinId = null
                                 selectedMarkerLatLng = LatLng(place.lat, place.lng)
                                 selectedMarkerIcon = "pin-target"
-                                renderMapData()
+                                renderSelectedMarker()
                                 centerUpperHalf(LatLng(place.lat, place.lng), 16.0)
                                 showTappedPlaceCard(place.title, place.subtitle, place.lat, place.lng)
                             }
@@ -6581,6 +6700,9 @@ class MainActivity : AppCompatActivity() {
                     checked = DevicePrefs.isScaleBarEnabled(this)
                 ) { enabled ->
                     DevicePrefs.setScaleBarEnabled(this, enabled)
+                    cachedScaleBarEnabled = enabled
+                    lastScaleLabel = ""
+                    lastScaleWidthPx = -1
                     updateScaleBar()
                 }
                 body.addView(mapCard)
@@ -6709,7 +6831,11 @@ class MainActivity : AppCompatActivity() {
                     options = SpeedUnit.entries.map { it.id to it.label },
                     selectedId = DevicePrefs.getSpeedUnit(this).id
                 ) { id ->
-                    DevicePrefs.setSpeedUnit(this, SpeedUnit.fromId(id))
+                    val nextUnit = SpeedUnit.fromId(id)
+                    DevicePrefs.setSpeedUnit(this, nextUnit)
+                    cachedSpeedUnit = nextUnit
+                    lastScaleLabel = ""
+                    lastScaleWidthPx = -1
                     updateSpeedBadge(currentLocation)
                     updateScaleBar()
                     if (isRulerMode) updateRulerUi()
@@ -7958,6 +8084,13 @@ class MainActivity : AppCompatActivity() {
         layers = (cloudLayers + local.layers).sortedByDescending { it.updatedAt }
         pins = cloudPins + local.pins
         tracks = cloudTracks + local.tracks
+        layerById = layers.associateBy { it.id }
+        pinById = pins.associateBy { it.id }
+        pinsByLayerId = pins.groupBy { it.layerId }
+        tracksByLayerId = tracks.groupBy { it.layerId }
+        val activeTrackIds = tracks.mapTo(HashSet(tracks.size)) { it.id }
+        trackPointCache.keys.retainAll(activeTrackIds)
+        dataVersion++
         if (layers.isNotEmpty()) {
             DevicePrefs.saveCachedLayerNames(this, layers.map { it.name })
         }
@@ -7980,7 +8113,7 @@ class MainActivity : AppCompatActivity() {
                 applyMergedFoldersAndRender()
                 val waitingId = activeSharedPinId
                 if (waitingId != null) {
-                    val matched = pins.find { it.id == waitingId }
+                    val matched = pinById[waitingId]
                     if (matched != null) {
                         activeSharedPinId = null
                         hasAutoZoomedInitial = true
@@ -8240,7 +8373,7 @@ class MainActivity : AppCompatActivity() {
             if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
             val curPinId = selectedPinId
             if (curPinId != null && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
-                pins.find { it.id == curPinId }?.let { showPinCard(it, animateSwap = false) }
+                pinById[curPinId]?.let { showPinCard(it, animateSwap = false) }
             }
         }
     }
