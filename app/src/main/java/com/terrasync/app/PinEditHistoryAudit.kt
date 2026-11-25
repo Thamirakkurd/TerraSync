@@ -119,7 +119,8 @@ object PinEditHistoryAudit {
     fun collectFolderHistory(
         layerPins: List<PinItem>,
         workStartMin: Int,
-        workEndMin: Int
+        workEndMin: Int,
+        deviceToTeam: Map<String, String> = DailyReportGenerator.buildDeviceToTeamMap(layerPins)
     ): List<PinEditEntry> {
         val entries = ArrayList<PinEditEntry>(layerPins.size)
         val scratchCal = Calendar.getInstance()
@@ -143,11 +144,12 @@ object PinEditHistoryAudit {
                             nowMs = nowMs,
                             scratchCal = scratchCal,
                             dateFmt = dateFmt,
-                            timeFmt = timeFmt
+                            timeFmt = timeFmt,
+                            deviceToTeam = deviceToTeam
                         )
                     )
                 }
-            } else if (pin.isEdited || !pin.status.equals("pending", ignoreCase = true) || pin.issueReason.isNotBlank()) {
+            } else if (pin.isEdited || PinStatus.fromRaw(pin.status) != PinStatus.PENDING || pin.issueReason.isNotBlank()) {
                 val ts = when {
                     pin.editedAt > 0L -> pin.editedAt
                     pin.updatedAt > 0L -> pin.updatedAt
@@ -171,9 +173,11 @@ object PinEditHistoryAudit {
                     minOfDay = null
                 }
                 val opRaw = pin.editedBy.ifBlank { "Unknown operator" }
+                val cleanReason = DailyReportGenerator.flattenSingleLine(pin.issueReason)
+                val normStatus = PinStatus.fromRaw(pin.status)
                 val action = buildString {
-                    append(statusLabel(pin.status))
-                    if (pin.issueReason.isNotBlank()) append(": ${pin.issueReason}")
+                    append(normStatus.label)
+                    if (cleanReason.isNotBlank()) append(": $cleanReason")
                 }
                 entries.add(
                     PinEditEntry(
@@ -185,9 +189,9 @@ object PinEditHistoryAudit {
                         minuteOfDay = minOfDay,
                         sortEpochMs = ts,
                         operatorRaw = opRaw,
-                        operatorShort = extractShortOperator(opRaw),
+                        operatorShort = extractShortOperator(opRaw, deviceToTeam),
                         actionSummary = action,
-                        actionStatus = pin.status.lowercase(Locale.US).ifBlank { "pending" },
+                        actionStatus = normStatus.key,
                         isOutsideWorkHours = isOutsideWorkingHours(minOfDay, workStartMin, workEndMin)
                     )
                 )
@@ -210,7 +214,8 @@ object PinEditHistoryAudit {
         nowMs: Long,
         scratchCal: Calendar,
         dateFmt: SimpleDateFormat,
-        timeFmt: SimpleDateFormat
+        timeFmt: SimpleDateFormat,
+        deviceToTeam: Map<String, String>
     ): PinEditEntry {
         val bulletIdx = rawLine.indexOf('•')
         val timePart = if (bulletIdx > 0) rawLine.substring(0, bulletIdx).trim() else ""
@@ -235,7 +240,7 @@ object PinEditHistoryAudit {
             actionSummary.startsWith("Issue", ignoreCase = true) -> "issue"
             actionSummary.startsWith("Pending", ignoreCase = true) -> "pending"
             actionSummary.contains("edited text", ignoreCase = true) -> "text"
-            else -> pin.status.lowercase(Locale.US).ifBlank { "pending" }
+            else -> PinStatus.fromRaw(pin.status).key
         }
 
         val match = TIME_PREFIX_REGEX.matchEntire(timePart)
@@ -283,7 +288,7 @@ object PinEditHistoryAudit {
             minuteOfDay = minOfDay,
             sortEpochMs = sortMs,
             operatorRaw = operatorRaw,
-            operatorShort = extractShortOperator(operatorRaw),
+            operatorShort = extractShortOperator(operatorRaw, deviceToTeam),
             actionSummary = actionSummary,
             actionStatus = actionStatus,
             isOutsideWorkHours = isOutsideWorkingHours(minOfDay, workStartMin, workEndMin)
@@ -317,14 +322,9 @@ object PinEditHistoryAudit {
         return scratchCal.timeInMillis
     }
 
-    private fun extractShortOperator(raw: String): String {
-        val clean = raw.trim()
-        if (clean.isBlank()) return "Unknown"
-        val parenIdx = clean.indexOf('(')
-        if (parenIdx > 0) {
-            return clean.substring(0, parenIdx).trim().ifBlank { clean }
-        }
-        return clean
+    private fun extractShortOperator(raw: String, deviceToTeam: Map<String, String> = emptyMap()): String {
+        val resolved = DailyReportGenerator.resolveOperator(raw, deviceToTeam)
+        return resolved?.second ?: "Unknown"
     }
 
     fun buildAuditShareText(
@@ -344,22 +344,26 @@ object PinEditHistoryAudit {
                 appendLine()
                 appendLine("*⏰ Outside Working Hours (${afterHours.size})*")
                 afterHours.take(40).forEach { e ->
-                    appendLine("• [${e.fullTimeLabel}] ${e.operatorShort} — ${e.pin.name} → ${e.actionSummary}")
+                    val shortPin = DailyReportGenerator.formatCompactPinLabel(e.pin.name)
+                    val cleanAction = DailyReportGenerator.flattenSingleLine(e.actionSummary)
+                    appendLine("• [${e.fullTimeLabel}] ${e.operatorShort} — $shortPin → $cleanAction")
                 }
                 if (afterHours.size > 40) {
-                    appendLine("• _+${afterHours.size - 40} more after-hours edits_")
+                    val more = afterHours.size - 40
+                    appendLine("• _+${DailyReportGenerator.plural(more, "more after-hours edit")}_")
                 }
             }
-            val byOperator = entries.groupBy { it.operatorShort }
-                .entries
-                .sortedByDescending { it.value.size }
+            val byOperator = entries.groupBy { DailyReportGenerator.teamGroupKey(it.operatorShort) }
+                .values
+                .sortedByDescending { it.size }
             if (byOperator.isNotEmpty()) {
                 appendLine()
                 appendLine("*Per Operator*")
-                byOperator.forEach { (op, list) ->
+                byOperator.forEach { list ->
+                    val op = list.first().operatorShort
                     val late = list.count { it.isOutsideWorkHours }
                     val lateNote = if (late > 0) " ($late after hours)" else ""
-                    appendLine("• $op: ${list.size} edits$lateNote")
+                    appendLine("• $op: ${DailyReportGenerator.plural(list.size, "edit")}$lateNote")
                 }
             }
         }.trim()

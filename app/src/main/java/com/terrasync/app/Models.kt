@@ -109,24 +109,40 @@ data class PlaceResult(
     val lng: Double
 )
 
-fun statusColorHex(status: String): String = when (status.lowercase()) {
-    "done" -> "#2E8B47"
-    "issue" -> "#D93025"
-    "pending" -> "#E69500"
-    else -> "#1E88E5"
+enum class PinStatus(
+    val key: String,
+    val label: String,
+    val colorHex: String,
+    val iconId: String
+) {
+    PENDING("pending", "Pending", "#E69500", "pin-pending"),
+    DONE("done", "Done", "#2E8B47", "pin-done"),
+    ISSUE("issue", "Issue", "#D93025", "pin-issue");
+
+    companion object {
+        fun fromRaw(raw: String?): PinStatus {
+            val s = raw?.trim()?.lowercase(java.util.Locale.US).orEmpty()
+            if (s.isEmpty() || s == "pending" || s.startsWith("pending:") || s.startsWith("pending ") || s == "todo" || s == "open") {
+                return PENDING
+            }
+            return when {
+                s == "done" || s.startsWith("done:") || s.startsWith("done ") ||
+                    s.contains("done") || s.contains("complete") || s == "finished" || s == "ok" -> DONE
+                s == "issue" || s.startsWith("issue:") || s.startsWith("issue ") ||
+                    s.contains("issue") || s.contains("fail") || s.contains("problem") || s.contains("error") -> ISSUE
+                else -> PENDING
+            }
+        }
+    }
 }
 
-fun statusIconId(status: String): String = when (status.lowercase()) {
-    "done" -> "pin-done"
-    "issue" -> "pin-issue"
-    else -> "pin-pending"
-}
+fun PinItem.normalizedStatus(): PinStatus = PinStatus.fromRaw(status)
 
-fun statusLabel(status: String): String = when (status.lowercase()) {
-    "done" -> "Done"
-    "issue" -> "Issue"
-    else -> "Pending"
-}
+fun statusColorHex(status: String): String = PinStatus.fromRaw(status).colorHex
+
+fun statusIconId(status: String): String = PinStatus.fromRaw(status).iconId
+
+fun statusLabel(status: String): String = PinStatus.fromRaw(status).label
 
 fun formatDistanceShort(meters: Double, unit: SpeedUnit = SpeedUnit.METRIC): String {
     val safeMeters = if (meters.isFinite() && meters >= 0.0) meters else 0.0

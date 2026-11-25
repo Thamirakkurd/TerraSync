@@ -47,6 +47,23 @@ class SyncRepo(context: Context? = null) {
     private var connected: Boolean = false
     private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var pendingEmitRunnable: Runnable? = null
+
+    fun isLayerLive(layerId: String): Boolean {
+        if (!isOnline()) return false
+        return liveListenerStates["pins:$layerId"] == true
+    }
+
+    private fun computeConnected(): Boolean {
+        if (!isOnline()) return false
+        if (liveListenerStates.isEmpty()) return true
+        val pinStates = liveListenerStates.filterKeys { it.startsWith("pins:") }
+        return if (pinStates.isNotEmpty()) {
+            pinStates.values.all { it }
+        } else {
+            liveListenerStates.values.all { it }
+        }
+    }
 
     init {
         ensureAuthenticated()
@@ -60,20 +77,20 @@ class SyncRepo(context: Context? = null) {
             val cb = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     mainHandler.post {
-                        val next = isOnline() && (liveListenerStates.isEmpty() || liveListenerStates.values.any { it })
+                        val next = computeConnected()
                         if (next != connected) {
                             connected = next
-                            emit()
+                            emitNow()
                         }
                     }
                 }
 
                 override fun onLost(network: Network) {
                     mainHandler.post {
-                        val next = isOnline() && (liveListenerStates.isEmpty() || liveListenerStates.values.any { it })
+                        val next = computeConnected()
                         if (next != connected) {
                             connected = next
-                            emit()
+                            emitNow()
                         }
                     }
                 }
@@ -198,13 +215,13 @@ class SyncRepo(context: Context? = null) {
 
         fun updateConnectedFlag(key: String, isLive: Boolean) {
             liveListenerStates[key] = isLive
-            connected = isOnline() && liveListenerStates.values.any { it }
+            connected = computeConnected()
         }
 
         if (joinedLayerIds.isEmpty()) {
             liveListenerStates.clear()
             connected = isOnline()
-            emit()
+            emitNow()
             return
         }
 
@@ -255,7 +272,7 @@ class SyncRepo(context: Context? = null) {
                             description = d.getString("description") ?: "",
                             lat = lat,
                             lng = lng,
-                            status = d.getString("status") ?: "pending",
+                            status = PinStatus.fromRaw(d.getString("status")).key,
                             issueReason = d.getString("issueReason") ?: "",
                             updatedAt = d.getLong("updatedAt") ?: 0L,
                             isEdited = d.getBoolean("isEdited") ?: false,
@@ -291,12 +308,24 @@ class SyncRepo(context: Context? = null) {
         }
 
         if (removed.isNotEmpty() || added.isEmpty()) {
-            connected = isOnline() && (liveListenerStates.isEmpty() || liveListenerStates.values.any { it })
-            emit()
+            connected = computeConnected()
+            emitNow()
         }
     }
 
     private fun emit() {
+        pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable {
+            pendingEmitRunnable = null
+            emitNow()
+        }
+        pendingEmitRunnable = r
+        mainHandler.postDelayed(r, 40L)
+    }
+
+    private fun emitNow() {
+        pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingEmitRunnable = null
         val sortedLayers = layerMap.values.sortedByDescending { it.updatedAt }
         val allPins = pinsByLayer.values.flatten()
         val allTracks = tracksByLayer.values.flatten()
@@ -304,6 +333,8 @@ class SyncRepo(context: Context? = null) {
     }
 
     fun stopListening() {
+        pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingEmitRunnable = null
         layerRegs.values.flatten().forEach { it.remove() }
         layerRegs.clear()
         layerMap.clear()
@@ -430,7 +461,8 @@ class SyncRepo(context: Context? = null) {
             )
         }
 
-        db.collection("layers").document(layerId).update("updatedAt", now)
+        db.collection("layers").document(layerId)
+            .set(mapOf("updatedAt" to now), SetOptions.merge())
         commitOpsInBatches(
             ops,
             "Merged ${newPins.size} pins into \"$layerName\"",

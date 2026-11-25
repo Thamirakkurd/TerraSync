@@ -3,69 +3,311 @@ package com.terrasync.app
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.round
 import kotlin.math.roundToInt
 
 data class DailyFieldReport(
-    val whatsappText: String
+    val whatsappText: String,
+    val totalPins: Int = 0,
+    val doneCount: Int = 0,
+    val issueCount: Int = 0,
+    val pendingCount: Int = 0
 )
 
 object DailyReportGenerator {
 
-    private val KNOWN_REASONS = listOf(
-        "Meter Linked",
-        "Inaccessible",
-        "No Bill",
-        "Need Electricity",
-        "Customer Refused / No Access",
-        "Wrong Location / Coordinates",
-        "Closed / Nobody Home",
-        "Safety Hazard / Network Fault",
-        "Wrong Link",
-        "Disconnected",
-        "Replaced",
-        "Damaged"
+    const val UNMAPPED_DEVICE_LABEL = "Unnamed Device"
+    private const val OTHER_CUSTOM_NOTE_BUCKET = "Other / Custom Note"
+
+    private val UNICODE_WS_REGEX = Regex("[\\s\\u00A0\\u200B\\u200E\\u200F\\uFEFF]+")
+    private val NEWLINE_REGEX = Regex("[\\r\\n]+")
+    private val DEVICE_ID_REGEX = Regex("#([A-Fa-f0-9]{4,16})")
+    private val PAREN_DEVICE_REGEX = Regex("""^(.+?)\s*\(([^)]*#[A-Fa-f0-9]{4,16}[^)]*)\)\s*$""")
+    private val RAW_DEVICE_STAMP_REGEX = Regex("""^[^()]*•\s*#[A-Fa-f0-9]{4,16}$|^#[A-Fa-f0-9]{4,16}$""")
+    private val RAW_MODEL_ONLY_REGEX = Regex(
+        """^(?i)(honor|samsung|xiaomi|redmi|poco|oppo|vivo|realme|huawei|oneplus|google\s+pixel|pixel|iphone|ipad|motorola|nokia|tecno|infinix|sony|lg|asus|lenovo|nothing|sm-[a-z0-9]+|ptp-[a-z0-9]+)\b.*$"""
     )
+    private val TEAM_NUMBER_REGEX = Regex("""^(?i)team[\s_-]*(\d+)$""")
+    private val TEAM_SIGNATURE_LINE_REGEX = Regex(
+        """^(?i)(?:by\s+)?(?:team[\s_-]*\d+|t[\s_-]*\d+|supervisor|admin|inspector|operator|engineer|manager|lead|driver)$"""
+    )
+    private val TRAILING_TEAM_SIG_REGEX = Regex(
+        """(?i)(?:[\s,;•|/\-–—]+|\(\s*)(team[\s_-]*\d+|supervisor)\s*\)?$"""
+    )
+    private val TITLE_SEG_SPLIT_REGEX = Regex("""\s+[-–—|]\s+""")
+
+    private data class KnownCategoryRule(
+        val canonical: String,
+        val aliases: List<String>
+    )
+
+    private val KNOWN_CATEGORY_RULES = listOf(
+        KnownCategoryRule("Meter Linked", listOf("meter linked", "meter link", "linked")),
+        KnownCategoryRule("Inaccessible", listOf("inaccessible", "inaccess")),
+        KnownCategoryRule("No Bill", listOf("no bill", "nobill", "no-bill")),
+        KnownCategoryRule("Need Electricity", listOf("need electricity", "needs electricity", "no electricity", "need electric", "no electric")),
+        KnownCategoryRule("Customer Refused / No Access", listOf("customer refused / no access", "customer refused", "refused", "no access")),
+        KnownCategoryRule("Wrong Location / Coordinates", listOf("wrong location / coordinates", "wrong location", "wrong coordinates", "wrong coords", "wrong gps")),
+        KnownCategoryRule("Closed / Nobody Home", listOf("closed / nobody home", "nobody home", "no one home", "closed")),
+        KnownCategoryRule("Safety Hazard / Network Fault", listOf("safety hazard / network fault", "safety hazard", "network fault", "hazard")),
+        KnownCategoryRule("Wrong Link", listOf("wrong link")),
+        KnownCategoryRule("Disconnected", listOf("disconnected")),
+        KnownCategoryRule("Replaced", listOf("replaced", "meter replaced")),
+        KnownCategoryRule("Damaged", listOf("damaged", "broken"))
+    )
+
+    private data class ParsedStatusNote(
+        val category: String,
+        val customNote: String,
+        val embeddedTeamSignature: String?
+    )
+
+    fun plural(count: Int, singular: String, pluralForm: String = "${singular}s"): String {
+        return "$count ${if (count == 1) singular else pluralForm}"
+    }
+
+    fun collapseWhitespace(raw: String): String =
+        raw.replace(UNICODE_WS_REGEX, " ").trim()
+
+    fun flattenSingleLine(raw: String): String =
+        raw.replace(NEWLINE_REGEX, " ").replace(UNICODE_WS_REGEX, " ").trim()
+
+    fun normalizeTeamDisplayName(raw: String): String {
+        val clean = collapseWhitespace(raw)
+        if (clean.isEmpty()) return ""
+        val teamMatch = TEAM_NUMBER_REGEX.matchEntire(clean)
+        if (teamMatch != null) {
+            return "Team ${teamMatch.groupValues[1]}"
+        }
+        return clean.split(" ").joinToString(" ") { word ->
+            if (word.isEmpty()) return@joinToString ""
+            val hasAscii = word.any { it in 'A'..'Z' || it in 'a'..'z' }
+            if (!hasAscii) {
+                word
+            } else {
+                val allUpper = word.all { !it.isLetter() || it.isUpperCase() }
+                val allLower = word.all { !it.isLetter() || it.isLowerCase() }
+                if (allUpper || allLower) {
+                    word.lowercase(Locale.US).replaceFirstChar { it.titlecase(Locale.US) }
+                } else {
+                    word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+                }
+            }
+        }
+    }
+
+    fun teamGroupKey(normalizedDisplay: String): String {
+        return collapseWhitespace(normalizedDisplay)
+            .lowercase(Locale.ROOT)
+            .replace(Regex("[\\s_-]+"), " ")
+            .trim()
+    }
+
+    fun isRawDeviceString(raw: String): Boolean {
+        val clean = collapseWhitespace(raw)
+        if (clean.isEmpty()) return false
+        if (PAREN_DEVICE_REGEX.matches(clean)) return false
+        return RAW_DEVICE_STAMP_REGEX.matches(clean) ||
+            clean.contains("• #") ||
+            RAW_MODEL_ONLY_REGEX.matches(clean)
+    }
+
+    /**
+     * Builds a lookup from uppercase device ID (e.g. "D3A1" or full 12-char ID) to normalized team/operator name
+     * using configured aliases plus all named stamps observed across pins and edit history.
+     */
+    fun buildDeviceToTeamMap(
+        pins: List<PinItem>,
+        configuredDeviceAliases: Map<String, String> = emptyMap()
+    ): Map<String, String> {
+        val map = LinkedHashMap<String, String>()
+        configuredDeviceAliases.forEach { (rawId, rawName) ->
+            val id = rawId.trim().removePrefix("#").uppercase(Locale.US)
+            val name = normalizeTeamDisplayName(rawName)
+            if (id.isNotBlank() && name.isNotBlank() && !isRawDeviceString(name)) {
+                map[id] = name
+                if (id.length > 4) {
+                    val shortId = id.takeLast(4)
+                    if (!map.containsKey(shortId)) map[shortId] = name
+                }
+            }
+        }
+
+        fun inspectStamp(stamp: String) {
+            val clean = collapseWhitespace(stamp)
+            val m = PAREN_DEVICE_REGEX.matchEntire(clean) ?: return
+            val rawName = m.groupValues[1].trim()
+            val inside = m.groupValues[2]
+            if (rawName.isBlank() || isRawDeviceString(rawName)) return
+            val devId = DEVICE_ID_REGEX.find(inside)?.groupValues?.get(1)?.uppercase(Locale.US) ?: return
+            val normName = normalizeTeamDisplayName(rawName)
+            if (normName.isNotBlank()) {
+                map[devId] = normName
+                if (devId.length > 4) {
+                    val shortId = devId.takeLast(4)
+                    if (!map.containsKey(shortId)) map[shortId] = normName
+                }
+            }
+        }
+
+        for (pin in pins) {
+            if (pin.editedBy.isNotBlank()) inspectStamp(pin.editedBy)
+            if (pin.editHistory.isNotBlank()) {
+                pin.editHistory.lines().forEach { line ->
+                    val afterBullet = line.substringAfter("•", "").trim()
+                    if (afterBullet.isNotEmpty()) {
+                        val op = when {
+                            afterBullet.contains("→") -> afterBullet.substringBefore("→").trim()
+                            afterBullet.endsWith("edited text", ignoreCase = true) ->
+                                afterBullet.dropLast("edited text".length).trim()
+                            else -> ""
+                        }
+                        if (op.isNotBlank()) inspectStamp(op)
+                    }
+                }
+            }
+        }
+        return map
+    }
+
+    fun resolveOperator(
+        rawOperator: String,
+        deviceToTeam: Map<String, String> = emptyMap(),
+        fallbackTeamHint: String? = null
+    ): Pair<String, String>? {
+        val clean = collapseWhitespace(rawOperator)
+        if (clean.isEmpty()) {
+            val hint = fallbackTeamHint?.let { normalizeTeamDisplayName(it) }.orEmpty()
+            return if (hint.isNotEmpty()) teamGroupKey(hint) to hint else null
+        }
+
+        val parenMatch = PAREN_DEVICE_REGEX.matchEntire(clean)
+        if (parenMatch != null) {
+            val rawName = parenMatch.groupValues[1].trim()
+            if (rawName.isNotBlank() && !isRawDeviceString(rawName)) {
+                val norm = normalizeTeamDisplayName(rawName)
+                return teamGroupKey(norm) to norm
+            }
+        }
+
+        val devId = DEVICE_ID_REGEX.find(clean)?.groupValues?.get(1)?.uppercase(Locale.US)
+        if (devId != null) {
+            val mapped = deviceToTeam[devId] ?: if (devId.length > 4) deviceToTeam[devId.takeLast(4)] else null
+            if (!mapped.isNullOrBlank()) {
+                return teamGroupKey(mapped) to mapped
+            }
+        }
+
+        if (isRawDeviceString(clean)) {
+            val hint = fallbackTeamHint?.let { normalizeTeamDisplayName(it) }.orEmpty()
+            if (hint.isNotEmpty()) return teamGroupKey(hint) to hint
+            return teamGroupKey(UNMAPPED_DEVICE_LABEL) to UNMAPPED_DEVICE_LABEL
+        }
+
+        val stripped = clean.substringBefore(" (").trim().ifBlank { clean }
+        if (isRawDeviceString(stripped)) {
+            val hint = fallbackTeamHint?.let { normalizeTeamDisplayName(it) }.orEmpty()
+            if (hint.isNotEmpty()) return teamGroupKey(hint) to hint
+            return teamGroupKey(UNMAPPED_DEVICE_LABEL) to UNMAPPED_DEVICE_LABEL
+        }
+
+        val norm = normalizeTeamDisplayName(stripped)
+        if (norm.isEmpty()) return null
+        return teamGroupKey(norm) to norm
+    }
+
+    fun pinDedupKey(pin: PinItem): String {
+        val normName = collapseWhitespace(pin.name).lowercase(Locale.ROOT)
+        val qLat = round(pin.lat * 100000.0).toLong()
+        val qLng = round(pin.lng * 100000.0).toLong()
+        return "$normName|$qLat|$qLng"
+    }
+
+    fun deduplicatePins(pins: List<PinItem>): List<PinItem> {
+        if (pins.size <= 1) return pins
+        return pins
+            .sortedWith(
+                compareByDescending<PinItem> {
+                    val st = PinStatus.fromRaw(it.status)
+                    val worked = st != PinStatus.PENDING || it.isEdited || it.editedAt > 0L || it.editHistory.isNotBlank()
+                    if (worked) 1 else 0
+                }
+                    .thenByDescending { it.editedAt }
+                    .thenByDescending {
+                        when (PinStatus.fromRaw(it.status)) {
+                            PinStatus.DONE -> 2
+                            PinStatus.ISSUE -> 1
+                            PinStatus.PENDING -> 0
+                        }
+                    }
+                    .thenByDescending { it.updatedAt }
+                    .thenBy { it.id }
+            )
+            .distinctBy { pinDedupKey(it) }
+    }
 
     fun buildReport(
         folderName: String,
         pins: List<PinItem>,
         isCloudLive: Boolean = true,
         workStartMin: Int? = null,
-        workEndMin: Int? = null
-    ): DailyFieldReport = DailyFieldReport(generate(folderName, pins, isCloudLive, workStartMin, workEndMin))
+        workEndMin: Int? = null,
+        syncBadgeOverride: String? = null,
+        configuredDeviceAliases: Map<String, String> = emptyMap(),
+        allKnownPinsForDeviceMap: List<PinItem> = pins
+    ): DailyFieldReport {
+        val uniquePins = deduplicatePins(pins)
+        val doneCnt = uniquePins.count { PinStatus.fromRaw(it.status) == PinStatus.DONE }
+        val issueCnt = uniquePins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+        val pendingCnt = uniquePins.size - doneCnt - issueCnt
+        val text = generate(
+            folderName = folderName,
+            pins = pins,
+            isCloudLive = isCloudLive,
+            workStartMin = workStartMin,
+            workEndMin = workEndMin,
+            syncBadgeOverride = syncBadgeOverride,
+            configuredDeviceAliases = configuredDeviceAliases,
+            allKnownPinsForDeviceMap = allKnownPinsForDeviceMap
+        )
+        return DailyFieldReport(
+            whatsappText = text,
+            totalPins = uniquePins.size,
+            doneCount = doneCnt,
+            issueCount = issueCnt,
+            pendingCount = pendingCnt
+        )
+    }
 
     fun generate(
         folderName: String,
         pins: List<PinItem>,
         isCloudLive: Boolean = false,
         workStartMin: Int? = null,
-        workEndMin: Int? = null
+        workEndMin: Int? = null,
+        syncBadgeOverride: String? = null,
+        configuredDeviceAliases: Map<String, String> = emptyMap(),
+        allKnownPinsForDeviceMap: List<PinItem> = pins
     ): String {
         val now = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US).format(Date())
+        val syncBadge = syncBadgeOverride ?: if (isCloudLive) "Live Cloud" else "Local"
         if (pins.isEmpty()) {
             return buildString {
-                appendLine("*$folderName — Daily Field Report*")
-                appendLine("_${now}_")
+                appendLine("*${flattenSingleLine(folderName)} — Daily Field Report*")
+                appendLine("_${now} • ${syncBadge}_")
                 appendLine()
-                appendLine("No pins in this folder.")
+                appendLine("No pins in this scope.")
             }.trim()
         }
 
-        val uniquePins = pins
-            .sortedWith(
-                compareByDescending<PinItem> {
-                    when (normalizeStatus(it.status)) {
-                        "DONE" -> 2
-                        "ISSUE" -> 1
-                        else -> 0
-                    }
-                }.thenByDescending { it.updatedAt }
-            )
-            .distinctBy {
-                "${it.name.trim().lowercase(Locale.US)}|${it.description.trim().lowercase(Locale.US)}|${"%.6f".format(Locale.US, it.lat)}|${"%.6f".format(Locale.US, it.lng)}"
-            }
+        val uniquePins = deduplicatePins(pins)
         val dupSkipped = (pins.size - uniquePins.size).coerceAtLeast(0)
         val total = uniquePins.size
+
+        val deviceToTeam = buildDeviceToTeamMap(
+            pins = if (allKnownPinsForDeviceMap.size >= uniquePins.size) allKnownPinsForDeviceMap else uniquePins,
+            configuredDeviceAliases = configuredDeviceAliases
+        )
 
         var doneCount = 0
         var issueCount = 0
@@ -88,31 +330,32 @@ object DailyReportGenerator {
         val teamMap = linkedMapOf<String, TeamStats>()
 
         for (pin in uniquePins) {
-            val status = normalizeStatus(pin.status)
+            val status = PinStatus.fromRaw(pin.status)
             val rawReason = pin.issueReason.trim()
-            val rawNote = pin.description.trim()
-            val teamKeyAndLabel = resolveTeam(pin)
+            val parsedNote = parseStatusNote(rawReason, status)
+            val rawOperator = pin.editedBy.trim().ifBlank { latestOperatorFromHistory(pin.editHistory) }
+            val teamKeyAndLabel = resolveOperator(rawOperator, deviceToTeam, parsedNote.embeddedTeamSignature)
 
             when (status) {
-                "DONE" -> {
+                PinStatus.DONE -> {
                     doneCount++
-                    val reason = classifyReason(rawReason, rawNote, defaultLabel = "Completed")
-                    doneReasons[reason] = (doneReasons[reason] ?: 0) + 1
+                    val bucket = flattenSingleLine(parsedNote.category).ifBlank { "Completed" }
+                    doneReasons[bucket] = (doneReasons[bucket] ?: 0) + 1
                     teamKeyAndLabel?.let { (key, label) ->
                         teamMap.getOrPut(key) { TeamStats(label) }.done++
                     }
                 }
-                "ISSUE" -> {
+                PinStatus.ISSUE -> {
                     issueCount++
-                    val reason = classifyReason(rawReason, rawNote, defaultLabel = "Other Issue")
-                    issueReasons[reason] = (issueReasons[reason] ?: 0) + 1
+                    val bucket = flattenSingleLine(parsedNote.category).ifBlank { "Other Issue" }
+                    issueReasons[bucket] = (issueReasons[bucket] ?: 0) + 1
                     teamKeyAndLabel?.let { (key, label) ->
                         teamMap.getOrPut(key) { TeamStats(label) }.issue++
                     }
                 }
-                else -> {
+                PinStatus.PENDING -> {
                     pendingTotal++
-                    val isTouched = pin.isEdited || teamKeyAndLabel != null || rawReason.isNotBlank()
+                    val isTouched = pin.isEdited || teamKeyAndLabel != null || rawReason.isNotBlank() || pin.editHistory.isNotBlank()
                     if (isTouched) {
                         pendingTouched++
                         teamKeyAndLabel?.let { (key, label) ->
@@ -122,112 +365,253 @@ object DailyReportGenerator {
                 }
             }
 
-            if ((status == "ISSUE" || status == "DONE") && rawReason.isNotBlank() && KNOWN_REASONS.none { it.equals(rawReason, true) }) {
-                val prefix = teamKeyAndLabel?.second?.let { "[$it] " } ?: ""
-                val tag = if (status == "DONE") "✓ " else ""
-                val pinLabel = pin.name.ifBlank { "Pin" }
-                fieldNotes.add("$prefix$tag$pinLabel: $rawReason")
+            // Field Notes / Rework: only include genuine custom remarks, extra issue details, or actual rework flips
+            val isRework = detectGenuineRework(pin, status)
+            val customRemark = parsedNote.customNote
+            if (customRemark.isNotBlank() || isRework) {
+                val teamPrefix = teamKeyAndLabel?.second?.let { "[$it] " } ?: ""
+                val statusPart = when {
+                    isRework && status == PinStatus.PENDING -> "Rework (Pending)"
+                    isRework -> "Rework (${status.label})"
+                    parsedNote.category != OTHER_CUSTOM_NOTE_BUCKET &&
+                        parsedNote.category != "Completed" &&
+                        parsedNote.category != "Other Issue" &&
+                        parsedNote.category.isNotBlank() -> "${status.label} (${parsedNote.category})"
+                    else -> status.label
+                }
+                val shortPin = formatCompactPinLabel(pin.name)
+                val noteBody = when {
+                    customRemark.isNotBlank() -> truncateClean(customRemark, 100)
+                    else -> "Reverted after Done"
+                }
+                fieldNotes.add(flattenSingleLine("$teamPrefix$statusPart • $shortPin: $noteBody"))
             }
         }
 
+        // Strict mathematical invariants
+        check(doneCount + issueCount + pendingTotal == total)
         val pendingUntouched = (pendingTotal - pendingTouched).coerceAtLeast(0)
-        val pctDone = ((doneCount * 100.0) / total).roundToInt()
-        val syncBadge = if (isCloudLive) "Live Cloud" else "Local"
+        val visitedCount = doneCount + issueCount
+        val pctVisited = if (total > 0) ((visitedCount * 100.0) / total).roundToInt() else 0
+        val pctDone = if (total > 0) ((doneCount * 100.0) / total).roundToInt() else 0
 
         return buildString {
-            appendLine("*$folderName — Daily Field Report*")
+            appendLine("*${flattenSingleLine(folderName)} — Daily Field Report*")
             appendLine("_${now} • ${syncBadge}_")
             appendLine()
             appendLine("*Summary*")
-            val dupNote = if (dupSkipped > 0) " ($dupSkipped duplicate${if (dupSkipped == 1) "" else "s"} deduplicated)" else ""
+            val dupNote = if (dupSkipped > 0) " (${plural(dupSkipped, "duplicate")} deduplicated)" else ""
             appendLine("• Total Pins: *$total*$dupNote")
-            appendLine("• Completion: *$pctDone%* ($doneCount / $total)")
+            appendLine("• Visited Progress: *$pctVisited%* ($visitedCount / $total)")
+            appendLine("• Done / Resolved: *$pctDone%* ($doneCount / $total)")
             appendLine("• ✓ Done: *$doneCount*")
             appendLine("• ⚠ Issue: *$issueCount*")
             appendLine("• ⏳ Pending: *$pendingTotal* ($pendingUntouched untouched, $pendingTouched touched)")
             if (workStartMin != null && workEndMin != null) {
-                val allEdits = PinEditHistoryAudit.collectFolderHistory(uniquePins, workStartMin, workEndMin)
+                val allEdits = PinEditHistoryAudit.collectFolderHistory(uniquePins, workStartMin, workEndMin, deviceToTeam)
                 val lateCount = allEdits.count { it.isOutsideWorkHours }
-                if (lateCount > 0) {
-                    val window = "${PinEditHistoryAudit.formatMinutes(workStartMin)}–${PinEditHistoryAudit.formatMinutes(workEndMin)}"
-                    appendLine("• ⏰ Outside Working Hours ($window): *$lateCount* edit${if (lateCount == 1) "" else "s"}")
-                }
+                val window = "${PinEditHistoryAudit.formatMinutes(workStartMin)}–${PinEditHistoryAudit.formatMinutes(workEndMin)}"
+                val editWord = if (lateCount == 1) "edit" else "edits"
+                appendLine("• ⏰ Outside Working Hours ($window): *$lateCount* $editWord")
             }
 
             if (doneCount > 0) {
                 appendLine()
                 appendLine("*✓ Done Breakdown ($doneCount)*")
                 doneReasons.entries
-                    .sortedByDescending { it.value }
-                    .forEach { (reason, count) -> appendLine("• $reason: *$count*") }
+                    .sortedWith(
+                        compareBy<Map.Entry<String, Int>> { it.key == OTHER_CUSTOM_NOTE_BUCKET }
+                            .thenByDescending { it.value }
+                            .thenBy { it.key }
+                    )
+                    .forEach { (reason, count) ->
+                        appendLine("• ${flattenSingleLine(reason)}: *$count*")
+                    }
             }
 
             if (issueCount > 0) {
                 appendLine()
                 appendLine("*⚠ Issue Breakdown ($issueCount)*")
                 issueReasons.entries
-                    .sortedByDescending { it.value }
-                    .forEach { (reason, count) -> appendLine("• $reason: *$count*") }
+                    .sortedWith(
+                        compareBy<Map.Entry<String, Int>> { it.key == OTHER_CUSTOM_NOTE_BUCKET }
+                            .thenByDescending { it.value }
+                            .thenBy { it.key }
+                    )
+                    .forEach { (reason, count) ->
+                        appendLine("• ${flattenSingleLine(reason)}: *$count*")
+                    }
             }
 
             if (teamMap.isNotEmpty()) {
                 appendLine()
                 appendLine("*Per-Team Activity*")
                 teamMap.values
-                    .sortedWith(compareByDescending<TeamStats> { it.worked }.thenBy { it.displayName })
+                    .sortedWith(
+                        compareBy<TeamStats> { it.displayName == UNMAPPED_DEVICE_LABEL }
+                            .thenByDescending { it.worked }
+                            .thenBy { it.displayName }
+                    )
                     .forEach { t ->
                         val parts = mutableListOf<String>()
                         if (t.done > 0) parts.add("${t.done} Done")
                         if (t.issue > 0) parts.add("${t.issue} Issue")
                         if (t.pendingTouched > 0) parts.add("${t.pendingTouched} Pending")
-                        appendLine("• *${t.displayName}*: ${t.worked} worked (${parts.joinToString(" • ")})")
+                        val exactTotal = t.done + t.issue + t.pendingTouched
+                        if (exactTotal > 0) {
+                            appendLine("• *${t.displayName}*: $exactTotal worked (${parts.joinToString(" • ")})")
+                        }
                     }
             }
 
             if (fieldNotes.isNotEmpty()) {
                 appendLine()
                 appendLine("*Field Notes / Rework (${fieldNotes.size})*")
-                fieldNotes.take(15).forEach { note -> appendLine("• $note") }
-                if (fieldNotes.size > 15) {
-                    appendLine("• _+${fieldNotes.size - 15} more notes_")
+                fieldNotes.take(20).forEach { note -> appendLine("• $note") }
+                if (fieldNotes.size > 20) {
+                    val more = fieldNotes.size - 20
+                    appendLine("• _+${plural(more, "more note")}_")
                 }
             }
         }.trim()
     }
 
-    private fun normalizeStatus(raw: String): String {
-        val s = raw.trim().uppercase(Locale.US)
+    private fun parseStatusNote(rawReason: String, status: PinStatus): ParsedStatusNote {
+        val defaultBucket = when (status) {
+            PinStatus.DONE -> "Completed"
+            PinStatus.ISSUE -> "Other Issue"
+            PinStatus.PENDING -> ""
+        }
+        if (rawReason.isBlank()) {
+            return ParsedStatusNote(defaultBucket, "", null)
+        }
+
+        val rawLines = rawReason
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .split('\n')
+            .map { collapseWhitespace(it) }
+            .filter { it.isNotEmpty() }
+
+        var extractedTeam: String? = null
+        val meaningfulLines = mutableListOf<String>()
+
+        for (line in rawLines) {
+            if (TEAM_SIGNATURE_LINE_REGEX.matches(line)) {
+                if (extractedTeam == null) extractedTeam = normalizeTeamDisplayName(line.removePrefix("by ").trim())
+                continue
+            }
+            var cleanedLine = line
+            val trailMatch = TRAILING_TEAM_SIG_REGEX.find(cleanedLine)
+            if (trailMatch != null) {
+                val sig = trailMatch.groupValues[1].trim()
+                val withoutSig = cleanedLine.substring(0, trailMatch.range.first).trim()
+                if (withoutSig.isNotEmpty()) {
+                    cleanedLine = withoutSig
+                    if (extractedTeam == null) extractedTeam = normalizeTeamDisplayName(sig)
+                }
+            }
+            if (cleanedLine.isNotEmpty() && !TEAM_SIGNATURE_LINE_REGEX.matches(cleanedLine)) {
+                meaningfulLines.add(cleanedLine)
+            }
+        }
+
+        if (meaningfulLines.isEmpty()) {
+            return ParsedStatusNote(defaultBucket, "", extractedTeam)
+        }
+
+        val firstLine = meaningfulLines.first()
+        val restLines = meaningfulLines.drop(1)
+
+        val matched = matchKnownCategory(firstLine)
+        if (matched != null) {
+            val (canonical, remainderOnFirst) = matched
+            val extraNote = (listOf(remainderOnFirst) + restLines)
+                .map { flattenSingleLine(it) }
+                .filter { it.isNotEmpty() && !TEAM_SIGNATURE_LINE_REGEX.matches(it) }
+                .joinToString(" • ")
+            return ParsedStatusNote(canonical, extraNote, extractedTeam)
+        }
+
+        // Unrecognized free-text note -> roll into "Other / Custom Note" and preserve exact cleaned text in Field Notes
+        val fullCustom = meaningfulLines
+            .map { flattenSingleLine(it) }
+            .filter { it.isNotEmpty() }
+            .joinToString(" • ")
+        return ParsedStatusNote(OTHER_CUSTOM_NOTE_BUCKET, fullCustom, extractedTeam)
+    }
+
+    private fun matchKnownCategory(line: String): Pair<String, String>? {
+        val clean = collapseWhitespace(line)
+        val low = clean.lowercase(Locale.US)
+        for (rule in KNOWN_CATEGORY_RULES) {
+            for (alias in rule.aliases) {
+                if (low == alias) {
+                    return rule.canonical to ""
+                }
+                if (low.startsWith(alias) && clean.length > alias.length) {
+                    val nextChar = clean[alias.length]
+                    if (nextChar in charArrayOf(':', '-', '–', '—', '/', ',', '|', '•', '(')) {
+                        val rem = clean.substring(alias.length + 1).trim().removeSuffix(")").trim()
+                        return rule.canonical to rem
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun latestOperatorFromHistory(editHistory: String): String {
+        val firstLine = editHistory.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: return ""
+        val afterBullet = firstLine.substringAfter("•", "").trim()
+        if (afterBullet.isEmpty()) return ""
         return when {
-            s.contains("DONE") || s.contains("COMPLETE") || s == "OK" -> "DONE"
-            s.contains("ISSUE") || s.contains("FAIL") || s.contains("PROBLEM") || s.contains("ERROR") -> "ISSUE"
-            else -> "PENDING"
+            afterBullet.contains("→") -> afterBullet.substringBefore("→").trim()
+            afterBullet.endsWith("edited text", ignoreCase = true) ->
+                afterBullet.dropLast("edited text".length).trim()
+            else -> ""
         }
     }
 
-    private fun classifyReason(rawReason: String, rawNote: String, defaultLabel: String): String {
-        if (rawReason.isNotEmpty()) {
-            val matched = KNOWN_REASONS.firstOrNull { it.equals(rawReason, ignoreCase = true) }
-            if (matched != null) return matched
-            val cleaned = rawReason.substringBefore(":").trim()
-            if (cleaned.length <= 40) return cleaned
+    private fun detectGenuineRework(pin: PinItem, currentStatus: PinStatus): Boolean {
+        if (pin.editHistory.isBlank()) return false
+        val statusLines = pin.editHistory.lines()
+            .map { it.trim() }
+            .filter { it.contains("→") }
+        if (statusLines.size < 2) return false
+        // History is newest-first: check if an older entry was Done and current status is Issue or Pending
+        val hadEarlierDone = statusLines.drop(1).any { line ->
+            val rhs = line.substringAfter("→").trim()
+            PinStatus.fromRaw(rhs.substringBefore(":")) == PinStatus.DONE
         }
-        val combined = "$rawReason $rawNote".lowercase(Locale.US)
-        return when {
-            "meter link" in combined -> "Meter Linked"
-            "inaccess" in combined -> "Inaccessible"
-            "no bill" in combined || "nobill" in combined -> "No Bill"
-            "need electric" in combined || "no electric" in combined -> "Need Electricity"
-            else -> defaultLabel
-        }
+        return hadEarlierDone && currentStatus != PinStatus.DONE
     }
 
-    private fun resolveTeam(pin: PinItem): Pair<String, String>? {
-        val raw = pin.editedBy.trim()
-        if (raw.isEmpty()) return null
-        val display = raw.substringBefore(" (").trim().ifBlank { raw }
-        val teamMatch = Regex("^(?i)team[\\s_-]*(\\d+)$").matchEntire(display)
-        val label = if (teamMatch != null) "Team ${teamMatch.groupValues[1]}" else display
-        val key = label.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "")
-        return key to label
+    fun formatCompactPinLabel(rawName: String): String {
+        val clean = flattenSingleLine(rawName)
+        if (clean.isEmpty()) return "Pin"
+        val segments = clean.split(TITLE_SEG_SPLIT_REGEX)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (segments.size >= 2) {
+            val picked = mutableListOf<String>()
+            var accLen = 0
+            for (seg in segments) {
+                if (picked.size >= 3) break
+                if (picked.any { it.equals(seg, ignoreCase = true) }) continue
+                val addLen = if (picked.isEmpty()) seg.length else 3 + seg.length
+                if (picked.size >= 2 && accLen + addLen > 42) break
+                picked.add(seg)
+                accLen += addLen
+            }
+            return truncateClean(picked.joinToString(" / "), 44)
+        }
+        return truncateClean(clean, 40)
+    }
+
+    private fun truncateClean(text: String, maxLen: Int): String {
+        val clean = flattenSingleLine(text)
+        if (clean.length <= maxLen) return clean
+        return clean.take((maxLen - 1).coerceAtLeast(1)).trimEnd() + "…"
     }
 }

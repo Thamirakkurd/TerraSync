@@ -125,8 +125,8 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
         val visiblePins = pins.filter { it.layerId !in hidden }
 
         if (visiblePins.isNotEmpty()) {
-            val pendingCount = visiblePins.count { it.status.equals("pending", true) }
-            val issueCount = visiblePins.count { it.status.equals("issue", true) }
+            val pendingCount = visiblePins.count { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
+            val issueCount = visiblePins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
             listBuilder.addItem(
                 Row.Builder()
                     .setTitle("All Visible Pins (${visiblePins.size})")
@@ -143,8 +143,8 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
 
         layers.take(5).forEach { layer ->
             val folderPins = pins.filter { it.layerId == layer.id }
-            val pending = folderPins.count { it.status.equals("pending", true) }
-            val issues = folderPins.count { it.status.equals("issue", true) }
+            val pending = folderPins.count { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
+            val issues = folderPins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
             listBuilder.addItem(
                 Row.Builder()
                     .setTitle(layer.name.ifBlank { "Folder" })
@@ -192,10 +192,10 @@ private class TerraSyncCarPinsScreen(
         val myLoc = getLastKnownLocation()
         val prioritized = workingPins.sortedWith(
             compareBy<PinItem> {
-                when (it.status.lowercase()) {
-                    "issue" -> 0
-                    "pending" -> 1
-                    else -> 2
+                when (PinStatus.fromRaw(it.status)) {
+                    PinStatus.ISSUE -> 0
+                    PinStatus.PENDING -> 1
+                    PinStatus.DONE -> 2
                 }
             }.thenBy {
                 if (myLoc != null) {
@@ -219,11 +219,12 @@ private class TerraSyncCarPinsScreen(
             }
 
             val folderName = layers.find { it.id == pin.layerId }?.name ?: "Pin"
+            val pinStatus = PinStatus.fromRaw(pin.status)
             val details = buildString {
                 append("  • ")
-                append(statusLabel(pin.status))
-                if ((pin.status.equals("issue", true) || pin.status.equals("done", true)) && pin.issueReason.isNotBlank()) {
-                    append(" (${pin.issueReason})")
+                append(pinStatus.label)
+                if ((pinStatus == PinStatus.ISSUE || pinStatus == PinStatus.DONE) && pin.issueReason.isNotBlank()) {
+                    append(" (${DailyReportGenerator.flattenSingleLine(pin.issueReason)})")
                 } else if (folderName.isNotBlank()) {
                     append(" • $folderName")
                 }
@@ -233,10 +234,10 @@ private class TerraSyncCarPinsScreen(
                 setSpan(DistanceSpan.create(distanceObj), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
             }
 
-            val markerColor = when (pin.status.lowercase()) {
-                "done" -> CarColor.GREEN
-                "issue" -> CarColor.RED
-                else -> CarColor.YELLOW
+            val markerColor = when (pinStatus) {
+                PinStatus.DONE -> CarColor.GREEN
+                PinStatus.ISSUE -> CarColor.RED
+                PinStatus.PENDING -> CarColor.YELLOW
             }
 
             val place = Place.Builder(CarLocation.create(pin.lat, pin.lng))

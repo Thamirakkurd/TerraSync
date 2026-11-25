@@ -33,6 +33,8 @@ object LocalFolderStore {
 
     private fun storeFile(ctx: Context): File = File(ctx.filesDir, FILE_NAME)
 
+    fun getCachedOrNull(): LocalStoreSnapshot? = cachedSnapshot
+
     fun preloadAsync(ctx: Context, onLoaded: ((LocalStoreSnapshot) -> Unit)? = null) {
         val existing = cachedSnapshot
         if (existing != null) {
@@ -83,7 +85,7 @@ object LocalFolderStore {
                             description = o.optString("description"),
                             lat = o.optDouble("lat"),
                             lng = o.optDouble("lng"),
-                            status = o.optString("status", "pending"),
+                            status = PinStatus.fromRaw(o.optString("status", "pending")).key,
                             issueReason = o.optString("issueReason"),
                             updatedAt = o.optLong("updatedAt", 0L),
                             isEdited = o.optBoolean("isEdited", false),
@@ -204,8 +206,19 @@ object LocalFolderStore {
             creatorDeviceId = creatorDeviceId,
             updatedAt = now
         )
-        val fixedPins = parsed.pins.map { it.copy(layerId = layerId, updatedAt = now) }
-        val fixedTracks = parsed.tracks.map { it.copy(layerId = layerId, updatedAt = now) }
+        val fixedPins = parsed.pins.map {
+            it.copy(
+                layerId = layerId,
+                status = PinStatus.fromRaw(it.status).key,
+                updatedAt = if (it.updatedAt > 0L) it.updatedAt else now
+            )
+        }
+        val fixedTracks = parsed.tracks.map {
+            it.copy(
+                layerId = layerId,
+                updatedAt = if (it.updatedAt > 0L) it.updatedAt else now
+            )
+        }
         writeAll(
             ctx,
             LocalStoreSnapshot(

@@ -46,10 +46,10 @@ object KmlCsvExporter {
         return "\"$clean\""
     }
 
-    private fun styleUrlForStatus(status: String): String = when (status.lowercase()) {
-        "done" -> "#placemark-green"
-        "issue" -> "#placemark-red"
-        else -> "#placemark-orange"
+    private fun styleUrlForStatus(status: String): String = when (PinStatus.fromRaw(status)) {
+        PinStatus.DONE -> "#placemark-green"
+        PinStatus.ISSUE -> "#placemark-red"
+        PinStatus.PENDING -> "#placemark-orange"
     }
 
     fun exportAndShareKml(
@@ -93,7 +93,7 @@ object KmlCsvExporter {
                 sb.append("  </Style>\n")
 
                 pinsCopy.forEach { p ->
-                    val normStatus = p.status.trim().lowercase().ifBlank { "pending" }
+                    val normStatus = PinStatus.fromRaw(p.status).key
                     val hasMeaningfulEdit = normStatus != "pending" ||
                         p.issueReason.isNotBlank() ||
                         p.isEdited ||
@@ -152,10 +152,12 @@ object KmlCsvExporter {
                 file to "Export KML: $exportTitle"
             }
             mainHandler.post {
+                val act = ctx as? android.app.Activity
+                if (act != null && (act.isFinishing || act.isDestroyed)) return@post
                 result.onSuccess { (file, title) ->
                     shareFile(ctx, file, "application/vnd.google-earth.kml+xml", title, extraShareText)
                 }.onFailure {
-                    android.widget.Toast.makeText(ctx, "Failed to export KML file", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(appCtx, "Failed to export KML file", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -192,10 +194,12 @@ object KmlCsvExporter {
                 file
             }
             mainHandler.post {
+                val act = ctx as? android.app.Activity
+                if (act != null && (act.isFinishing || act.isDestroyed)) return@post
                 result.onSuccess { file ->
                     shareFile(ctx, file, "text/csv", "Export CSV: ${layer.name}", null)
                 }.onFailure {
-                    android.widget.Toast.makeText(ctx, "Failed to export CSV file", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(appCtx, "Failed to export CSV file", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         }
