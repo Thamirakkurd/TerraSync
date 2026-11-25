@@ -122,7 +122,7 @@ class OfflineMapManager(context: Context) {
 
     private fun formatSize(bytes: Long): String {
         val kb = (bytes / 1024L).coerceAtLeast(1L)
-        return if (kb >= 1024L) "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB" else "$kb KB"
+        return if (kb >= 1024L) "${"%.1f".format(java.util.Locale.US, bytes / (1024.0 * 1024.0))} MB" else "$kb KB"
     }
 
     fun refreshAll(onReady: (() -> Unit)? = null) {
@@ -397,17 +397,18 @@ class OfflineMapManager(context: Context) {
         val roadDl = OfflineRoutingEngine.isDownloading(packId)
         val note = roadProgressNotes[packId].orEmpty()
 
+        val mbStr = "%.1f".format(java.util.Locale.US, mb)
         val text = when {
             status.isComplete && road != null ->
-                "Map ${"%.1f".format(mb)} MB + Roads ${formatSize(road.sizeBytes)} (fully offline)"
+                "Map $mbStr MB + Roads ${formatSize(road.sizeBytes)} (fully offline)"
             status.isComplete && roadDl ->
-                "Map ${"%.1f".format(mb)} MB • ${note.ifBlank { "Downloading roads..." }}"
+                "Map $mbStr MB • ${note.ifBlank { "Downloading roads..." }}"
             status.isComplete ->
-                "Map ${"%.1f".format(mb)} MB • Routing not downloaded yet"
+                "Map $mbStr MB • Routing not downloaded yet"
             active ->
-                "Downloading map $pct% ($done/$req) • ${"%.1f".format(mb)} MB"
+                "Downloading map $pct% ($done/$req) • $mbStr MB"
             done > 0 ->
-                "Paused $pct% • ${"%.1f".format(mb)} MB"
+                "Paused $pct% • $mbStr MB"
             else ->
                 "Not downloaded (online only)"
         }

@@ -108,6 +108,8 @@ class MainActivity : AppCompatActivity() {
         private const val PINS_LABELS_LAYER = "terrasync-pins-labels-layer"
         private const val SELECTED_SOURCE = "terrasync-selected-source"
         private const val SELECTED_HALO_LAYER = "terrasync-selected-halo-layer"
+        private const val PREVIEW_PIN_SOURCE = "terrasync-preview-pin-source"
+        private const val PREVIEW_PIN_LAYER = "terrasync-preview-pin-layer"
         private const val PULSE_SOURCE = "terrasync-pulse-source"
         private const val PULSE_LAYER = "terrasync-pulse-layer"
         private const val USER_LOC_SOURCE = "terrasync-userloc-source"
@@ -170,7 +172,15 @@ class MainActivity : AppCompatActivity() {
 
     }
 
-    private data class SharedPinTarget(val lat: Double, val lng: Double, val name: String, val pinId: String)
+    private data class SharedPinTarget(
+        val lat: Double,
+        val lng: Double,
+        val name: String,
+        val pinId: String,
+        val zoom: Double? = null,
+        val sourceHint: String = "Shared via TerraSync",
+        val showPreviewPin: Boolean = true
+    )
     private data class PendingRouteReq(
         val destLat: Double,
         val destLng: Double,
@@ -211,7 +221,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTabAbout: ImageButton
     private lateinit var bottomDock: LinearLayout
     private lateinit var mapControlsRow: LinearLayout
+    private lateinit var bottomNavDock: FrameLayout
+    private lateinit var navActiveIndicator: View
     private lateinit var bottomIconRow: LinearLayout
+    private var activeBottomTabIdx: Int = 0
     private lateinit var speedBadge: LinearLayout
     private lateinit var tvSpeedValue: TextView
     private lateinit var tvSpeedUnit: TextView
@@ -297,9 +310,10 @@ class MainActivity : AppCompatActivity() {
     private var isRulerMode = false
     private val rulerPoints = mutableListOf<LatLng>()
 
-    // Selected pin or tapped location sky-blue dot marker
+    // Selected pin or tapped location sky-blue dot marker + temporary external preview pin
     private var selectedPinId: String? = null
     private var selectedMarkerLatLng: LatLng? = null
+    private var previewPinLatLng: LatLng? = null
     private var pulseAnimator: ValueAnimator? = null
 
     // Custom Route From Origin
@@ -352,12 +366,22 @@ class MainActivity : AppCompatActivity() {
         ) {
             if (!ensureLocationServiceOn()) return@registerForActivityResult
             startLiveGpsUpdates()
-            isFollowingGps = true
-            updateLocationIconTint()
-            currentLocation?.let {
-                map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 16.5))
+            val queued = pendingRouteReq
+            val loc = currentLocation
+            if (queued != null && loc != null && locationAgeMs(loc) <= 120_000L &&
+                System.currentTimeMillis() - queued.requestedAtMs <= 30_000L && activeNavRoute == null
+            ) {
+                pendingRouteReq = null
+                openRoutePreview(queued.destLat, queued.destLng, queued.destTitle, queued.mode)
+            } else if (queued == null) {
+                isFollowingGps = true
+                updateLocationIconTint()
+                loc?.let {
+                    map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 16.5))
+                }
             }
         } else {
+            pendingRouteReq = null
             Toast.makeText(this, "Location permission denied", Toast.LENGTH_SHORT).show()
         }
     }
@@ -710,7 +734,14 @@ class MainActivity : AppCompatActivity() {
         btnTabAbout = findViewById(R.id.btnTabAbout)
         bottomDock = findViewById(R.id.bottomDock)
         mapControlsRow = findViewById(R.id.mapControlsRow)
+        bottomNavDock = findViewById(R.id.bottomNavDock)
+        navActiveIndicator = findViewById(R.id.navActiveIndicator)
         bottomIconRow = findViewById(R.id.bottomIconRow)
+        bottomNavDock.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if ((right - left) != (oldRight - oldLeft)) {
+                syncNavDockIndicator(animate = false)
+            }
+        }
         speedBadge = findViewById(R.id.speedBadge)
         tvSpeedValue = findViewById(R.id.tvSpeedValue)
         tvSpeedUnit = findViewById(R.id.tvSpeedUnit)
@@ -758,6 +789,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun syncNavDockIndicator(animate: Boolean) {
+        if (!::bottomNavDock.isInitialized || !::navActiveIndicator.isInitialized) return
+        val p = currentPalette()
+        val tabs = listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout)
+        val innerW = bottomNavDock.width - bottomNavDock.paddingStart - bottomNavDock.paddingEnd
+        if (innerW > 0) {
+            val slotW = innerW / tabs.size
+            val pillW = (slotW - dp(4)).coerceAtLeast(dp(44))
+            val isRtl = bottomNavDock.layoutDirection == View.LAYOUT_DIRECTION_RTL
+            val visualIdx = if (isRtl) (tabs.lastIndex - activeBottomTabIdx) else activeBottomTabIdx
+            val targetX = visualIdx * slotW + (slotW - pillW) / 2f
+            UiAnimations.animateNavIndicator(navActiveIndicator, targetX, pillW, animate)
+        }
+        tabs.forEachIndexed { idx, btn ->
+            btn.setColorFilter(if (idx == activeBottomTabIdx) p.onDarkSurface else p.inactiveNavIcon)
+        }
+    }
+
     private fun applyMapChromeTheme() {
         applyTransparentSystemBars()
         val p = currentPalette()
@@ -765,45 +814,59 @@ class MainActivity : AppCompatActivity() {
         val darkMapBg = night || mapStyleMode == MapStyleMode.SATELLITE
         updateSystemBarContrast()
         val iconTint = p.iconTint
-        val scaleColor = Color.parseColor(if (darkMapBg) "#F2F3F5" else "#1C1C1E")
+        val scaleColor = Color.parseColor(if (darkMapBg) "#F4F4F0" else "#1C1E1B")
 
-        // Standard circular map controls (full circle radius, soft low-elevation shadow)
-        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 24f, 4f)
-        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 24f, 4f)
-        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 24f, 4f)
+        // Pure circular 46dp floating utility map controls (#FFFFFF / #20221F + subtle border + soft shadow)
+        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 23f, 4f)
+        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 23f, 4f)
+        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 23f, 4f)
         DesignSystem.applyFloatingControl(
             this,
             btnLasso,
             p,
-            24f,
+            23f,
             4f,
-            activeFillColor = if (isLassoMode) p.green else null
+            activeFillColor = if (isLassoMode) p.accentPrimary else null
         )
         DesignSystem.applyFloatingControl(
             this,
             btnRuler,
             p,
-            24f,
+            23f,
             4f,
-            activeFillColor = if (isRulerMode) p.accent else null
+            activeFillColor = if (isRulerMode) p.accentPrimary else null
         )
-        DesignSystem.applyFloatingControl(this, btnZoomIn, p, 24f, 4f)
-        DesignSystem.applyFloatingControl(this, btnZoomOut, p, 24f, 4f)
-        DesignSystem.applyFloatingControl(this, btnImport, p, 24f, 4f, activeFillColor = p.green)
-        DesignSystem.applyFloatingControl(this, btnLocate, p, 25f, 5f)
+        DesignSystem.applyFloatingControl(this, btnZoomIn, p, 23f, 4f)
+        DesignSystem.applyFloatingControl(this, btnZoomOut, p, 23f, 4f)
+        DesignSystem.applyFloatingControl(this, btnImport, p, 23f, 4f)
 
-        // Bottom 4 rounded-square controls (14dp corners, opaque white/dark)
+        // Floating Capsule Bottom Navigation Dock (32dp capsule, 58dp height, 6dp inner padding, emerald active tab)
+        DesignSystem.applyFloatingSurface(
+            this,
+            bottomNavDock,
+            p,
+            radiusDp = 32f,
+            elevationDp = 8f,
+            fillOverride = p.surfaceFloating,
+            strokeOverride = p.borderSubtle
+        )
+        navActiveIndicator.background = DesignSystem.buildOpaqueDrawable(
+            this,
+            fillColor = p.accentPrimary,
+            radiusDp = 24f
+        )
         bottomIconRow.background = null
         bottomIconRow.elevation = 0f
         listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout).forEach { btn ->
-            DesignSystem.applyFloatingControl(this, btn, p, 14f, 5f)
-            btn.setColorFilter(iconTint)
+            btn.background = null
+            UiAnimations.attachSnappyPress(btn, 0.92f)
         }
+        bottomNavDock.post { syncNavDockIndicator(animate = false) }
 
         btnStyleToggle.setColorFilter(
             when (mapStyleMode) {
-                MapStyleMode.SATELLITE -> p.accent
-                MapStyleMode.VECTOR -> p.green
+                MapStyleMode.SATELLITE -> p.accentWarm
+                MapStyleMode.VECTOR -> iconTint
             }
         )
         btnLasso.setColorFilter(if (isLassoMode) Color.WHITE else iconTint)
@@ -811,59 +874,69 @@ class MainActivity : AppCompatActivity() {
         updateSentToggleUi()
         btnZoomIn.setColorFilter(iconTint)
         btnZoomOut.setColorFilter(iconTint)
-        btnImport.setColorFilter(Color.WHITE)
+        btnImport.setColorFilter(p.accentPrimary)
         updateFilterIconTint()
         updateLocationIconTint()
-        btnSyncStatus.setColorFilter(if (isLiveConnected) p.green else p.amber)
+        btnSyncStatus.setColorFilter(if (isLiveConnected) p.accentPrimary else p.amber)
 
-        // Crisp Organic Maps scale bar
+        // Crisp minimalist scale bar
         scaleBarContainer.background = null
         scaleBarContainer.elevation = 0f
         scaleBarContainer.setPadding(dp(4), dp(2), dp(4), dp(2))
         tvScaleLabel.setTextColor(scaleColor)
-        tvScaleLabel.setShadowLayer(4f, 0f, 0f, Color.parseColor(if (darkMapBg) "#CC111317" else "#E6FFFFFF"))
+        tvScaleLabel.setShadowLayer(4f, 0f, 0f, Color.parseColor(if (darkMapBg) "#CC161715" else "#E6FAF9F6"))
         scaleBarLine.setBackgroundColor(scaleColor)
         scaleBarContainer.visibility = if (DevicePrefs.isScaleBarEnabled(this)) View.VISIBLE else View.GONE
 
         // Crisp circular Speed HUD with tabular numerals
         DesignSystem.applyFloatingSurface(this, speedBadge, p, radiusDp = 30f, elevationDp = 5f)
         tvSpeedValue.setTextColor(p.textPrimary)
-        tvSpeedUnit.setTextColor(p.textSecondary)
+        tvSpeedUnit.setTextColor(p.textMuted)
 
-        DesignSystem.applyFloatingSurface(this, routeFromBanner, p, radiusDp = 16f, elevationDp = 5f, strokeOverride = p.accent)
+        DesignSystem.applyFloatingSurface(this, routeFromBanner, p, radiusDp = 20f, elevationDp = 5f, strokeOverride = p.accentPrimary)
         tvRouteFromText.setTextColor(p.textPrimary)
-        btnClearRouteFrom.setColorFilter(p.textSecondary)
+        btnClearRouteFrom.setColorFilter(p.textMuted)
 
-        DesignSystem.applyFloatingSurface(this, rulerCard, p, radiusDp = 20f, elevationDp = 8f)
+        DesignSystem.applyFloatingSurface(this, rulerCard, p, radiusDp = 24f, elevationDp = 8f)
         tvRulerDistance.setTextColor(p.textPrimary)
-        tvRulerSubtitle.setTextColor(p.textSecondary)
-        btnRulerReset.setTextColor(p.accent)
-        UiAnimations.applyRoundedRipple(this, btnRulerReset, p.accentSoft, 10f, night)
+        tvRulerSubtitle.setTextColor(p.textMuted)
+        btnRulerReset.setTextColor(p.accentPrimary)
+        UiAnimations.applyRoundedRipple(this, btnRulerReset, p.accentPrimarySoft, 12f, night)
         UiAnimations.attachSnappyPress(btnRulerReset)
         btnRulerUndo.setColorFilter(iconTint)
         UiAnimations.attachSnappyPress(btnRulerUndo)
         btnRulerClose.setColorFilter(iconTint)
         UiAnimations.attachSnappyPress(btnRulerClose)
 
-        DesignSystem.applyFloatingSurface(this, lassoCard, p, radiusDp = 20f, elevationDp = 8f)
+        DesignSystem.applyFloatingSurface(this, lassoCard, p, radiusDp = 24f, elevationDp = 8f)
         tvLassoTitle.setTextColor(p.textPrimary)
-        tvLassoSubtitle.setTextColor(p.textSecondary)
+        tvLassoSubtitle.setTextColor(p.textMuted)
         btnLassoClose.setColorFilter(iconTint)
         UiAnimations.attachSnappyPress(btnLassoClose)
         UiAnimations.attachSnappyPress(btnLassoModeToggle)
-        UiAnimations.applyRoundedRipple(this, btnLassoMarkSent, p.green, 12f, isDark = true)
+        UiAnimations.applyRoundedRipple(this, btnLassoMarkSent, p.accentPrimary, 12f, isDark = true)
         UiAnimations.attachSnappyPress(btnLassoMarkSent)
         btnLassoRedraw.setTextColor(p.textPrimary)
-        UiAnimations.applyRoundedRipple(this, btnLassoRedraw, p.chipSurface, 12f, night)
+        UiAnimations.applyRoundedRipple(this, btnLassoRedraw, p.surfaceTonal, 12f, night)
         UiAnimations.attachSnappyPress(btnLassoRedraw)
         btnLassoUndo.setTextColor(p.textPrimary)
-        UiAnimations.applyRoundedRipple(this, btnLassoUndo, p.chipSurface, 12f, night)
+        UiAnimations.applyRoundedRipple(this, btnLassoUndo, p.surfaceTonal, 12f, night)
         UiAnimations.attachSnappyPress(btnLassoUndo)
         btnLassoReset.setTextColor(p.red)
         UiAnimations.applyRoundedRipple(this, btnLassoReset, p.redSoft, 12f, night)
         UiAnimations.attachSnappyPress(btnLassoReset)
 
-        DesignSystem.applyFloatingSurface(this, inScreenSheet, p, radiusDp = 20f, elevationDp = 12f, topOnly = true)
+        // Bottom Sheet: 28dp top corners, 0dp bottom, warm canvas (#FAF9F6 / #161715)
+        DesignSystem.applyFloatingSurface(
+            this,
+            inScreenSheet,
+            p,
+            radiusDp = 28f,
+            elevationDp = 12f,
+            topOnly = true,
+            fillOverride = p.surfaceCanvas,
+            strokeOverride = if (night) p.borderSubtle else Color.TRANSPARENT
+        )
         sheetDragHandle.background = GradientDrawable().apply {
             setColor(p.handleColor)
             cornerRadius = dp(4).toFloat()
@@ -984,10 +1057,26 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { stopNavigation() }
         }
 
-        btnTabSearch.setOnClickListener { openFullPage(::buildSearchPage) }
-        btnTabBookmarks.setOnClickListener { openFullPage(::buildBookmarksAndTracksPage) }
-        btnTabSettings.setOnClickListener { openFullPage(::buildSettingsPage) }
-        btnTabAbout.setOnClickListener { openFullPage(::buildAboutPage) }
+        btnTabSearch.setOnClickListener {
+            activeBottomTabIdx = 0
+            syncNavDockIndicator(animate = true)
+            openFullPage(::buildSearchPage)
+        }
+        btnTabBookmarks.setOnClickListener {
+            activeBottomTabIdx = 1
+            syncNavDockIndicator(animate = true)
+            openFullPage(::buildBookmarksAndTracksPage)
+        }
+        btnTabSettings.setOnClickListener {
+            activeBottomTabIdx = 2
+            syncNavDockIndicator(animate = true)
+            openFullPage(::buildSettingsPage)
+        }
+        btnTabAbout.setOnClickListener {
+            activeBottomTabIdx = 3
+            syncNavDockIndicator(animate = true)
+            openFullPage(::buildAboutPage)
+        }
     }
 
     private fun showMultiStatusFilterDialog() {
@@ -1003,23 +1092,20 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(10) }
+            ).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(14)
+            }
         }
         header.addView(TextView(this).apply {
             text = "Filter Pins"
-            textSize = 18f
+            textSize = 19.5f
+            letterSpacing = -0.01f
             setTypeface(null, Typeface.BOLD)
             setTextColor(p.textPrimary)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        header.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.ic_close)
-            setColorFilter(p.textSecondary)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            setOnClickListener { hideInScreenSheet() }
-        })
+        header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
         sheetContent.addView(header)
 
         val card = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 4, bottomMarginDp = 12)
@@ -1091,9 +1177,9 @@ class MainActivity : AppCompatActivity() {
 
         val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
         val visibleFolderPins = pins.filter { it.layerId !in hiddenLayerIds }
-        val cntPending = visibleFolderPins.count { !it.status.equals("done", true) && !it.status.equals("issue", true) }
-        val cntDone = visibleFolderPins.count { it.status.equals("done", true) }
-        val cntIssue = visibleFolderPins.count { it.status.equals("issue", true) }
+        val cntDone = visibleFolderPins.count { PinStatus.fromRaw(it.status) == PinStatus.DONE }
+        val cntIssue = visibleFolderPins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+        val cntPending = visibleFolderPins.size - cntDone - cntIssue
 
         swAll = makeFilterRow(
             dotColor = null,
@@ -1145,14 +1231,14 @@ class MainActivity : AppCompatActivity() {
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.accent)
             cornerRadius = dp(12)
+            DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { hideInScreenSheet() }
         })
 
+        UiAnimations.animateSheetContentReveal(sheetContent)
         showInScreenSheet(peekDp = 420)
         sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
     }
@@ -1239,8 +1325,20 @@ class MainActivity : AppCompatActivity() {
             val name = data.getQueryParameter("name")?.trim().orEmpty().ifBlank { "Shared Pin" }
             val pinId = data.getQueryParameter("id")?.trim().orEmpty()
             if (lat != null && lng != null && lat in -90.0..90.0 && lng in -180.0..180.0) {
-                val target = SharedPinTarget(lat, lng, name, pinId)
+                hasAutoZoomedInitial = true
+                val target = SharedPinTarget(lat, lng, name, pinId, sourceHint = "Shared via TerraSync")
                 if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
+            }
+            return
+        }
+
+        if (GeoIntentParser.isSupportedLocationUri(data)) {
+            hasAutoZoomedInitial = true
+            val parsed = GeoIntentParser.parse(data)
+            if (parsed != null) {
+                handleParsedLocationIntent(parsed)
+            } else {
+                Toast.makeText(this, "Could not read coordinates from link", Toast.LENGTH_SHORT).show()
             }
             return
         }
@@ -1251,13 +1349,73 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun handleParsedLocationIntent(parsed: ParsedLocationIntent) {
+        if (parsed.needsRedirectResolution && parsed.originalUrl.isNotBlank()) {
+            Toast.makeText(this, "Opening shared location...", Toast.LENGTH_SHORT).show()
+            RoutingEngine.ioExecutor.execute {
+                val resolved = GeoIntentParser.resolveRedirectAndParse(parsed.originalUrl)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (resolved != null && !resolved.needsRedirectResolution) {
+                        handleParsedLocationIntent(resolved)
+                    } else {
+                        Toast.makeText(this, "Unable to resolve shared map link", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            return
+        }
+
+        if (parsed.hasValidCoordinates) {
+            val lat = parsed.lat!!
+            val lng = parsed.lng!!
+            val label = parsed.label.ifBlank { "Shared Location" }
+            val target = SharedPinTarget(
+                lat = lat,
+                lng = lng,
+                name = label,
+                pinId = "",
+                zoom = parsed.zoom,
+                sourceHint = parsed.sourceHint,
+                showPreviewPin = true
+            )
+            if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
+            return
+        }
+
+        if (parsed.searchQuery.isNotBlank()) {
+            Toast.makeText(this, "Searching \"${parsed.searchQuery}\"...", Toast.LENGTH_SHORT).show()
+            val center = map?.cameraPosition?.target
+            RoutingEngine.searchPlaces(parsed.searchQuery, center?.latitude, center?.longitude) { places, err ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    val top = places.firstOrNull()
+                    if (top != null) {
+                        val target = SharedPinTarget(
+                            lat = top.lat,
+                            lng = top.lng,
+                            name = top.title.ifBlank { parsed.searchQuery },
+                            pinId = "",
+                            zoom = parsed.zoom ?: 16.0,
+                            sourceHint = top.subtitle.ifBlank { parsed.sourceHint },
+                            showPreviewPin = true
+                        )
+                        if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
+                    } else {
+                        Toast.makeText(this, err ?: "No location found for \"${parsed.searchQuery}\"", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
+
     private fun ensurePinVisibleOnMap(pin: PinItem) {
         var changed = false
         if (!DevicePrefs.isLayerVisible(this, pin.layerId)) {
             DevicePrefs.setLayerVisible(this, pin.layerId, true)
             changed = true
         }
-        val normStatus = pin.status.lowercase().ifBlank { "pending" }
+        val normStatus = PinStatus.fromRaw(pin.status).key
         if (normStatus !in visibleStatuses) {
             visibleStatuses.add(normStatus)
             DevicePrefs.setVisibleStatuses(this, visibleStatuses)
@@ -1276,19 +1434,60 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openSharedPinTarget(target: SharedPinTarget) {
+        hasAutoZoomedInitial = true
+        if (isFollowingGps) {
+            isFollowingGps = false
+            updateLocationIconTint()
+        }
+        if (pageOverlayContainer.visibility == View.VISIBLE) {
+            closeFullPage()
+        }
+        if (isRulerMode) toggleRulerMode(false)
+        if (isLassoMode) toggleLassoMode(false)
+
         val matched = if (target.pinId.isNotBlank()) pinById[target.pinId] else null
         if (matched != null) {
             activeSharedPinId = null
+            previewPinLatLng = null
             ensurePinVisibleOnMap(matched)
             selectPinAndOpenCard(matched, zoomIfFar = true)
             return
         }
+        val destLatLng = LatLng(target.lat, target.lng)
         activeSharedPinId = target.pinId.ifBlank { null }
         selectedPinId = null
-        selectedMarkerLatLng = LatLng(target.lat, target.lng)
+        selectedMarkerLatLng = destLatLng
+        previewPinLatLng = if (target.showPreviewPin) destLatLng else null
         renderSelectedMarker()
-        centerUpperHalf(LatLng(target.lat, target.lng), (map?.cameraPosition?.zoom ?: 15.0).coerceAtLeast(16.0))
-        showTappedPlaceCard(target.name, "Shared via TerraSync", target.lat, target.lng)
+        val desiredZoom = (target.zoom ?: (map?.cameraPosition?.zoom ?: 15.0).coerceAtLeast(16.0)).coerceIn(4.0, 20.0)
+        mapView.post {
+            if (!isFinishing && !isDestroyed) {
+                centerUpperHalf(destLatLng, desiredZoom)
+                fireStatusPulse(target.lat, target.lng, "#EE6A26")
+            }
+        }
+        showTappedPlaceCard(target.name, target.sourceHint, target.lat, target.lng)
+        if (target.name == "Shared Location") {
+            RoutingEngine.reverseGeocode(target.lat, target.lng) { place ->
+                if (place != null) {
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (activeTappedLatLng != destLatLng || selectedPinId != null) return@runOnUiThread
+                        if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
+                        tappedResolvedTitle = place.title
+                        tappedResolvedSub = place.subtitle.ifBlank { target.sourceHint }
+                        tappedTitleView?.text = tappedResolvedTitle
+                        val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
+                        val distText = currentLocation?.let {
+                            "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, target.lat, target.lng), unit)} away"
+                        } ?: ""
+                        val subLine = listOf(tappedResolvedSub, distText).filter { it.isNotBlank() }.joinToString(" • ")
+                        tappedSubView?.text = subLine
+                        tappedSubView?.visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
+                    }
+                }
+            }
+        }
     }
 
     // --- Map Style, Optional 3D Buildings, Hillshading & Overlay Layers ---
@@ -1520,6 +1719,21 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        // Temporary preview pin for incoming external geo: / map link locations
+        if (style.getSource(PREVIEW_PIN_SOURCE) == null) {
+            style.addSource(GeoJsonSource(PREVIEW_PIN_SOURCE))
+            style.addLayer(
+                SymbolLayer(PREVIEW_PIN_LAYER, PREVIEW_PIN_SOURCE).withProperties(
+                    PropertyFactory.iconImage("pin-preview"),
+                    PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                    PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
+                    PropertyFactory.iconSize(1.0f),
+                    PropertyFactory.iconAllowOverlap(true),
+                    PropertyFactory.iconIgnorePlacement(true)
+                )
+            )
+        }
+
         // Ruler Measurement Layers (Line + Numbered Waypoints)
         if (style.getSource(RULER_LINE_SOURCE) == null) {
             style.addSource(GeoJsonSource(RULER_LINE_SOURCE))
@@ -1572,7 +1786,7 @@ class MainActivity : AppCompatActivity() {
         val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
         val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
         return pins.filter { p ->
-            val normStatus = p.status.lowercase().ifBlank { "pending" }
+            val normStatus = PinStatus.fromRaw(p.status).key
             p.layerId !in hiddenLayerIds && normStatus in visibleStatuses && p.id !in sentIds
         }
     }
@@ -1624,6 +1838,14 @@ class MainActivity : AppCompatActivity() {
         val pinFeatures = ArrayList<Feature>(visiblePins.size)
         val selId = selectedPinId
         var selectedPinItem: PinItem? = null
+        // Draw Done bottom, Issue middle, Pending top so unvisited pins at identical coords are never occluded
+        val orderedPins = visiblePins.sortedBy {
+            when (PinStatus.fromRaw(it.status)) {
+                PinStatus.DONE -> 0
+                PinStatus.ISSUE -> 1
+                PinStatus.PENDING -> 2
+            }
+        }
         fun appendPinFeature(pin: PinItem) {
             val trimmed = pin.name.trim()
             val shortLabel = if (trimmed.length > 22) trimmed.take(21).trimEnd() + "…" else trimmed
@@ -1632,11 +1854,11 @@ class MainActivity : AppCompatActivity() {
                     addStringProperty("id", pin.id)
                     addStringProperty("name", pin.name)
                     addStringProperty("label", shortLabel)
-                    addStringProperty("icon", statusIconId(pin.status))
+                    addStringProperty("icon", PinStatus.fromRaw(pin.status).iconId)
                 }
             )
         }
-        for (pin in visiblePins) {
+        for (pin in orderedPins) {
             if (selId != null && pin.id == selId) {
                 selectedPinItem = pin
                 continue
@@ -1738,6 +1960,13 @@ class MainActivity : AppCompatActivity() {
         } else emptyList()
         style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(selFeatures))
+
+        val prevLoc = previewPinLatLng
+        val previewFeatures = if (prevLoc != null) {
+            listOf(Feature.fromGeometry(Point.fromLngLat(prevLoc.longitude, prevLoc.latitude)))
+        } else emptyList()
+        style.getSourceAs<GeoJsonSource>(PREVIEW_PIN_SOURCE)
+            ?.setGeoJson(FeatureCollection.fromFeatures(previewFeatures))
     }
 
     private fun renderMapData() {
@@ -1844,7 +2073,7 @@ class MainActivity : AppCompatActivity() {
         if (hideSentPins) {
             btnSentToggle.text = "Unsent Only"
             btnSentToggle.setTextColor(Color.WHITE)
-            DesignSystem.applyFloatingControl(this, btnSentToggle, p, 24f, 4f, activeFillColor = p.green)
+            DesignSystem.applyFloatingControl(this, btnSentToggle, p, 24f, 4f, activeFillColor = p.accentPrimary)
         } else {
             btnSentToggle.text = "All Pins"
             btnSentToggle.setTextColor(p.textPrimary)
@@ -1866,7 +2095,7 @@ class MainActivity : AppCompatActivity() {
         if (enabled) {
             hideInScreenSheet()
             UiAnimations.fadeShow(bottomDock, 160L)
-            bottomIconRow.visibility = View.GONE
+            bottomNavDock.visibility = View.GONE
             UiAnimations.showSlideBottom(lassoCard)
             lassoOverlay.visibility = View.VISIBLE
             lassoOverlay.clearLoop()
@@ -1877,7 +2106,7 @@ class MainActivity : AppCompatActivity() {
             lassoOverlay.clearLoop()
             lassoOverlay.visibility = View.GONE
             UiAnimations.hideSlideBottom(lassoCard)
-            if (activeNavRoute == null && !isRulerMode) UiAnimations.showSlideBottom(bottomIconRow)
+            if (activeNavRoute == null && !isRulerMode) UiAnimations.showSlideBottom(bottomNavDock)
         }
         applyMapChromeTheme()
     }
@@ -2026,13 +2255,13 @@ class MainActivity : AppCompatActivity() {
         if (enabled) {
             hideInScreenSheet()
             UiAnimations.fadeShow(bottomDock, 160L)
-            bottomIconRow.visibility = View.GONE
+            bottomNavDock.visibility = View.GONE
             UiAnimations.showSlideBottom(rulerCard)
             updateRulerUi()
         } else {
             rulerPoints.clear()
             UiAnimations.hideSlideBottom(rulerCard)
-            if (activeNavRoute == null && !isLassoMode) UiAnimations.showSlideBottom(bottomIconRow)
+            if (activeNavRoute == null && !isLassoMode) UiAnimations.showSlideBottom(bottomNavDock)
         }
         applyMapChromeTheme()
         renderRulerOverlay()
@@ -2074,13 +2303,13 @@ class MainActivity : AppCompatActivity() {
                 val mi = totalMeters / 1609.344
                 when {
                     ft < 1000.0 -> "${ft.roundToInt()} ft"
-                    mi < 10.0 -> "${"%.2f".format(mi)} mi"
-                    else -> "${"%.1f".format(mi)} mi"
+                    mi < 10.0 -> "${"%.2f".format(Locale.US, mi)} mi"
+                    else -> "${"%.1f".format(Locale.US, mi)} mi"
                 }
             }
             totalMeters < 1000.0 -> "${totalMeters.roundToInt()} m"
-            totalMeters < 10000.0 -> "${"%.2f".format(totalMeters / 1000.0)} km"
-            else -> "${"%.1f".format(totalMeters / 1000.0)} km"
+            totalMeters < 10000.0 -> "${"%.2f".format(Locale.US, totalMeters / 1000.0)} km"
+            else -> "${"%.1f".format(Locale.US, totalMeters / 1000.0)} km"
         }
         tvRulerSubtitle.text = when (rulerPoints.size) {
             0 -> "Tap map to drop point 1"
@@ -2095,7 +2324,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setRouteOrigin(lat: Double, lng: Double, label: String) {
         routeOriginLatLng = LatLng(lat, lng)
-        routeOriginName = label.ifBlank { "${"%.5f".format(lat)}, ${"%.5f".format(lng)}" }
+        routeOriginName = label.ifBlank { "${"%.5f".format(Locale.US, lat)}, ${"%.5f".format(Locale.US, lng)}" }
         tvRouteFromText.text = "From: $routeOriginName (tap a destination)"
         UiAnimations.showSlideTop(routeFromBanner)
         hideInScreenSheet()
@@ -2157,6 +2386,7 @@ class MainActivity : AppCompatActivity() {
 
         selectedPinId = null
         selectedMarkerLatLng = latLng
+        previewPinLatLng = null
         renderSelectedMarker()
 
         val initialTitle = detectedTitle.ifBlank { "Selected Location" }
@@ -2188,6 +2418,7 @@ class MainActivity : AppCompatActivity() {
     private fun selectPinAndOpenCard(pin: PinItem, zoomIfFar: Boolean = false) {
         selectedPinId = pin.id
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
+        previewPinLatLng = null
         renderSelectedMarker()
         map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
@@ -2197,9 +2428,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearSelectedMarker() {
-        val hadSelection = selectedPinId != null || selectedMarkerLatLng != null
+        val hadSelection = selectedPinId != null || selectedMarkerLatLng != null || previewPinLatLng != null
         selectedPinId = null
         selectedMarkerLatLng = null
+        previewPinLatLng = null
         activeSharedPinId = null
         activeTappedLatLng = null
         tappedTitleView = null
@@ -2243,7 +2475,7 @@ class MainActivity : AppCompatActivity() {
         val encodedName = Uri.encode(name)
         val idPart = if (pinId.isNotBlank()) "&id=${Uri.encode(pinId)}" else ""
         val link = "https://thamirakkurd.github.io/TerraSync/pin?lat=$lat&lng=$lng&name=$encodedName$idPart"
-        return "$name\n${"%.6f".format(lat)}, ${"%.6f".format(lng)}\nOpen in TerraSync: $link"
+        return "$name\n${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}\nOpen in TerraSync: $link"
     }
 
     // --- Polished Pin Card (Stacked Cycler, Route To / Route From, Owner-Only Delete) ---
@@ -2269,9 +2501,9 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(12), dp(8), dp(8), dp(8))
                 background = GradientDrawable().apply {
-                    setColor(p.accentSoft)
+                    setColor(p.accentPrimarySoft)
                     cornerRadius = dp(12).toFloat()
-                    setStroke(dp(1), if (night) Color.parseColor("#3D3B9BFF") else Color.parseColor("#331E88E5"))
+                    setStroke(dp(1), p.borderSubtle)
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2339,34 +2571,89 @@ class MainActivity : AppCompatActivity() {
             sheetContent.addView(stackRow)
         }
 
-        // 2. Top Header: Title + Star + Share + Close
+        // 2. Top Header: Status Badge + Title/Coords + Star + Share + Circular Close
+        val pinStatus = PinStatus.fromRaw(pin.status)
+        val badgeBg = when (pinStatus) {
+            PinStatus.DONE -> p.greenSoft
+            PinStatus.ISSUE -> p.redSoft
+            PinStatus.PENDING -> p.amberSoft
+        }
+        val badgeGlyph = when (pinStatus) {
+            PinStatus.DONE -> p.green
+            PinStatus.ISSUE -> p.red
+            PinStatus.PENDING -> p.amber
+        }
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(4) }
+            ).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(12)
+            }
         }
-        headerRow.addView(TextView(this).apply {
+        val pinBadge = DesignSystem.createHeaderBadge(
+            this,
+            R.drawable.ic_location_pin_glyph,
+            p,
+            bgColor = badgeBg,
+            glyphColor = badgeGlyph,
+            sizeDp = 44
+        ).apply {
+            (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(12)
+        }
+        headerRow.addView(pinBadge)
+
+        val layer = layerById[pin.layerId]
+        val layerName = layer?.name ?: "Field Pin"
+        val speedUnit = DevicePrefs.getSpeedUnit(this)
+        val distText = currentLocation?.let {
+            " • ${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, pin.lat, pin.lng), speedUnit)} away"
+        } ?: ""
+
+        val titleCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(4)
+            }
+        }
+        titleCol.addView(TextView(this).apply {
             text = pin.name
-            textSize = 17.5f
-            setLineSpacing(0f, 1.15f)
+            textSize = 19f
+            letterSpacing = -0.01f
+            setLineSpacing(0f, 1.12f)
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.MIDDLE
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(6)
-            }
         })
+        titleCol.addView(TextView(this).apply {
+            text = "$layerName$distText"
+            textSize = 12.5f
+            setTextColor(p.accentPrimary)
+            setTypeface(null, Typeface.BOLD)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(0, dp(2), 0, 0)
+        })
+        titleCol.addView(TextView(this).apply {
+            text = "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}"
+            textSize = 12.5f
+            setTextColor(txtSub)
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(0, dp(1), 0, 0)
+        })
+        headerRow.addView(titleCol)
 
         var starred = DevicePrefs.isBookmarked(this, pin.id)
         headerRow.addView(ImageButton(this).apply {
             setImageResource(if (starred) R.drawable.ic_star_filled else R.drawable.ic_star_outline)
             if (!starred) setColorFilter(p.iconMuted)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             UiAnimations.attachSnappyPress(this)
@@ -2385,8 +2672,8 @@ class MainActivity : AppCompatActivity() {
         headerRow.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_share)
             setColorFilter(p.iconTint)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(11), dp(11), dp(11), dp(11))
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             UiAnimations.attachSnappyPress(this)
@@ -2399,46 +2686,13 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        headerRow.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.ic_close)
-            setColorFilter(txtSub)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(11), dp(11), dp(11), dp(11))
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener { hideInScreenSheet() }
-        })
+        headerRow.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
         sheetContent.addView(headerRow)
 
-        // 3. Folder + Distance + Coordinates
-        val layer = layerById[pin.layerId]
-        val layerName = layer?.name ?: "Field Pin"
-        val speedUnit = DevicePrefs.getSpeedUnit(this)
-        val distText = currentLocation?.let {
-            " • ${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, pin.lat, pin.lng), speedUnit)} away"
-        } ?: ""
-        sheetContent.addView(TextView(this).apply {
-            text = "$layerName$distText"
-            textSize = 13f
-            setTextColor(p.accent)
-            setTypeface(null, Typeface.BOLD)
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.MIDDLE
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, 0, 0, dp(3))
-        })
-        sheetContent.addView(TextView(this).apply {
-            text = "${"%.6f".format(pin.lat)}, ${"%.6f".format(pin.lng)}"
-            textSize = 12.5f
-            setTextColor(txtSub)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, 0, 0, dp(12))
-        })
-
-        if (pin.status.equals("issue", ignoreCase = true) && pin.issueReason.isNotBlank()) {
+        // 3. Active Status Banner (Issue / Done note)
+        if (pinStatus == PinStatus.ISSUE && pin.issueReason.isNotBlank()) {
             sheetContent.addView(TextView(this).apply {
-                text = "⚠ Issue: ${pin.issueReason}"
+                text = "⚠ Issue: ${DailyReportGenerator.flattenSingleLine(pin.issueReason)}"
                 textSize = 13f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(p.red)
@@ -2452,9 +2706,9 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply { bottomMargin = dp(10) }
             })
-        } else if (pin.status.equals("done", ignoreCase = true) && pin.issueReason.isNotBlank()) {
+        } else if (pinStatus == PinStatus.DONE && pin.issueReason.isNotBlank()) {
             sheetContent.addView(TextView(this).apply {
-                text = "✓ Done: ${pin.issueReason}"
+                text = "✓ Done: ${DailyReportGenerator.flattenSingleLine(pin.issueReason)}"
                 textSize = 13f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(p.green)
@@ -2484,7 +2738,7 @@ class MainActivity : AppCompatActivity() {
             Triple("done", AppStrings.done(this), p.green),
             Triple("issue", AppStrings.issue(this), p.red)
         ).forEachIndexed { idx, (key, title, colorInt) ->
-            val active = pin.status.equals(key, ignoreCase = true)
+            val active = pinStatus.key == key
             statusRow.addView(MaterialButton(this).apply {
                 text = if (active) "✓ $title" else title
                 textSize = 13f
@@ -2521,7 +2775,7 @@ class MainActivity : AppCompatActivity() {
         }
         sheetContent.addView(statusRow)
 
-        // 5. Route To & Route From Row
+        // 5. Route To (Primary Dark CTA) & Route From (Secondary Tonal) Row
         val routeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -2531,34 +2785,32 @@ class MainActivity : AppCompatActivity() {
         }
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeTo(this@MainActivity)
-            textSize = 13.5f
+            textSize = 14f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.accent)
+            setPadding(dp(10), 0, dp(10), 0)
             cornerRadius = dp(12)
+            DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { openRoutePreview(pin.lat, pin.lng, pin.name) }
         })
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeFrom(this@MainActivity)
-            textSize = 13.5f
+            textSize = 14f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.green)
+            setPadding(dp(10), 0, dp(10), 0)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { setRouteOrigin(pin.lat, pin.lng, pin.name) }
@@ -2575,7 +2827,7 @@ class MainActivity : AppCompatActivity() {
         }
         actionRow.addView(MaterialButton(this).apply {
             text = "Edit"
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
@@ -2583,16 +2835,15 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(dp(8), 0, dp(8), 0)
-            setTextColor(txtPrimary)
-            setBackgroundColor(chipBg)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSpringTouch(this)
             setOnClickListener { showEditPinDialog(pin) }
         })
         actionRow.addView(MaterialButton(this).apply {
             text = "External"
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
@@ -2600,9 +2851,8 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(dp(8), 0, dp(8), 0)
-            setTextColor(txtPrimary)
-            setBackgroundColor(chipBg)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSpringTouch(this)
             setOnClickListener {
@@ -2614,7 +2864,7 @@ class MainActivity : AppCompatActivity() {
         var localSent = DevicePrefs.isPinLocalSent(this, pin.id)
         actionRow.addView(MaterialButton(this).apply {
             text = if (localSent) "Sent ✓" else "Mark Sent"
-            textSize = 12.5f
+            textSize = 13f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
@@ -2622,16 +2872,18 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(dp(6), 0, dp(6), 0)
-            setTextColor(if (localSent) Color.WHITE else txtPrimary)
-            setBackgroundColor(if (localSent) p.green else chipBg)
             cornerRadius = dp(12)
+            elevation = 0f
+            stateListAnimator = null
+            setTextColor(if (localSent) Color.WHITE else txtPrimary)
+            setBackgroundColor(if (localSent) p.accentPrimary else chipBg)
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 localSent = DevicePrefs.toggleLocalSentPin(this@MainActivity, pin.id)
                 text = if (localSent) "Sent ✓" else "Mark Sent"
                 setTextColor(if (localSent) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (localSent) p.green else chipBg)
+                setBackgroundColor(if (localSent) p.accentPrimary else chipBg)
                 UiAnimations.animateScalePop(this, 0.92f, 160L)
                 updateSentToggleUi()
                 renderMapData()
@@ -2654,20 +2906,23 @@ class MainActivity : AppCompatActivity() {
         })
 
         if (pin.description.isNotBlank()) {
+            sheetContent.addView(DesignSystem.createSectionHeader(this, "Details", p).apply {
+                setPadding(dp(2), dp(4), dp(2), dp(8))
+            })
             sheetContent.addView(TextView(this).apply {
                 text = pin.description
-                textSize = 13.5f
-                setLineSpacing(dp(2).toFloat(), 1.0f)
-                setTextColor(txtPrimary)
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                textSize = 14f
+                setLineSpacing(dp(3).toFloat(), 1.05f)
+                setTextColor(p.textBody)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
                 background = GradientDrawable().apply {
                     setColor(cardTint)
-                    cornerRadius = dp(10).toFloat()
+                    cornerRadius = dp(14).toFloat()
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = dp(10) }
+                ).apply { bottomMargin = dp(12) }
             })
         }
 
@@ -2830,7 +3085,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        if (isOwner && pin.editHistory.isBlank() && !pin.status.equals("pending", true)) {
+        if (isOwner && pin.editHistory.isBlank() && pinStatus != PinStatus.PENDING) {
             sheetContent.addView(MaterialButton(this).apply {
                 text = "Reset Status to Pending (Keep Pin)"
                 textSize = 13f
@@ -2896,9 +3151,11 @@ class MainActivity : AppCompatActivity() {
 
         if (animateSwap) {
             UiAnimations.animateContentSwap(sheetContent, forward = swapForward)
+        } else {
+            UiAnimations.animateSheetContentReveal(sheetContent)
         }
 
-        val peekHeight = if (stackedPins.size > 1) 345 else 305
+        val peekHeight = if (stackedPins.size > 1) 355 else 315
         showInScreenSheet(peekDp = peekHeight)
     }
 
@@ -2923,27 +3180,65 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(4) }
+            ).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(14)
+            }
+        }
+        header.addView(
+            DesignSystem.createHeaderBadge(this, R.drawable.ic_location_pin_glyph, p, sizeDp = 44).apply {
+                (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(12)
+            }
+        )
+        val unit = DevicePrefs.getSpeedUnit(this)
+        val distText = currentLocation?.let {
+            "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, lat, lng), unit)} away"
+        } ?: ""
+        val subLine = listOf(subtitle, distText).filter { it.isNotBlank() }.joinToString(" • ")
+
+        val titleCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(4)
+            }
         }
         tappedTitleView = TextView(this).apply {
             text = title
-            textSize = 17f
+            textSize = 19.5f
+            letterSpacing = -0.01f
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
         }
-        header.addView(tappedTitleView)
+        titleCol.addView(tappedTitleView)
+        tappedSubView = TextView(this).apply {
+            text = subLine
+            textSize = 12.5f
+            setTextColor(p.accentPrimary)
+            setTypeface(null, Typeface.BOLD)
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(0, dp(2), 0, 0)
+            visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
+        }
+        titleCol.addView(tappedSubView)
+        titleCol.addView(TextView(this).apply {
+            text = "${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}"
+            textSize = 12.5f
+            setTextColor(txtSub)
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(0, dp(1), 0, 0)
+        })
+        header.addView(titleCol)
+
         header.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_share)
             setColorFilter(p.iconTint)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(11), dp(11), dp(11), dp(11))
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 val msg = makePinShareMessage(tappedResolvedTitle, lat, lng)
                 safeStartActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
@@ -2952,39 +3247,8 @@ class MainActivity : AppCompatActivity() {
                 }, "Share TerraSync Place"))
             }
         })
-        header.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.ic_close)
-            setColorFilter(txtSub)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(11), dp(11), dp(11), dp(11))
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            setOnClickListener { hideInScreenSheet() }
-        })
+        header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
         sheetContent.addView(header)
-
-        val unit = DevicePrefs.getSpeedUnit(this)
-        val distText = currentLocation?.let {
-            "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, lat, lng), unit)} away"
-        } ?: ""
-        val subLine = listOf(subtitle, distText).filter { it.isNotBlank() }.joinToString(" • ")
-        tappedSubView = TextView(this).apply {
-            text = subLine
-            textSize = 13f
-            setTextColor(p.accent)
-            setTypeface(null, Typeface.BOLD)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, 0, 0, dp(3))
-            visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
-        }
-        sheetContent.addView(tappedSubView)
-        sheetContent.addView(TextView(this).apply {
-            text = "${"%.6f".format(lat)}, ${"%.6f".format(lng)}"
-            textSize = 12.5f
-            setTextColor(txtSub)
-            DesignSystem.applyTabularNumerals(this)
-            setPadding(0, 0, 0, dp(12))
-        })
 
         val routeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2997,7 +3261,7 @@ class MainActivity : AppCompatActivity() {
         }
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeTo(this@MainActivity)
-            textSize = 13.5f
+            textSize = 14f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3009,16 +3273,15 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.accent)
             cornerRadius = dp(12)
+            DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { openRoutePreview(lat, lng, tappedResolvedTitle) }
         })
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeFrom(this@MainActivity)
-            textSize = 13.5f
+            textSize = 14f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3030,9 +3293,8 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.green)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { setRouteOrigin(lat, lng, tappedResolvedTitle) }
@@ -3046,7 +3308,7 @@ class MainActivity : AppCompatActivity() {
         }
         btnRow.addView(MaterialButton(this).apply {
             text = AppStrings.savePin(this@MainActivity)
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3058,18 +3320,18 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            setTextColor(txtPrimary)
-            setBackgroundColor(chipBg)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
-                showAddPinDialog(LatLng(lat, lng), prefillName = if (tappedResolvedTitle == "Selected Location") "" else tappedResolvedTitle, prefillDesc = tappedResolvedSub)
+                val preName = if (tappedResolvedTitle == "Selected Location" || tappedResolvedTitle == "Shared Location") "" else tappedResolvedTitle
+                showAddPinDialog(LatLng(lat, lng), prefillName = preName, prefillDesc = tappedResolvedSub)
             }
         })
         btnRow.addView(MaterialButton(this).apply {
             text = AppStrings.copyGps(this@MainActivity)
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3081,16 +3343,16 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            setTextColor(txtPrimary)
-            setBackgroundColor(chipBg)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f)
             UiAnimations.attachSnappyPress(this)
-            setOnClickListener { copyToClipboard("GPS", "$lat, $lng") }
+            setOnClickListener { copyToClipboard("GPS", "${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}") }
         })
         sheetContent.addView(btnRow)
 
-        showInScreenSheet(peekDp = 310)
+        UiAnimations.animateSheetContentReveal(sheetContent)
+        showInScreenSheet(peekDp = 285)
     }
 
     // --- Route Preview (Route From + Car / Bicycle / Walk Modes) & Active Navigation ---
@@ -3108,6 +3370,7 @@ class MainActivity : AppCompatActivity() {
             startLabel = routeOriginName
         } else {
             if (!hasLocationPermission()) {
+                pendingRouteReq = PendingRouteReq(destLat, destLng, destTitle, modeOverride, System.currentTimeMillis())
                 locPermLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                 return
             }
@@ -3245,18 +3508,11 @@ class MainActivity : AppCompatActivity() {
         })
         header.addView(titleCol)
 
-        header.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.ic_close)
-            setColorFilter(txtSub)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            setOnClickListener {
-                routeRequestSeq++
-                previewRoute = null
-                renderRouteOverlay()
-                hideInScreenSheet()
-            }
+        header.addView(DesignSystem.createSheetCloseButton(this, p) {
+            routeRequestSeq++
+            previewRoute = null
+            renderRouteOverlay()
+            hideInScreenSheet()
         })
         sheetContent.addView(header)
 
@@ -3322,9 +3578,8 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(modeColor)
             cornerRadius = dp(12)
+            DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1.4f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
@@ -3338,7 +3593,7 @@ class MainActivity : AppCompatActivity() {
         })
         btnRow.addView(MaterialButton(this).apply {
             text = "External"
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             setSingleLine(true)
             ellipsize = TextUtils.TruncateAt.END
@@ -3350,9 +3605,8 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            setTextColor(txtPrimary)
-            setBackgroundColor(chipBg)
             cornerRadius = dp(12)
+            DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 0.8f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
@@ -3363,6 +3617,7 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(btnRow)
 
+        UiAnimations.animateSheetContentReveal(sheetContent)
         showInScreenSheet(peekDp = 265)
     }
 
@@ -3517,7 +3772,7 @@ class MainActivity : AppCompatActivity() {
             if (isRulerMode) toggleRulerMode(false)
             UiAnimations.hideSlideTop(topCluster)
             UiAnimations.showSlideTop(navBanner)
-            bottomIconRow.visibility = View.GONE
+            bottomNavDock.visibility = View.GONE
             btnRuler.visibility = View.GONE
             btnLasso.visibility = View.GONE
             btnImport.visibility = View.GONE
@@ -3528,7 +3783,7 @@ class MainActivity : AppCompatActivity() {
             btnRuler.visibility = View.VISIBLE
             applyExtraMapToolsVisibility()
             if (!isRulerMode && !isLassoMode && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
-                UiAnimations.showSlideBottom(bottomIconRow)
+                UiAnimations.showSlideBottom(bottomNavDock)
             }
         }
     }
@@ -3757,7 +4012,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateLocationIconTint() {
         val p = currentPalette()
-        btnLocate.setColorFilter(if (isFollowingGps) p.accent else p.iconTint)
+        if (isFollowingGps) {
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 6f, activeFillColor = p.accentPrimary)
+            btnLocate.setColorFilter(Color.WHITE)
+        } else {
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 6f, activeFillColor = p.actionDark)
+            btnLocate.setColorFilter(p.onActionDark)
+        }
     }
 
     private fun updateFilterIconTint() {
@@ -4011,12 +4272,14 @@ class MainActivity : AppCompatActivity() {
                 menu.menu.add(0, 1, 1, "Import KML / KMZ Folder")
                 menu.menu.add(0, 2, 2, "Join Folder by Share Code")
                 menu.menu.add(0, 3, 3, "Combine Folders into One")
-                menu.menu.add(0, 4, 4, "Nearest Pending Pin")
+                menu.menu.add(0, 5, 4, "Daily Report (Visible Folders)")
+                menu.menu.add(0, 4, 5, "Nearest Pending Pin")
                 menu.setOnMenuItemClickListener { item ->
                     when (item.itemId) {
                         1 -> { closeFullPage(); kmlPicker.launch(arrayOf("*/*")) }
                         2 -> showJoinCodeDialog()
                         3 -> showCombineFoldersDialog()
+                        5 -> showVisibleFoldersDailyReportDialog()
                         4 -> jumpToNearestPendingPin()
                     }
                     true
@@ -4161,122 +4424,136 @@ class MainActivity : AppCompatActivity() {
             suppressAllSwitch = false
         }
 
+        var bookmarkSearchSeq = 0
+
         fun renderFoldersOrSearch(query: String) {
+            val mySeq = ++bookmarkSearchSeq
             val folderNameById = layers.associate { it.id to it.name }
             tvTotalBookmarksCount.text = "${pins.size} bookmarks"
-            body.removeAllViews()
             val trimmed = query.trim()
 
             if (trimmed.isNotEmpty()) {
-                val matches = pins.filter { p ->
-                    val fName = folderNameById[p.layerId] ?: ""
-                    p.name.contains(trimmed, true) ||
-                        p.description.contains(trimmed, true) ||
-                        p.issueReason.contains(trimmed, true) ||
-                        fName.contains(trimmed, true) ||
-                        statusLabel(p.status).contains(trimmed, true) ||
-                        "${"%.6f".format(p.lat)}, ${"%.6f".format(p.lng)}".contains(trimmed, true)
-                }
-
-                body.addView(TextView(this).apply {
-                    text = "${matches.size} match${if (matches.size == 1) "" else "es"} across all folders"
-                    textSize = 13f
-                    setTextColor(txtSub)
-                    setTypeface(null, Typeface.BOLD)
-                    setPadding(dp(4), dp(4), dp(4), dp(8))
-                })
-
-                if (matches.isEmpty()) {
-                    body.addView(TextView(this).apply {
-                        text = "No bookmarks matched \"$trimmed\"."
-                        textSize = 14f
-                        setTextColor(txtSub)
-                        setPadding(dp(4), dp(12), dp(4), dp(12))
-                    })
-                    return
-                }
-
-                val resultsCard = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 16f)
-                }
-                val loc = currentLocation
-                val unit = DevicePrefs.getSpeedUnit(this)
-                matches.take(120).forEachIndexed { idx, pin ->
-                    if (idx > 0) {
-                        resultsCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
+                val pinsSnapshot = pins.toList()
+                val hasDigits = trimmed.any { it.isDigit() }
+                RoutingEngine.ioExecutor.execute {
+                    val matches = pinsSnapshot.filter { pin ->
+                        val fName = folderNameById[pin.layerId] ?: ""
+                        pin.name.contains(trimmed, true) ||
+                            pin.description.contains(trimmed, true) ||
+                            pin.issueReason.contains(trimmed, true) ||
+                            fName.contains(trimmed, true) ||
+                            statusLabel(pin.status).contains(trimmed, true) ||
+                            (hasDigits && "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}".contains(trimmed, true))
                     }
-                    val row = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        minimumHeight = dp(52)
-                        setPadding(dp(14), dp(11), dp(14), dp(11))
-                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                        setOnClickListener {
-                            ensurePinVisibleOnMap(pin)
-                            closeFullPage()
-                            selectPinAndOpenCard(pin, zoomIfFar = true)
-                        }
-                    }
-                    row.addView(View(this).apply {
-                        background = GradientDrawable().apply {
-                            shape = GradientDrawable.OVAL
-                            setColor(Color.parseColor(statusColorHex(pin.status)))
-                        }
-                        layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
-                    })
-                    val col = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            marginEnd = dp(8)
-                        }
-                    }
-                    col.addView(TextView(this).apply {
-                        text = pin.name
-                        textSize = 14.5f
-                        setTextColor(txtPrimary)
-                        setTypeface(null, Typeface.BOLD)
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.MIDDLE
-                    })
-                    val fName = folderNameById[pin.layerId] ?: "Folder"
-                    val sub = buildString {
-                        append(fName)
-                        append(" • ")
-                        append(statusLabel(pin.status))
-                        if (pin.status.equals("issue", true) && pin.issueReason.isNotBlank()) append(" • ⚠ ${pin.issueReason}")
-                        else if (pin.status.equals("done", true) && pin.issueReason.isNotBlank()) append(" • ✓ ${pin.issueReason}")
-                    }
-                    col.addView(TextView(this).apply {
-                        text = sub
-                        textSize = 12f
-                        setTextColor(
-                            when {
-                                pin.status.equals("issue", true) -> p.red
-                                pin.status.equals("done", true) && pin.issueReason.isNotBlank() -> p.green
-                                else -> txtSub
-                            }
-                        )
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.MIDDLE
-                    })
-                    row.addView(col)
-
-                    if (loc != null) {
-                        val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, pin.lat, pin.lng)
-                        row.addView(TextView(this).apply {
-                            text = formatDistanceShort(d, unit)
-                            textSize = 12f
-                            setTextColor(p.accent)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed || mySeq != bookmarkSearchSeq) return@runOnUiThread
+                        body.removeAllViews()
+                        body.addView(TextView(this@MainActivity).apply {
+                            text = "${matches.size} match${if (matches.size == 1) "" else "es"} across all folders"
+                            textSize = 13f
+                            setTextColor(txtSub)
                             setTypeface(null, Typeface.BOLD)
-                            DesignSystem.applyTabularNumerals(this)
+                            setPadding(dp(4), dp(4), dp(4), dp(8))
                         })
+
+                        if (matches.isEmpty()) {
+                            body.addView(TextView(this@MainActivity).apply {
+                                text = "No bookmarks matched \"$trimmed\"."
+                                textSize = 14f
+                                setTextColor(txtSub)
+                                setPadding(dp(4), dp(12), dp(4), dp(12))
+                            })
+                            return@runOnUiThread
+                        }
+
+                        val resultsCard = LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 16f)
+                        }
+                        val loc = currentLocation
+                        val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
+                        matches.take(120).forEachIndexed { idx, pin ->
+                            if (idx > 0) {
+                                resultsCard.addView(DesignSystem.createHairlineDivider(this@MainActivity, p, 16, 16))
+                            }
+                            val row = LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                minimumHeight = dp(52)
+                                setPadding(dp(14), dp(11), dp(14), dp(11))
+                                UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                                setOnClickListener {
+                                    ensurePinVisibleOnMap(pin)
+                                    closeFullPage()
+                                    selectPinAndOpenCard(pin, zoomIfFar = true)
+                                }
+                            }
+                            row.addView(View(this@MainActivity).apply {
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    setColor(Color.parseColor(statusColorHex(pin.status)))
+                                }
+                                layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+                            })
+                            val col = LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.VERTICAL
+                                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                    marginEnd = dp(8)
+                                }
+                            }
+                            col.addView(TextView(this@MainActivity).apply {
+                                text = pin.name
+                                textSize = 14.5f
+                                setTextColor(txtPrimary)
+                                setTypeface(null, Typeface.BOLD)
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.MIDDLE
+                            })
+                            val fName = folderNameById[pin.layerId] ?: "Folder"
+                            val st = PinStatus.fromRaw(pin.status)
+                            val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
+                            val sub = buildString {
+                                append(fName)
+                                append(" • ")
+                                append(st.label)
+                                if (st == PinStatus.ISSUE && cleanNote.isNotBlank()) append(" • ⚠ $cleanNote")
+                                else if (st == PinStatus.DONE && cleanNote.isNotBlank()) append(" • ✓ $cleanNote")
+                            }
+                            col.addView(TextView(this@MainActivity).apply {
+                                text = sub
+                                textSize = 12f
+                                setTextColor(
+                                    when {
+                                        st == PinStatus.ISSUE -> p.red
+                                        st == PinStatus.DONE && cleanNote.isNotBlank() -> p.green
+                                        else -> txtSub
+                                    }
+                                )
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.MIDDLE
+                            })
+                            row.addView(col)
+
+                            if (loc != null) {
+                                val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, pin.lat, pin.lng)
+                                row.addView(TextView(this@MainActivity).apply {
+                                    text = formatDistanceShort(d, unit)
+                                    textSize = 12f
+                                    setTextColor(p.accentPrimary)
+                                    setTypeface(null, Typeface.BOLD)
+                                    DesignSystem.applyTabularNumerals(this)
+                                })
+                            }
+                            resultsCard.addView(row)
+                        }
+                        body.addView(resultsCard)
+                        UiAnimations.animateResultReveal(resultsCard)
                     }
-                    resultsCard.addView(row)
                 }
-                body.addView(resultsCard)
                 return
             }
+
+            body.removeAllViews()
 
             val bookmarkedPins = pins.filter { it.id in DevicePrefs.getBookmarks(this) }
 
@@ -4425,8 +4702,8 @@ class MainActivity : AppCompatActivity() {
                 val isLocal = LocalFolderStore.isLocalLayerId(layer.id)
                 val isCreator = isLayerOwner(layer)
 
-                val doneCnt = layerPins.count { it.status.equals("done", true) }
-                val issueCnt = layerPins.count { it.status.equals("issue", true) }
+                val doneCnt = layerPins.count { PinStatus.fromRaw(it.status) == PinStatus.DONE }
+                val issueCnt = layerPins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
                 val pendingCnt = (layerPins.size - doneCnt - issueCnt).coerceAtLeast(0)
 
                 val row = LinearLayout(this).apply {
@@ -4602,9 +4879,20 @@ class MainActivity : AppCompatActivity() {
                                     ).show()
                                     renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
                                 }
-                                4 -> showDailyWhatsAppReportDialog(layer, layerPins, layerTracks)
-                                5 -> showExportKmlDialog(layer, layerPins, layerTracks)
-                                6 -> KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, layerPins)
+                                4 -> {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                    showDailyWhatsAppReportDialog(layer, freshPins, freshTracks)
+                                }
+                                5 -> {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                    showExportKmlDialog(layer, freshPins, freshTracks)
+                                }
+                                6 -> {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, freshPins)
+                                }
                                 7 -> showRenameFolderDialog(layer)
                                 8 -> {
                                     if (isPinned) {
@@ -4619,15 +4907,22 @@ class MainActivity : AppCompatActivity() {
                                     if (isPinned) {
                                         Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
                                     } else {
-                                        showDeleteCloudDialog(layer, layerPins, layerTracks)
+                                        val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                        val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                        showDeleteCloudDialog(layer, freshPins, freshTracks)
                                     }
                                 }
-                                10 -> confirmUploadLocalToCloud(layer, layerPins, layerTracks)
+                                10 -> {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                    confirmUploadLocalToCloud(layer, freshPins, freshTracks)
+                                }
                                 11 -> {
                                     if (isPinned) {
                                         Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
                                     } else {
-                                        showDeleteLocalDialog(layer, layerPins.size)
+                                        val freshCount = pinsByLayerId[layer.id]?.size ?: 0
+                                        showDeleteLocalDialog(layer, freshCount)
                                     }
                                 }
                             }
@@ -4670,6 +4965,7 @@ class MainActivity : AppCompatActivity() {
             renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
         }
         activePageCleanup = {
+            bookmarkSearchSeq++
             searchRunnable?.let { etFolderSearch.removeCallbacks(it) }
         }
         renderFoldersOrSearch("")
@@ -4680,10 +4976,10 @@ class MainActivity : AppCompatActivity() {
         val sentIds = DevicePrefs.getLocalSentPinIds(this)
         val sentInLayer = layerPins.count { it.id in sentIds }
         val unsentPins = layerPins.filter { it.id !in sentIds }
-        val pendingPins = layerPins.filter { it.status.equals("pending", true) }
+        val pendingPins = layerPins.filter { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
         val pendingUnsentPins = pendingPins.filter { it.id !in sentIds }
-        val issuePins = layerPins.filter { it.status.equals("issue", true) }
-        val donePins = layerPins.filter { it.status.equals("done", true) }
+        val issuePins = layerPins.filter { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+        val donePins = layerPins.filter { PinStatus.fromRaw(it.status) == PinStatus.DONE }
 
         val entries = mutableListOf(
             Triple("All Pins (${layerPins.size})", layerPins, ""),
@@ -4715,40 +5011,208 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun showDailyWhatsAppReportDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
-        val p = currentPalette()
-        val report = DailyReportGenerator.buildReport(
-            layer.name,
-            layerPins,
-            !LocalFolderStore.isLocalLayerId(layer.id),
-            DevicePrefs.getWorkStartMinutes(this),
-            DevicePrefs.getWorkEndMinutes(this)
-        )
-        val scroll = android.widget.ScrollView(this).apply {
-            setPadding(dp(22), dp(10), dp(22), dp(8))
+    private fun buildLocalDeviceAliasMap(): Map<String, String> {
+        val custom = DevicePrefs.getCustomName(this).trim()
+        if (custom.isBlank()) return emptyMap()
+        val devId = DevicePrefs.getDeviceId(this).trim()
+        return if (devId.isNotBlank()) mapOf(devId to custom) else emptyMap()
+    }
+
+    private fun showVisibleFoldersDailyReportDialog() {
+        val hiddenIds = DevicePrefs.getHiddenLayerIds(this)
+        val visibleLayers = layers.filter { it.id !in hiddenIds }
+        if (visibleLayers.isEmpty()) {
+            Toast.makeText(this, "No visible folders on the map", Toast.LENGTH_SHORT).show()
+            return
         }
-        scroll.addView(TextView(this).apply {
-            text = report.whatsappText
+        if (visibleLayers.size == 1) {
+            val only = visibleLayers.first()
+            showDailyWhatsAppReportDialog(
+                only,
+                pinsByLayerId[only.id].orEmpty(),
+                tracksByLayerId[only.id].orEmpty()
+            )
+            return
+        }
+        val visibleLayerIds = visibleLayers.mapTo(HashSet(visibleLayers.size)) { it.id }
+        val scopedPins = pins.filter { it.layerId in visibleLayerIds }
+        val scopedTracks = tracks.filter { it.layerId in visibleLayerIds }
+        val hasLocal = visibleLayers.any { LocalFolderStore.isLocalLayerId(it.id) }
+        val cloudLayersVisible = visibleLayers.filterNot { LocalFolderStore.isLocalLayerId(it.id) }
+        val allCloudLive = cloudLayersVisible.isNotEmpty() && cloudLayersVisible.all { repo.isLayerLive(it.id) }
+        val syncBadge = when {
+            cloudLayersVisible.isEmpty() -> "Local"
+            !hasLocal && allCloudLive -> "Live Cloud"
+            !hasLocal -> "Offline Cache"
+            allCloudLive -> "Live Cloud + Local"
+            else -> "Offline Cache + Local"
+        }
+        val syntheticLayer = LayerItem(
+            id = "visible_scope",
+            name = "Visible Folders (${visibleLayers.size})"
+        )
+        showDailyWhatsAppReportDialog(
+            layer = syntheticLayer,
+            layerPins = scopedPins,
+            layerTracks = scopedTracks,
+            syncBadgeOverride = syncBadge
+        )
+    }
+
+    private fun showDailyWhatsAppReportDialog(
+        layer: LayerItem,
+        layerPins: List<PinItem>,
+        layerTracks: List<TrackItem>,
+        syncBadgeOverride: String? = null
+    ) {
+        val p = currentPalette()
+        val workStart = DevicePrefs.getWorkStartMinutes(this)
+        val workEnd = DevicePrefs.getWorkEndMinutes(this)
+        val aliases = buildLocalDeviceAliasMap()
+        val allPinsSnapshot = pins.toList()
+        val layerPinsSnapshot = layerPins.toList()
+        val isLocal = LocalFolderStore.isLocalLayerId(layer.id)
+        val isLayerLive = !isLocal && repo.isLayerLive(layer.id)
+        val resolvedBadge = syncBadgeOverride ?: when {
+            isLocal -> "Local"
+            isLayerLive -> "Live Cloud"
+            else -> "Offline Cache"
+        }
+
+        val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
+        val mapFilteredPins = layerPinsSnapshot.filter { pin ->
+            PinStatus.fromRaw(pin.status).key in visibleStatuses && pin.id !in sentIds
+        }
+        val mapFilterHidesSome = mapFilteredPins.size != layerPinsSnapshot.size
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(6))
+        }
+        val tvScopeBanner = TextView(this).apply {
+            textSize = 12f
+            setTextColor(p.textSecondary)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = GradientDrawable().apply {
+                setColor(p.cardSurface)
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10) }
+            visibility = if (mapFilterHidesSome) View.VISIBLE else View.GONE
+        }
+        container.addView(tvScopeBanner)
+
+        val scopeToggleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(10) }
+            visibility = if (mapFilterHidesSome) View.VISIBLE else View.GONE
+        }
+        val btnScopeFull = MaterialButton(this).apply {
+            text = "All Folder Pins (${layerPinsSnapshot.size})"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(6) }
+            UiAnimations.attachSnappyPress(this)
+        }
+        val btnScopeVisible = MaterialButton(this).apply {
+            text = "Map Filtered (${mapFilteredPins.size})"
+            textSize = 12f
+            isAllCaps = false
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(10)
+            layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f)
+            UiAnimations.attachSnappyPress(this)
+        }
+        scopeToggleRow.addView(btnScopeFull)
+        scopeToggleRow.addView(btnScopeVisible)
+        container.addView(scopeToggleRow)
+
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val tvReport = TextView(this).apply {
+            text = "Generating report..."
             textSize = 13.5f
             setTextColor(p.textPrimary)
             setTextIsSelectable(true)
-            setLineSpacing(dp(2).toFloat(), 1.08f)
-        })
+            setLineSpacing(dp(2).toFloat(), 1.12f)
+            DesignSystem.applyTabularNumerals(this)
+        }
+        scroll.addView(tvReport)
+        container.addView(scroll)
+
+        var activeReportText = ""
+        var activeScopedPins = layerPinsSnapshot
+        var genSeq = 0
+
+        fun computeAndDisplay(useMapFiltered: Boolean) {
+            val mySeq = ++genSeq
+            activeScopedPins = if (useMapFiltered) mapFilteredPins else layerPinsSnapshot
+            if (mapFilterHidesSome) {
+                DesignSystem.styleSegmentedButton(btnScopeFull, !useMapFiltered, p)
+                DesignSystem.styleSegmentedButton(btnScopeVisible, useMapFiltered, p)
+                tvScopeBanner.text = if (useMapFiltered) {
+                    "Matching active map filters (${mapFilteredPins.size} of ${layerPinsSnapshot.size} pins visible on map)."
+                } else {
+                    "Showing full folder scope (${layerPinsSnapshot.size} pins). Active map filters hide ${layerPinsSnapshot.size - mapFilteredPins.size} pins on map."
+                }
+            }
+            val titleForScope = if (useMapFiltered) "${layer.name} (Filtered)" else layer.name
+            val pinsForRun = activeScopedPins
+            RoutingEngine.ioExecutor.execute {
+                val report = DailyReportGenerator.buildReport(
+                    folderName = titleForScope,
+                    pins = pinsForRun,
+                    isCloudLive = isLayerLive,
+                    workStartMin = workStart,
+                    workEndMin = workEnd,
+                    syncBadgeOverride = resolvedBadge,
+                    configuredDeviceAliases = aliases,
+                    allKnownPinsForDeviceMap = allPinsSnapshot
+                )
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || mySeq != genSeq) return@runOnUiThread
+                    activeReportText = report.whatsappText
+                    tvReport.text = report.whatsappText
+                }
+            }
+        }
+
+        btnScopeFull.setOnClickListener { computeAndDisplay(false) }
+        btnScopeVisible.setOnClickListener { computeAndDisplay(true) }
+        computeAndDisplay(false)
+
         showThemedDialog(
-            themedDialogBuilder("End-of-Day Team Report")
-                .setView(scroll)
-                .setPositiveButton("Share to WhatsApp") { _, _ ->
-                    val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            themedDialogBuilder("Daily Field Report")
+                .setView(container)
+                .setPositiveButton("Share") { _, _ ->
+                    val textToShare = activeReportText.ifBlank { tvReport.text.toString() }
+                    val share = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"
-                        putExtra(android.content.Intent.EXTRA_TEXT, report.whatsappText)
+                        putExtra(Intent.EXTRA_TEXT, textToShare)
                     }
-                    safeStartActivity(android.content.Intent.createChooser(share, "Share Daily Report"))
+                    safeStartActivity(Intent.createChooser(share, "Share Daily Report"))
                 }
                 .setNeutralButton("Copy") { _, _ ->
-                    copyToClipboard("Daily Report", report.whatsappText)
+                    val textToCopy = activeReportText.ifBlank { tvReport.text.toString() }
+                    copyToClipboard("Daily Report", textToCopy)
                 }
-                .setNegativeButton("Share KML + Text") { _, _ ->
-                    KmlCsvExporter.exportAndShareKml(this, layer, layerPins, layerTracks, "", report.whatsappText)
+                .setNegativeButton("KML + Text") { _, _ ->
+                    val textToShare = activeReportText.ifBlank { tvReport.text.toString() }
+                    KmlCsvExporter.exportAndShareKml(this, layer, activeScopedPins, layerTracks, "", textToShare)
                 }
                 .create()
         )
@@ -4886,10 +5350,10 @@ class MainActivity : AppCompatActivity() {
         val selectedPinIds = linkedSetOf<String>()
         val canDeletePins = layer == null || isLayerOwner(layer)
 
-        fun pinPriorityRank(pin: PinItem): Int = when (pin.status.lowercase(Locale.US)) {
-            "done" -> 3
-            "issue" -> 2
-            else -> if (pin.isEdited) 1 else 0
+        fun pinPriorityRank(pin: PinItem): Int = when (PinStatus.fromRaw(pin.status)) {
+            PinStatus.DONE -> 3
+            PinStatus.ISSUE -> 2
+            PinStatus.PENDING -> if (pin.isEdited) 1 else 0
         }
 
         fun sortKeepPrimaryFirst(group: List<PinItem>): List<PinItem> =
@@ -4902,9 +5366,7 @@ class MainActivity : AppCompatActivity() {
 
         /** Finds extra duplicate pin IDs (same normalized name + same coordinates), keeping 1 primary per group. */
         fun findDuplicateExtraIds(list: List<PinItem>): Set<String> {
-            val byKey = list.groupBy { pin ->
-                "${pin.name.trim().lowercase(Locale.US)}|${"%.6f".format(Locale.US, pin.lat)}|${"%.6f".format(Locale.US, pin.lng)}"
-            }
+            val byKey = list.groupBy { pin -> DailyReportGenerator.pinDedupKey(pin) }
             val extras = linkedSetOf<String>()
             byKey.values.forEach { grp ->
                 if (grp.size >= 2) {
@@ -5246,7 +5708,7 @@ class MainActivity : AppCompatActivity() {
             val loc = currentLocation
             val unit = cachedSpeedUnit
             val allInFolder = currentSourcePins()
-            val filtered = allInFolder.filter { filterKey == "all" || it.status.equals(filterKey, true) }
+            val filtered = allInFolder.filter { filterKey == "all" || PinStatus.fromRaw(it.status).key == filterKey }
             latestFiltered = filtered
 
             ensureAnalysisCached(filtered)
@@ -5405,9 +5867,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 col.addView(nameRow)
 
-                val subParts = mutableListOf(statusLabel(pin.status))
-                if (pin.status.equals("issue", true) && pin.issueReason.isNotBlank()) subParts += "⚠ ${pin.issueReason}"
-                else if (pin.status.equals("done", true) && pin.issueReason.isNotBlank()) subParts += "✓ ${pin.issueReason}"
+                val st = PinStatus.fromRaw(pin.status)
+                val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
+                val subParts = mutableListOf(st.label)
+                if (st == PinStatus.ISSUE && cleanNote.isNotBlank()) subParts += "⚠ $cleanNote"
+                else if (st == PinStatus.DONE && cleanNote.isNotBlank()) subParts += "✓ $cleanNote"
                 if (pin.isEdited && pin.editedBy.isNotBlank()) subParts += "Edited by ${pin.editedBy}"
                 col.addView(TextView(this).apply {
                     text = subParts.joinToString(" • ")
@@ -5416,8 +5880,8 @@ class MainActivity : AppCompatActivity() {
                     ellipsize = TextUtils.TruncateAt.END
                     setTextColor(
                         when {
-                            pin.status.equals("issue", true) -> p.red
-                            pin.status.equals("done", true) && pin.issueReason.isNotBlank() -> p.green
+                            st == PinStatus.ISSUE -> p.red
+                            st == PinStatus.DONE && cleanNote.isNotBlank() -> p.green
                             else -> txtSub
                         }
                     )
@@ -5777,7 +6241,8 @@ class MainActivity : AppCompatActivity() {
             val workEnd = DevicePrefs.getWorkEndMinutes(this)
             val windowStr = "${PinEditHistoryAudit.formatMinutes(workStart)} – ${PinEditHistoryAudit.formatMinutes(workEnd)}"
             val layerPins = pinsByLayerId[layer.id].orEmpty()
-            val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPins, workStart, workEnd)
+            val deviceMap = DailyReportGenerator.buildDeviceToTeamMap(pins, buildLocalDeviceAliasMap())
+            val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPins, workStart, workEnd, deviceMap)
             currentEntries = allEntries
 
             val afterHoursCnt = allEntries.count { it.isOutsideWorkHours }
@@ -6192,7 +6657,7 @@ class MainActivity : AppCompatActivity() {
         }
         val hidden = DevicePrefs.getHiddenLayerIds(this)
         val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
-        val pending = pins.filter { it.layerId !in hidden && it.status.equals("pending", true) && it.id !in sentIds }
+        val pending = pins.filter { it.layerId !in hidden && PinStatus.fromRaw(it.status) == PinStatus.PENDING && it.id !in sentIds }
         val nearest = pending.minByOrNull { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
         if (nearest == null) {
             val msg = if (hideSentPins) "No unsent pending pins in visible folders!" else "No pending pins in visible folders!"
@@ -6254,7 +6719,7 @@ class MainActivity : AppCompatActivity() {
         }
         val btnWebSearch = MaterialButton(this).apply {
             text = AppStrings.searchMapPlaces(this@MainActivity)
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -6263,15 +6728,14 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(10), 0, dp(10), 0)
             insetTop = 0
             insetBottom = 0
-            setTextColor(Color.WHITE)
-            setBackgroundColor(p.accent)
             cornerRadius = dp(12)
+            DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1.05f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
         }
         val btnNearest = MaterialButton(this).apply {
             text = AppStrings.nearestPending(this@MainActivity)
-            textSize = 13f
+            textSize = 13.5f
             isAllCaps = false
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -6281,7 +6745,9 @@ class MainActivity : AppCompatActivity() {
             insetTop = 0
             insetBottom = 0
             setTextColor(Color.WHITE)
-            setBackgroundColor(p.green)
+            setBackgroundColor(p.accentPrimary)
+            elevation = 0f
+            stateListAnimator = null
             cornerRadius = dp(12)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
             UiAnimations.attachSnappyPress(this)
@@ -6296,128 +6762,140 @@ class MainActivity : AppCompatActivity() {
         body.addView(webResultsBox)
         body.addView(resultsBox)
 
+        var localSearchSeq = 0
+
         fun renderLocalMatches(q: String) {
-            resultsBox.removeAllViews()
+            val mySeq = ++localSearchSeq
             val trimmed = q.trim()
             if (trimmed.isEmpty()) {
+                resultsBox.removeAllViews()
                 webSearchSeq++
                 webResultsBox.removeAllViews()
                 val hintCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 14)
                 hintCard.addView(TextView(this).apply {
                     text = "Type a bookmark name, status, or lat, lng coordinates — or tap Search Map Places for online locations."
-                    textSize = 13f
-                    setLineSpacing(dp(2).toFloat(), 1.0f)
-                    setTextColor(txtSub)
+                    textSize = 13.5f
+                    setLineSpacing(dp(2).toFloat(), 1.05f)
+                    setTextColor(p.textBody)
                 })
                 resultsBox.addView(hintCard)
                 return
             }
 
-            val coordParts = trimmed.split(",").map { it.trim().toDoubleOrNull() }
-            if (coordParts.size == 2 && coordParts[0] != null && coordParts[1] != null) {
-                val lat = coordParts[0]!!
-                val lng = coordParts[1]!!
-                if (lat in -90.0..90.0 && lng in -180.0..180.0) {
-                    val coordCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12)
-                    coordCard.addView(TextView(this).apply {
-                        text = "📍 Go to coordinates: $lat, $lng"
-                        textSize = 14.5f
-                        setTypeface(null, Typeface.BOLD)
-                        setTextColor(p.accent)
-                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                        setOnClickListener {
-                            closeFullPage()
-                            selectedPinId = null
-                            selectedMarkerLatLng = LatLng(lat, lng)
-                            renderSelectedMarker()
-                            centerUpperHalf(LatLng(lat, lng), 16.5)
-                            showTappedPlaceCard("Coordinates", "", lat, lng)
-                        }
-                    })
-                    resultsBox.addView(coordCard)
-                }
-            }
+            val pinsSnapshot = pins.toList()
+            RoutingEngine.ioExecutor.execute {
+                val coordParts = trimmed.split(",").map { it.trim().toDoubleOrNull() }
+                val parsedCoord: Pair<Double, Double>? = if (coordParts.size == 2 && coordParts[0] != null && coordParts[1] != null) {
+                    val lat = coordParts[0]!!
+                    val lng = coordParts[1]!!
+                    if (lat in -90.0..90.0 && lng in -180.0..180.0) lat to lng else null
+                } else null
 
-            val matches = pins.filter {
-                it.name.contains(trimmed, true) ||
-                    it.description.contains(trimmed, true) ||
-                    it.issueReason.contains(trimmed, true) ||
-                    statusLabel(it.status).contains(trimmed, true)
-            }.take(100)
+                val matches = pinsSnapshot.filter {
+                    it.name.contains(trimmed, true) ||
+                        it.description.contains(trimmed, true) ||
+                        it.issueReason.contains(trimmed, true) ||
+                        statusLabel(it.status).contains(trimmed, true)
+                }.take(100)
 
-            if (matches.isNotEmpty()) {
-                resultsBox.addView(DesignSystem.createSectionHeader(this, "Bookmarks (${matches.size})", p))
-                val card = DesignSystem.createGroupedCard(this, p, radiusDp = 18f, paddingHDp = 0, paddingVDp = 2)
-                val loc = currentLocation
-                matches.forEachIndexed { idx, pin ->
-                    if (idx > 0) {
-                        card.addView(View(this).apply {
-                            setBackgroundColor(p.divider)
-                            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                                marginStart = dp(16)
-                                marginEnd = dp(16)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || mySeq != localSearchSeq) return@runOnUiThread
+                    resultsBox.removeAllViews()
+                    if (parsedCoord != null) {
+                        val (lat, lng) = parsedCoord
+                        val coordCard = DesignSystem.createGroupedCard(this@MainActivity, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12)
+                        coordCard.addView(TextView(this@MainActivity).apply {
+                            text = "📍 Go to coordinates: ${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}"
+                            textSize = 14.5f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(p.accentPrimary)
+                            DesignSystem.applyTabularNumerals(this)
+                            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                            setOnClickListener {
+                                closeFullPage()
+                                selectedPinId = null
+                                selectedMarkerLatLng = LatLng(lat, lng)
+                                previewPinLatLng = null
+                                renderSelectedMarker()
+                                centerUpperHalf(LatLng(lat, lng), 16.5)
+                                showTappedPlaceCard("Coordinates", "", lat, lng)
                             }
                         })
+                        resultsBox.addView(coordCard)
                     }
-                    val row = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(14), dp(12), dp(14), dp(12))
-                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                        setOnClickListener {
-                            ensurePinVisibleOnMap(pin)
-                            closeFullPage()
-                            selectPinAndOpenCard(pin, zoomIfFar = true)
+
+                    if (matches.isNotEmpty()) {
+                        resultsBox.addView(DesignSystem.createSectionHeader(this@MainActivity, "Bookmarks (${matches.size})", p))
+                        val card = DesignSystem.createGroupedCard(this@MainActivity, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2)
+                        val loc = currentLocation
+                        matches.forEachIndexed { idx, pin ->
+                            if (idx > 0) {
+                                card.addView(DesignSystem.createHairlineDivider(this@MainActivity, p, 16, 16))
+                            }
+                            val row = LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(14), dp(12), dp(14), dp(12))
+                                UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                                setOnClickListener {
+                                    ensurePinVisibleOnMap(pin)
+                                    closeFullPage()
+                                    selectPinAndOpenCard(pin, zoomIfFar = true)
+                                }
+                            }
+                            row.addView(View(this@MainActivity).apply {
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    setColor(Color.parseColor(statusColorHex(pin.status)))
+                                }
+                                layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+                            })
+                            val st = PinStatus.fromRaw(pin.status)
+                            val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
+                            val statusTag = if ((st == PinStatus.ISSUE || st == PinStatus.DONE) && cleanNote.isNotBlank()) {
+                                "${st.label}: $cleanNote"
+                            } else {
+                                st.label
+                            }
+                            val col = LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.VERTICAL
+                                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                    marginEnd = dp(10)
+                                }
+                            }
+                            col.addView(TextView(this@MainActivity).apply {
+                                text = pin.name
+                                textSize = 14.5f
+                                setTypeface(null, Typeface.BOLD)
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.MIDDLE
+                                setTextColor(txtPrimary)
+                            })
+                            col.addView(TextView(this@MainActivity).apply {
+                                text = statusTag
+                                textSize = 12f
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.END
+                                setTextColor(txtSub)
+                            })
+                            row.addView(col)
+                            if (loc != null) {
+                                val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, pin.lat, pin.lng)
+                                row.addView(TextView(this@MainActivity).apply {
+                                    text = formatDistanceShort(d, DevicePrefs.getSpeedUnit(this@MainActivity))
+                                    textSize = 12f
+                                    setTypeface(null, Typeface.BOLD)
+                                    setSingleLine(true)
+                                    setTextColor(p.accentPrimary)
+                                    DesignSystem.applyTabularNumerals(this)
+                                })
+                            }
+                            card.addView(row)
                         }
+                        resultsBox.addView(card)
+                        UiAnimations.animateResultReveal(card)
                     }
-                    row.addView(View(this).apply {
-                        background = GradientDrawable().apply {
-                            shape = GradientDrawable.OVAL
-                            setColor(Color.parseColor(statusColorHex(pin.status)))
-                        }
-                        layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
-                    })
-                    val statusTag = if ((pin.status.equals("issue", true) || pin.status.equals("done", true)) && pin.issueReason.isNotBlank()) {
-                        "${statusLabel(pin.status)}: ${pin.issueReason}"
-                    } else {
-                        statusLabel(pin.status)
-                    }
-                    val col = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            marginEnd = dp(10)
-                        }
-                    }
-                    col.addView(TextView(this).apply {
-                        text = pin.name
-                        textSize = 14.5f
-                        setTypeface(null, Typeface.BOLD)
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.MIDDLE
-                        setTextColor(txtPrimary)
-                    })
-                    col.addView(TextView(this).apply {
-                        text = statusTag
-                        textSize = 12f
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
-                        setTextColor(txtSub)
-                    })
-                    row.addView(col)
-                    if (loc != null) {
-                        val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, pin.lat, pin.lng)
-                        row.addView(TextView(this).apply {
-                            text = formatDistanceShort(d, DevicePrefs.getSpeedUnit(this@MainActivity))
-                            textSize = 12f
-                            setTypeface(null, Typeface.BOLD)
-                            setSingleLine(true)
-                            setTextColor(p.accent)
-                            DesignSystem.applyTabularNumerals(this)
-                        })
-                    }
-                    card.addView(row)
                 }
-                resultsBox.addView(card)
             }
         }
 
@@ -6478,6 +6956,7 @@ class MainActivity : AppCompatActivity() {
                                 closeFullPage()
                                 selectedPinId = null
                                 selectedMarkerLatLng = LatLng(place.lat, place.lng)
+                                previewPinLatLng = null
                                 renderSelectedMarker()
                                 centerUpperHalf(LatLng(place.lat, place.lng), 16.0)
                                 showTappedPlaceCard(place.title, place.subtitle, place.lat, place.lng)
@@ -6512,6 +6991,7 @@ class MainActivity : AppCompatActivity() {
         }
         btnWebSearch.setOnClickListener { runWebSearch() }
         activePageCleanup = {
+            localSearchSeq++
             searchPageRunnable?.let { etQuery.removeCallbacks(it) }
             webSearchSeq++
         }
@@ -6583,12 +7063,12 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { onClick() }
             }
             val iconWrap = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply {
                     marginEnd = dp(12)
                 }
                 background = GradientDrawable().apply {
-                    setColor(if (night) Color.parseColor("#252A34") else Color.parseColor("#E6E6EC"))
-                    cornerRadius = dp(10).toFloat()
+                    shape = GradientDrawable.OVAL
+                    setColor(p.surfaceCanvas)
                 }
             }
             iconWrap.addView(ImageView(this).apply {
@@ -7656,17 +8136,25 @@ class MainActivity : AppCompatActivity() {
         body.addView(devCard)
 
         listOf(
-            Triple("GitHub Profile (@Thamirakkurd)", "https://github.com/Thamirakkurd", p.textPrimary),
-            Triple("TerraSync Repository", "https://github.com/Thamirakkurd/TerraSync", p.accent),
-            Triple("Releases & Updates", "https://github.com/Thamirakkurd/TerraSync/releases", p.green)
+            Triple("GitHub Profile (@Thamirakkurd)", "https://github.com/Thamirakkurd", p.actionDark),
+            Triple("TerraSync Repository", "https://github.com/Thamirakkurd/TerraSync", p.accentPrimary),
+            Triple("Releases & Updates", "https://github.com/Thamirakkurd/TerraSync/releases", p.surfaceTonal)
         ).forEach { (label, url, bgColor) ->
             body.addView(MaterialButton(this).apply {
                 text = label
-                textSize = 13.5f
+                textSize = 14f
                 isAllCaps = false
-                setTextColor(if (bgColor == p.textPrimary && p.isDark) Color.parseColor("#111317") else Color.WHITE)
+                setTextColor(
+                    when (bgColor) {
+                        p.actionDark -> p.onActionDark
+                        p.surfaceTonal -> p.textPrimary
+                        else -> Color.WHITE
+                    }
+                )
                 setBackgroundColor(bgColor)
-                cornerRadius = dp(12)
+                elevation = 0f
+                stateListAnimator = null
+                cornerRadius = dp(14)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
                     bottomMargin = dp(10)
                 }
@@ -7720,7 +8208,8 @@ class MainActivity : AppCompatActivity() {
         }
         titleCol.addView(TextView(this).apply {
             text = if (isIssue) "Report Field Issue" else "Mark as Done"
-            textSize = 17f
+            textSize = 19f
+            letterSpacing = -0.01f
             setTypeface(null, Typeface.BOLD)
             setTextColor(p.textPrimary)
         })
@@ -7732,14 +8221,7 @@ class MainActivity : AppCompatActivity() {
             ellipsize = TextUtils.TruncateAt.MIDDLE
         })
         header.addView(titleCol)
-        header.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.ic_close)
-            setColorFilter(p.textSecondary)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            setOnClickListener { hideInScreenSheet() }
-        })
+        header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
         sheetContent.addView(header)
 
         val etReason = EditText(this).apply {
@@ -7749,7 +8231,7 @@ class MainActivity : AppCompatActivity() {
             setHintTextColor(p.textSecondary)
             setPadding(dp(14), dp(12), dp(14), dp(12))
             minLines = 1
-            if (pin.status.equals(statusKey, ignoreCase = true)) {
+            if (PinStatus.fromRaw(pin.status).key == statusKey) {
                 setText(pin.issueReason)
             }
             background = GradientDrawable().apply {
@@ -7762,12 +8244,15 @@ class MainActivity : AppCompatActivity() {
             ).apply { bottomMargin = dp(10) }
         }
 
+        var committed = false
         fun commitSelection(noteText: String) {
+            if (committed) return
             val clean = noteText.trim()
             if (isIssue && clean.isBlank()) {
                 Toast.makeText(this, "Please select or enter the issue", Toast.LENGTH_SHORT).show()
                 return
             }
+            committed = true
             val stamp = DevicePrefs.getDeviceStamp(this)
             savePinStatusUnified(pin, statusKey, stamp, clean)
             fireStatusPulse(pin.lat, pin.lng, statusColorHex(statusKey))
@@ -8034,11 +8519,11 @@ class MainActivity : AppCompatActivity() {
         })
 
         val cbDedup = CheckBox(this).apply {
-            text = "Skip exact duplicates (same name, desc & GPS)"
+            text = "Deduplicate matching pins (same name & GPS, keep latest)"
             textSize = 13f
             setTextColor(p.textSecondary)
             buttonTintList = cbTint
-            isChecked = false
+            isChecked = true
         }
         box.addView(cbDedup)
 
@@ -8072,14 +8557,7 @@ class MainActivity : AppCompatActivity() {
                 val rawPins = pins.filter { it.layerId in selectedIds }
                 val rawTracks = tracks.filter { it.layerId in selectedIds }
                 val finalPins = if (cbDedup.isChecked) {
-                    rawPins
-                        .sortedWith(
-                            compareByDescending<PinItem> { !it.status.equals("pending", true) }
-                                .thenByDescending { it.updatedAt }
-                        )
-                        .distinctBy {
-                            "${it.name.trim().lowercase()}|${it.description.trim().lowercase()}|${"%.6f".format(Locale.US, it.lat)}|${"%.6f".format(Locale.US, it.lng)}"
-                        }
+                    DailyReportGenerator.deduplicatePins(rawPins)
                 } else {
                     rawPins
                 }
@@ -8367,7 +8845,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyMergedFoldersAndRender() {
-        val local = LocalFolderStore.loadAll(this)
+        val cachedLocal = LocalFolderStore.getCachedOrNull()
+        val local = if (cachedLocal != null) {
+            cachedLocal
+        } else {
+            LocalFolderStore.preloadAsync(applicationContext) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) applyMergedFoldersAndRender()
+                }
+            }
+            LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
+        }
         layers = (cloudLayers + local.layers).sortedByDescending { it.updatedAt }
         pins = cloudPins + local.pins
         tracks = cloudTracks + local.tracks
@@ -8612,6 +9100,14 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
     override fun onDestroy() {
+        routeRequestSeq++
+        webSearchSeq++
+        pendingSharedPin = null
+        pendingRouteReq = null
+        pendingZoomPoints = null
+        liveBookmarksRefresh = null
+        livePinListRefresh = null
+        liveEditHistoryRefresh = null
         stopLiveGpsUpdates()
         activePageCleanup?.invoke()
         activePageCleanup = null
@@ -8620,7 +9116,9 @@ class MainActivity : AppCompatActivity() {
         gpsAnim?.cancel()
         contourManager.cancelPending()
         offlineMaps.setStateListener(null)
+        tts?.stop()
         tts?.shutdown()
+        tts = null
         if (::repo.isInitialized) repo.stopListening()
         mapView.onDestroy()
         super.onDestroy()
@@ -8628,10 +9126,10 @@ class MainActivity : AppCompatActivity() {
     private fun applyResponsiveChromeSizing() {
         if (!::btnLocate.isInitialized) return
         val compact = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val btnSize = dp(if (compact) 42 else 48)
-        val locSize = dp(if (compact) 44 else 50)
+        val btnSize = dp(if (compact) 40 else 46)
+        val locSize = dp(if (compact) 48 else 56)
         val gap = dp(if (compact) 4 else 10)
-        val smallGap = dp(if (compact) 4 else 8)
+        val smallGap = dp(if (compact) 4 else 10)
         fun resize(v: View, size: Int, bottomMarginPx: Int) {
             val lp = v.layoutParams as? ViewGroup.MarginLayoutParams ?: return
             lp.width = size
@@ -8658,9 +9156,17 @@ class MainActivity : AppCompatActivity() {
         if (DevicePrefs.getThemeMode(this) == "auto") {
             applyMapChromeTheme()
             if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
+            if (::pageOverlayContainer.isInitialized && pageOverlayContainer.visibility == View.VISIBLE) {
+                pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
+            }
             val curPinId = selectedPinId
-            if (curPinId != null && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
-                pinById[curPinId]?.let { showPinCard(it, animateSwap = false) }
+            val curTapped = activeTappedLatLng
+            if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                if (curPinId != null) {
+                    pinById[curPinId]?.let { showPinCard(it, animateSwap = false) }
+                } else if (curTapped != null) {
+                    showTappedPlaceCard(tappedResolvedTitle, tappedResolvedSub, curTapped.latitude, curTapped.longitude)
+                }
             }
         }
     }
