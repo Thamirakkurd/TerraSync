@@ -75,7 +75,9 @@ data class ThemePalette(
     val rippleColor: Int,
     val navBannerBg: Int,
     val navBannerSub: Int,
-    val shadowSpot: Int
+    val shadowSpot: Int,
+    val shadowAmbient: Int,
+    val floatingBorder: Int
 )
 
 object DesignSystem {
@@ -132,7 +134,9 @@ object DesignSystem {
                 rippleColor = Color.parseColor("#26FFFFFF"),
                 navBannerBg = Color.parseColor("#165E3D"),
                 navBannerSub = Color.parseColor("#CBEAD9"),
-                shadowSpot = Color.parseColor("#5C000000")
+                shadowSpot = Color.parseColor("#E6000000"),
+                shadowAmbient = Color.parseColor("#80000000"),
+                floatingBorder = Color.parseColor("#353832")
             )
         } else {
             val canvas = Color.parseColor("#FAF9F6")
@@ -185,7 +189,9 @@ object DesignSystem {
                 rippleColor = Color.parseColor("#181C1E1B"),
                 navBannerBg = Color.parseColor("#18794E"),
                 navBannerSub = Color.parseColor("#D4F1E2"),
-                shadowSpot = Color.parseColor("#1C000000")
+                shadowSpot = Color.parseColor("#8A000000"),
+                shadowAmbient = Color.parseColor("#38000000"),
+                floatingBorder = Color.parseColor("#DFDED8")
             )
         }
     }
@@ -221,25 +227,25 @@ object DesignSystem {
         }
     }
 
-    /** Opaque floating map control (#FFFFFF / #20221F) + subtle 0.75dp hairline outline + soft diffused shadow. */
+    /** Opaque floating map control (#FFFFFF / #20221F) + subtle 1dp hairline outline + soft diffused shadow. */
     fun applyFloatingControl(
         ctx: Context,
         view: View,
         palette: ThemePalette,
         radiusDp: Float,
-        elevationDp: Float = 4f,
+        elevationDp: Float = 5f,
         activeFillColor: Int? = null
     ) {
         val d = ctx.resources.displayMetrics.density
         val fill = activeFillColor ?: palette.surfaceFloating
-        val stroke = if (activeFillColor == null) palette.borderSubtle else Color.TRANSPARENT
+        val stroke = if (activeFillColor == null) palette.floatingBorder else Color.TRANSPARENT
         val content = buildOpaqueDrawable(
             ctx = ctx,
             fillColor = fill,
             radiusDp = radiusDp,
             topOnly = false,
             strokeColor = stroke,
-            strokeDp = if (stroke != Color.TRANSPARENT) 0.75f else 0f
+            strokeDp = if (stroke != Color.TRANSPARENT) 1f else 0f
         )
         val mask = GradientDrawable().apply {
             setColor(Color.WHITE)
@@ -258,21 +264,21 @@ object DesignSystem {
         view: View,
         palette: ThemePalette,
         radiusDp: Float = 18f,
-        elevationDp: Float = 6f,
+        elevationDp: Float = 7f,
         topOnly: Boolean = false,
         fillOverride: Int? = null,
         strokeOverride: Int? = null
     ) {
         val d = ctx.resources.displayMetrics.density
         val fill = fillOverride ?: if (topOnly) palette.surfaceCanvas else palette.surfaceFloating
-        val stroke = strokeOverride ?: palette.borderSubtle
+        val stroke = strokeOverride ?: if (topOnly) palette.borderSubtle else palette.floatingBorder
         view.background = buildOpaqueDrawable(
             ctx = ctx,
             fillColor = fill,
             radiusDp = radiusDp,
             topOnly = topOnly,
             strokeColor = stroke,
-            strokeDp = if (stroke != Color.TRANSPARENT) 0.75f else 0f
+            strokeDp = if (stroke != Color.TRANSPARENT) 1f else 0f
         )
         view.elevation = elevationDp * d
         view.clipToOutline = true
@@ -360,16 +366,16 @@ object DesignSystem {
         }
     }
 
-    /** Circular warm-gray sheet dismiss `×` button (#B8BBB6 with white ×, 44dp touch target). */
+    /** Circular warm-gray sheet dismiss `×` button (#B8BBB6 with white ×, 40dp touch target). */
     fun createSheetCloseButton(
         ctx: Context,
         palette: ThemePalette,
         onClick: () -> Unit
     ): FrameLayout {
         val d = ctx.resources.displayMetrics.density
-        val hitPx = (44 * d).toInt()
+        val hitPx = (40 * d).toInt()
         val discPx = (30 * d).toInt()
-        val iconPx = (14 * d).toInt()
+        val iconPx = (13 * d).toInt()
         val wrap = FrameLayout(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(hitPx, hitPx)
             contentDescription = "Close"
@@ -403,7 +409,7 @@ object DesignSystem {
     fun applySoftShadow(view: View, palette: ThemePalette) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             view.outlineSpotShadowColor = palette.shadowSpot
-            view.outlineAmbientShadowColor = palette.shadowSpot
+            view.outlineAmbientShadowColor = palette.shadowAmbient
         }
     }
 
@@ -484,12 +490,24 @@ object DesignSystem {
         btn: MaterialButton,
         active: Boolean,
         palette: ThemePalette,
-        activeBgColor: Int = palette.accentPrimary
+        activeBgColor: Int = palette.accentPrimary,
+        onTonalCard: Boolean = false
     ) {
         val activeText = if (activeBgColor == palette.actionDark) palette.onActionDark else Color.WHITE
+        val d = btn.resources.displayMetrics.density
         btn.setTextColor(if (active) activeText else palette.textPrimary)
-        btn.setBackgroundColor(if (active) activeBgColor else palette.surfaceTonal)
-        btn.strokeWidth = 0
+        if (active) {
+            btn.setBackgroundColor(activeBgColor)
+            btn.strokeWidth = 0
+        } else if (onTonalCard) {
+            // Distinct crisp surface on top of #F0EFEA / #2B2D29 grouped cards
+            btn.setBackgroundColor(palette.surfaceFloating)
+            btn.strokeColor = ColorStateList.valueOf(palette.borderSubtle)
+            btn.strokeWidth = (1f * d).toInt().coerceAtLeast(1)
+        } else {
+            btn.setBackgroundColor(palette.surfaceTonal)
+            btn.strokeWidth = 0
+        }
         btn.elevation = 0f
         btn.stateListAnimator = null
     }
@@ -547,7 +565,8 @@ object DesignSystem {
         hintText: String,
         initialText: String = "",
         singleLine: Boolean = true,
-        minLines: Int = 1
+        minLines: Int = 1,
+        onTonalCard: Boolean = false
     ): EditText {
         val d = ctx.resources.displayMetrics.density
         return EditText(ctx).apply {
@@ -566,11 +585,11 @@ object DesignSystem {
                 this.minLines = minLines
                 gravity = Gravity.TOP or Gravity.START
             }
-            setPadding((14 * d).toInt(), (12 * d).toInt(), (14 * d).toInt(), (12 * d).toInt())
+            setPadding((14 * d).toInt(), (11 * d).toInt(), (14 * d).toInt(), (11 * d).toInt())
             background = buildOpaqueDrawable(
                 ctx = ctx,
-                fillColor = palette.surfaceTonal,
-                radiusDp = 14f,
+                fillColor = if (onTonalCard) palette.surfaceFloating else palette.surfaceTonal,
+                radiusDp = 12f,
                 strokeColor = palette.borderSubtle,
                 strokeDp = 1f
             )

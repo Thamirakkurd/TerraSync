@@ -105,10 +105,13 @@ object UiAnimations {
         view.background = RippleDrawable(ColorStateList.valueOf(ripple), content, mask)
     }
 
-    /** Smoothly glides the active pill indicator inside the floating bottom navigation capsule. */
+    /**
+     * Smoothly glides the active pill indicator inside the floating bottom navigation capsule
+     * using GPU-only translationX (never triggers a layout pass during tab animation).
+     */
     fun animateNavIndicator(indicator: View, targetX: Float, targetWidth: Int, animate: Boolean) {
         val lp = indicator.layoutParams
-        if (lp != null && lp.width != targetWidth && targetWidth > 0) {
+        if (lp != null && targetWidth > 0 && lp.width != targetWidth) {
             lp.width = targetWidth
             indicator.layoutParams = lp
         }
@@ -119,7 +122,7 @@ object UiAnimations {
         }
         indicator.animate()
             .translationX(targetX)
-            .setDuration(220L)
+            .setDuration(200L)
             .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
             .start()
@@ -477,15 +480,14 @@ object UiAnimations {
             container.translationY = 0f
             return
         }
-        val shift = 22f * container.resources.displayMetrics.density
-        container.alpha = 0f
+        val shift = 20f * container.resources.displayMetrics.density
+        container.alpha = 0.01f
         container.translationY = shift
         container.animate()
             .alpha(1f)
             .translationY(0f)
-            .setDuration(200L)
+            .setDuration(175L)
             .setInterpolator(EMPHASIZED_DECELERATE)
-            .withLayer()
             .start()
     }
 
@@ -502,9 +504,8 @@ object UiAnimations {
         container.animate()
             .alpha(0f)
             .translationY(shift)
-            .setDuration(155L)
+            .setDuration(135L)
             .setInterpolator(FAST_EXIT)
-            .withLayer()
             .withEndAction {
                 container.visibility = View.GONE
                 container.alpha = 1f
@@ -532,8 +533,8 @@ object UiAnimations {
 
     /**
      * Smooth native dual-view horizontal Push (e.g., Settings Menu -> Section Sub-Page).
-     * Outgoing view glides slightly left while incoming sub-page slides cleanly from right.
-     * Zero map bleed-through and leak-safe across rapid taps.
+     * Incoming sub-page stays 100% opaque (zero text ghosting/bleed-through) while gliding
+     * cleanly over the subtly receding parent page at up to 120fps.
      */
     fun transitionSubPagePush(container: ViewGroup, incoming: View, isRtl: Boolean) {
         val outgoingViews = pruneExitingChildren(container)
@@ -547,11 +548,11 @@ object UiAnimations {
         val dir = if (isRtl) -1f else 1f
         val d = container.resources.displayMetrics.density
         val widthPx = container.width.takeIf { it > 0 }?.toFloat() ?: (360f * d)
-        val inStart = (widthPx * 0.24f).coerceIn(72f * d, 120f * d) * dir
-        val outEnd = -(widthPx * 0.08f).coerceIn(24f * d, 40f * d) * dir
+        val inStart = widthPx * dir
+        val outEnd = -(widthPx * 0.14f) * dir
 
         incoming.translationX = inStart
-        incoming.alpha = 0.68f
+        incoming.alpha = 1f
         incoming.elevation = 6f * d
         container.addView(incoming)
 
@@ -559,27 +560,23 @@ object UiAnimations {
             old.tag = TAG_EXITING
             old.animate()
                 .translationX(outEnd)
-                .alpha(0.80f)
                 .setDuration(220L)
                 .setInterpolator(EMPHASIZED_DECELERATE)
-                .withLayer()
                 .withEndAction { container.removeView(old) }
                 .start()
         }
 
         incoming.animate()
             .translationX(0f)
-            .alpha(1f)
-            .setDuration(235L)
+            .setDuration(220L)
             .setInterpolator(EMPHASIZED_DECELERATE)
-            .withLayer()
             .withEndAction { incoming.elevation = 0f }
             .start()
     }
 
     /**
      * Smooth native dual-view horizontal Pop (e.g., Section Sub-Page -> Settings Menu).
-     * Previous menu glides gently back from left while outgoing sub-page slides out right.
+     * Both pages stay 100% opaque with pure GPU translationX (zero double-text bleed).
      */
     fun transitionSubPagePop(container: ViewGroup, backView: View, isRtl: Boolean) {
         val outgoingViews = pruneExitingChildren(container)
@@ -593,19 +590,17 @@ object UiAnimations {
         val dir = if (isRtl) -1f else 1f
         val d = container.resources.displayMetrics.density
         val widthPx = container.width.takeIf { it > 0 }?.toFloat() ?: (360f * d)
-        val backStart = -(widthPx * 0.08f).coerceIn(24f * d, 40f * d) * dir
-        val outEnd = (widthPx * 0.24f).coerceIn(72f * d, 120f * d) * dir
+        val backStart = -(widthPx * 0.14f) * dir
+        val outEnd = widthPx * dir
 
         backView.translationX = backStart
-        backView.alpha = 0.82f
+        backView.alpha = 1f
         container.addView(backView, 0)
 
         backView.animate()
             .translationX(0f)
-            .alpha(1f)
-            .setDuration(215L)
+            .setDuration(210L)
             .setInterpolator(EMPHASIZED_DECELERATE)
-            .withLayer()
             .start()
 
         outgoingViews.forEach { old ->
@@ -613,10 +608,8 @@ object UiAnimations {
             old.elevation = 6f * d
             old.animate()
                 .translationX(outEnd)
-                .alpha(0f)
-                .setDuration(195L)
-                .setInterpolator(FAST_OUT_SLOW_IN)
-                .withLayer()
+                .setDuration(210L)
+                .setInterpolator(EMPHASIZED_DECELERATE)
                 .withEndAction { container.removeView(old) }
                 .start()
         }

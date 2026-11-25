@@ -240,7 +240,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvNavMeta: TextView
     private lateinit var btnNavVoice: ImageButton
     private lateinit var tvScaleLabel: TextView
-    private lateinit var scaleBarLine: View
+    private lateinit var scaleBarLine: ScaleBarView
     private lateinit var scaleBarContainer: LinearLayout
 
     private lateinit var inScreenSheet: LinearLayout
@@ -462,17 +462,17 @@ class MainActivity : AppCompatActivity() {
             val insetStart = if (isLayoutRtl) sideInsetRight else sideInsetLeft
             val insetEnd = if (isLayoutRtl) sideInsetLeft else sideInsetRight
             (topCluster.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                topMargin = statusBarInsetTop + dp(10)
-                marginStart = insetStart + dp(12)
-                marginEnd = insetEnd + dp(64)
+                topMargin = statusBarInsetTop + dp(12)
+                marginStart = insetStart + dp(16)
+                marginEnd = insetEnd + dp(70)
             }
             (navBanner.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                topMargin = statusBarInsetTop + dp(10)
-                marginStart = insetStart + dp(12)
-                marginEnd = insetEnd + dp(12)
+                topMargin = statusBarInsetTop + dp(12)
+                marginStart = insetStart + dp(16)
+                marginEnd = insetEnd + dp(16)
             }
             (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                bottomMargin = navBarInsetBottom + dp(10)
+                bottomMargin = maxOf(navBarInsetBottom, dp(12)) + dp(12)
                 marginStart = insetStart
                 marginEnd = insetEnd
             }
@@ -490,7 +490,7 @@ class MainActivity : AppCompatActivity() {
             navBanner.requestLayout()
             bottomDock.requestLayout()
             inScreenSheet.requestLayout()
-            map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(12), sideInsetRight + dp(14), 0)
+            map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(12), sideInsetRight + dp(16), 0)
             insets
         }
 
@@ -512,22 +512,31 @@ class MainActivity : AppCompatActivity() {
                         if (activeNavRoute == null) {
                             resetMapPadding()
                         }
-                        UiAnimations.fadeShow(bottomDock, 180L)
+                        bottomDock.translationY = 0f
+                        UiAnimations.fadeShow(bottomDock, 165L)
+                    } else if ((newState == BottomSheetBehavior.STATE_COLLAPSED || newState == BottomSheetBehavior.STATE_EXPANDED) &&
+                        !isRulerMode && !isLassoMode && activeNavRoute == null
+                    ) {
+                        bottomDock.animate().cancel()
+                        bottomDock.alpha = 0f
+                        bottomDock.translationY = 0f
+                        bottomDock.visibility = View.GONE
                     }
                 }
                 override fun onSlide(bottomSheet: View, slideOffset: Float) {
                     if (UiAnimations.isReducedMotion(this@MainActivity)) return
                     if (isRulerMode || isLassoMode || activeNavRoute != null) return
                     bottomDock.animate().cancel()
-                    if (slideOffset < -0.2f) {
-                        val reveal = ((-slideOffset - 0.2f) / 0.8f).coerceIn(0f, 1f)
+                    if (slideOffset < -0.15f) {
+                        val reveal = ((-slideOffset - 0.15f) / 0.85f).coerceIn(0f, 1f)
                         if (bottomDock.visibility != View.VISIBLE) {
                             bottomDock.visibility = View.VISIBLE
                         }
                         bottomDock.alpha = reveal
+                        bottomDock.translationY = (1f - reveal) * dp(14)
                     } else if (bottomDock.visibility == View.VISIBLE) {
                         bottomDock.alpha = 0f
-                        bottomDock.visibility = View.GONE
+                        bottomDock.visibility = View.INVISIBLE
                     }
                 }
             })
@@ -541,7 +550,7 @@ class MainActivity : AppCompatActivity() {
             map = m
             m.uiSettings.isCompassEnabled = true
             m.uiSettings.setCompassFadeFacingNorth(true)
-            m.uiSettings.setCompassMargins(0, statusBarInsetTop + dp(12), dp(14), 0)
+            m.uiSettings.setCompassMargins(0, statusBarInsetTop + dp(12), dp(16), 0)
             m.uiSettings.isLogoEnabled = false
             m.uiSettings.isAttributionEnabled = false
             m.cameraPosition = CameraPosition.Builder()
@@ -796,7 +805,8 @@ class MainActivity : AppCompatActivity() {
         val innerW = bottomNavDock.width - bottomNavDock.paddingStart - bottomNavDock.paddingEnd
         if (innerW > 0) {
             val slotW = innerW / tabs.size
-            val pillW = (slotW - dp(4)).coerceAtLeast(dp(44))
+            // Sleek compact emerald capsule matching the target design (~74-76dp wide x 46dp tall)
+            val pillW = (slotW - dp(10)).coerceIn(dp(56), dp(76))
             val isRtl = bottomNavDock.layoutDirection == View.LAYOUT_DIRECTION_RTL
             val visualIdx = if (isRtl) (tabs.lastIndex - activeBottomTabIdx) else activeBottomTabIdx
             val targetX = visualIdx * slotW + (slotW - pillW) / 2f
@@ -815,17 +825,18 @@ class MainActivity : AppCompatActivity() {
         updateSystemBarContrast()
         val iconTint = p.iconTint
         val scaleColor = Color.parseColor(if (darkMapBg) "#F4F4F0" else "#1C1E1B")
+        val scaleHaloColor = Color.parseColor(if (darkMapBg) "#CC161715" else "#E6FAF9F6")
 
-        // Pure circular 46dp floating utility map controls (#FFFFFF / #20221F + subtle border + soft shadow)
-        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 23f, 4f)
-        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 23f, 4f)
-        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 23f, 4f)
+        // Pure circular 46dp floating utility map controls (#FFFFFF / #20221F + crisp border + soft diffused shadow)
+        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 23f, 5f)
+        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 23f, 5f)
+        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 23f, 5f)
         DesignSystem.applyFloatingControl(
             this,
             btnLasso,
             p,
             23f,
-            4f,
+            5f,
             activeFillColor = if (isLassoMode) p.accentPrimary else null
         )
         DesignSystem.applyFloatingControl(
@@ -833,33 +844,33 @@ class MainActivity : AppCompatActivity() {
             btnRuler,
             p,
             23f,
-            4f,
+            5f,
             activeFillColor = if (isRulerMode) p.accentPrimary else null
         )
-        DesignSystem.applyFloatingControl(this, btnZoomIn, p, 23f, 4f)
-        DesignSystem.applyFloatingControl(this, btnZoomOut, p, 23f, 4f)
-        DesignSystem.applyFloatingControl(this, btnImport, p, 23f, 4f)
+        DesignSystem.applyFloatingControl(this, btnZoomIn, p, 23f, 5f)
+        DesignSystem.applyFloatingControl(this, btnZoomOut, p, 23f, 5f)
+        DesignSystem.applyFloatingControl(this, btnImport, p, 23f, 5f)
 
-        // Floating Capsule Bottom Navigation Dock (32dp capsule, 58dp height, 6dp inner padding, emerald active tab)
+        // Floating Capsule Bottom Navigation Dock (30dp full capsule, 58dp height, 6dp inner padding, emerald active tab)
         DesignSystem.applyFloatingSurface(
             this,
             bottomNavDock,
             p,
-            radiusDp = 32f,
-            elevationDp = 8f,
+            radiusDp = 30f,
+            elevationDp = 10f,
             fillOverride = p.surfaceFloating,
-            strokeOverride = p.borderSubtle
+            strokeOverride = p.floatingBorder
         )
         navActiveIndicator.background = DesignSystem.buildOpaqueDrawable(
             this,
             fillColor = p.accentPrimary,
-            radiusDp = 24f
+            radiusDp = 23f
         )
         bottomIconRow.background = null
         bottomIconRow.elevation = 0f
         listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout).forEach { btn ->
-            btn.background = null
-            UiAnimations.attachSnappyPress(btn, 0.92f)
+            UiAnimations.applyRoundedRipple(this, btn, Color.TRANSPARENT, 23f, night)
+            UiAnimations.attachSnappyPress(btn, 0.93f)
         }
         bottomNavDock.post { syncNavDockIndicator(animate = false) }
 
@@ -879,13 +890,13 @@ class MainActivity : AppCompatActivity() {
         updateLocationIconTint()
         btnSyncStatus.setColorFilter(if (isLiveConnected) p.accentPrimary else p.amber)
 
-        // Crisp minimalist scale bar
+        // Crisp minimalist bracketed scale bar (zero relayout on zoom/pan)
         scaleBarContainer.background = null
         scaleBarContainer.elevation = 0f
-        scaleBarContainer.setPadding(dp(4), dp(2), dp(4), dp(2))
+        scaleBarContainer.setPadding(dp(2), dp(2), dp(2), dp(2))
         tvScaleLabel.setTextColor(scaleColor)
-        tvScaleLabel.setShadowLayer(4f, 0f, 0f, Color.parseColor(if (darkMapBg) "#CC161715" else "#E6FAF9F6"))
-        scaleBarLine.setBackgroundColor(scaleColor)
+        tvScaleLabel.setShadowLayer(4f, 0f, 0f, scaleHaloColor)
+        scaleBarLine.setBarStyle(scaleColor, scaleHaloColor)
         scaleBarContainer.visibility = if (DevicePrefs.isScaleBarEnabled(this)) View.VISIBLE else View.GONE
 
         // Crisp circular Speed HUD with tabular numerals
@@ -1093,8 +1104,8 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(4)
-                bottomMargin = dp(14)
+                topMargin = dp(2)
+                bottomMargin = dp(16)
             }
         }
         header.addView(TextView(this).apply {
@@ -2461,6 +2472,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showInScreenSheet(peekDp: Int = 280) {
         activeSheetPeekDp = peekDp
+        bottomDock.translationY = 0f
         UiAnimations.fadeHide(bottomDock, 120L)
         val maxPeek = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(dp(180))
         sheetBehavior.peekHeight = minOf(dp(peekDp) + navBarInsetBottom, maxPeek)
@@ -2585,13 +2597,13 @@ class MainActivity : AppCompatActivity() {
         }
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(4)
-                bottomMargin = dp(12)
+                topMargin = dp(2)
+                bottomMargin = dp(16)
             }
         }
         val pinBadge = DesignSystem.createHeaderBadge(
@@ -2652,7 +2664,7 @@ class MainActivity : AppCompatActivity() {
         headerRow.addView(ImageButton(this).apply {
             setImageResource(if (starred) R.drawable.ic_star_filled else R.drawable.ic_star_outline)
             if (!starred) setColorFilter(p.iconMuted)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
             setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
@@ -2672,7 +2684,7 @@ class MainActivity : AppCompatActivity() {
         headerRow.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_share)
             setColorFilter(p.iconTint)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
             setPadding(dp(9), dp(9), dp(9), dp(9))
             scaleType = ImageView.ScaleType.FIT_CENTER
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
@@ -2775,13 +2787,13 @@ class MainActivity : AppCompatActivity() {
         }
         sheetContent.addView(statusRow)
 
-        // 5. Route To (Primary Dark CTA) & Route From (Secondary Tonal) Row
+        // 5. Route To (Primary Dark Pill CTA) & Route From (Secondary Tonal Pill) Row
         val routeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
+            ).apply { bottomMargin = dp(10) }
         }
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeTo(this@MainActivity)
@@ -2792,8 +2804,8 @@ class MainActivity : AppCompatActivity() {
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(12), 0, dp(12), 0)
+            cornerRadius = dp(22)
             DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
@@ -2808,8 +2820,8 @@ class MainActivity : AppCompatActivity() {
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(12), 0, dp(12), 0)
+            cornerRadius = dp(22)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
             UiAnimations.attachSnappyPress(this)
@@ -2817,13 +2829,13 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(routeRow)
 
-        // 6. Secondary Row: Edit + External
+        // 6. Secondary Row: Edit + External + Mark Sent (full capsule pills)
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(12) }
+            ).apply { bottomMargin = dp(14) }
         }
         actionRow.addView(MaterialButton(this).apply {
             text = "Edit"
@@ -2834,8 +2846,8 @@ class MainActivity : AppCompatActivity() {
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(10), 0, dp(10), 0)
+            cornerRadius = dp(20)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSpringTouch(this)
@@ -2850,8 +2862,8 @@ class MainActivity : AppCompatActivity() {
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(10), 0, dp(10), 0)
+            cornerRadius = dp(20)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSpringTouch(this)
@@ -2871,8 +2883,8 @@ class MainActivity : AppCompatActivity() {
             maxLines = 1
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(6), 0, dp(6), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(8), 0, dp(8), 0)
+            cornerRadius = dp(20)
             elevation = 0f
             stateListAnimator = null
             setTextColor(if (localSent) Color.WHITE else txtPrimary)
@@ -3176,13 +3188,13 @@ class MainActivity : AppCompatActivity() {
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(4)
-                bottomMargin = dp(14)
+                topMargin = dp(2)
+                bottomMargin = dp(16)
             }
         }
         header.addView(
@@ -3257,7 +3269,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
+            ).apply { bottomMargin = dp(10) }
         }
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeTo(this@MainActivity)
@@ -3272,8 +3284,8 @@ class MainActivity : AppCompatActivity() {
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(12), 0, dp(12), 0)
+            cornerRadius = dp(22)
             DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
@@ -3292,8 +3304,8 @@ class MainActivity : AppCompatActivity() {
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(12), 0, dp(12), 0)
+            cornerRadius = dp(22)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
             UiAnimations.attachSnappyPress(this)
@@ -3320,7 +3332,7 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            cornerRadius = dp(21)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
@@ -3343,7 +3355,7 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            cornerRadius = dp(21)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f)
             UiAnimations.attachSnappyPress(this)
@@ -3577,8 +3589,8 @@ class MainActivity : AppCompatActivity() {
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(12), 0, dp(12), 0)
+            cornerRadius = dp(22)
             DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1.4f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
@@ -3604,8 +3616,8 @@ class MainActivity : AppCompatActivity() {
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(12)
+            setPadding(dp(12), 0, dp(12), 0)
+            cornerRadius = dp(22)
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 0.8f)
             UiAnimations.attachSnappyPress(this)
@@ -4013,10 +4025,10 @@ class MainActivity : AppCompatActivity() {
     private fun updateLocationIconTint() {
         val p = currentPalette()
         if (isFollowingGps) {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 6f, activeFillColor = p.accentPrimary)
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 7f, activeFillColor = p.accentPrimary)
             btnLocate.setColorFilter(Color.WHITE)
         } else {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 6f, activeFillColor = p.actionDark)
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 7f, activeFillColor = p.actionDark)
             btnLocate.setColorFilter(p.onActionDark)
         }
     }
@@ -4080,8 +4092,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (kotlin.math.abs(widthPx - lastScaleWidthPx) >= 2) {
             lastScaleWidthPx = widthPx
-            scaleBarLine.layoutParams.width = widthPx
-            scaleBarLine.requestLayout()
+            scaleBarLine.setBarWidthPx(widthPx)
         }
     }
 
@@ -4211,7 +4222,7 @@ class MainActivity : AppCompatActivity() {
         }
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(6), dp(16), dp(28))
+            setPadding(dp(16), dp(12), dp(16), dp(28))
         }
         scroll.addView(body)
         outer.addView(scroll)
@@ -4292,13 +4303,21 @@ class MainActivity : AppCompatActivity() {
         val searchWrap = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(2), dp(6), dp(2))
+            setPadding(dp(16), dp(2), dp(8), dp(2))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
                 marginStart = dp(16)
                 marginEnd = dp(16)
+                topMargin = dp(4)
                 bottomMargin = dp(10)
             }
-            DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 14f)
+            background = DesignSystem.buildOpaqueDrawable(
+                ctx = this@MainActivity,
+                fillColor = p.surfaceTonal,
+                radiusDp = 24f,
+                strokeColor = p.borderSubtle,
+                strokeDp = 1f
+            )
+            clipToOutline = true
         }
         searchWrap.addView(ImageView(this).apply {
             setImageResource(R.drawable.ic_search)
@@ -4351,7 +4370,7 @@ class MainActivity : AppCompatActivity() {
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
-            setPadding(dp(18), dp(10), dp(18), dp(12))
+            setPadding(dp(18), dp(10), dp(18), dp(16))
         }
 
         var suppressAllSwitch = false
@@ -4764,11 +4783,11 @@ class MainActivity : AppCompatActivity() {
                         text = "LOCAL"
                         textSize = 10f
                         setTypeface(null, Typeface.BOLD)
-                        setTextColor(Color.parseColor(if (night) "#2DD4BF" else "#0F766E"))
-                        setPadding(dp(6), dp(2), dp(6), dp(2))
+                        setTextColor(p.accentPrimary)
+                        setPadding(dp(7), dp(2), dp(7), dp(2))
                         background = GradientDrawable().apply {
-                            setColor(Color.parseColor(if (night) "#242DD4BF" else "#CCFBF1"))
-                            cornerRadius = dp(6).toFloat()
+                            setColor(p.accentPrimarySoft)
+                            cornerRadius = dp(8).toFloat()
                         }
                         layoutParams = LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -6681,9 +6700,16 @@ class MainActivity : AppCompatActivity() {
         val searchBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(2), dp(6), dp(2))
+            setPadding(dp(16), dp(2), dp(8), dp(2))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48))
-            DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 14f)
+            background = DesignSystem.buildOpaqueDrawable(
+                ctx = this@MainActivity,
+                fillColor = p.surfaceTonal,
+                radiusDp = 24f,
+                strokeColor = p.borderSubtle,
+                strokeDp = 1f
+            )
+            clipToOutline = true
         }
         searchBox.addView(ImageView(this).apply {
             setImageResource(R.drawable.ic_search)
@@ -6725,10 +6751,10 @@ class MainActivity : AppCompatActivity() {
             ellipsize = TextUtils.TruncateAt.END
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
+            setPadding(dp(12), 0, dp(12), 0)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(12)
+            cornerRadius = dp(22)
             DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1.05f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
@@ -6741,14 +6767,14 @@ class MainActivity : AppCompatActivity() {
             ellipsize = TextUtils.TruncateAt.END
             minWidth = 0
             minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
+            setPadding(dp(12), 0, dp(12), 0)
             insetTop = 0
             insetBottom = 0
             setTextColor(Color.WHITE)
             setBackgroundColor(p.accentPrimary)
             elevation = 0f
             stateListAnimator = null
-            cornerRadius = dp(12)
+            cornerRadius = dp(22)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { jumpToNearestPendingPin() }
@@ -7068,7 +7094,8 @@ class MainActivity : AppCompatActivity() {
                 }
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
-                    setColor(p.surfaceCanvas)
+                    setColor(p.surfaceFloating)
+                    setStroke(dp(1), p.borderSubtle)
                 }
             }
             iconWrap.addView(ImageView(this).apply {
@@ -7154,15 +7181,12 @@ class MainActivity : AppCompatActivity() {
         val aboutSummary = "v${getInstalledVersionName()} • Device #${DevicePrefs.getDeviceId(this)}"
 
         // Primary grouped menu card (5 functional settings categories)
-        body.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
-        })
         val mainMenuCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 14)
 
         addMenuRow(
             mainMenuCard,
             R.drawable.ic_layers,
-            p.green,
+            p.accentPrimary,
             AppStrings.secMapShaders(this),
             mapSummary
         ) { openSettingsSection(SettingsSection.MAP_SHADERS) }
@@ -7170,7 +7194,7 @@ class MainActivity : AppCompatActivity() {
         addMenuRow(
             mainMenuCard,
             R.drawable.ic_map,
-            p.accent,
+            p.accentPrimary,
             AppStrings.secLanguageLabels(this),
             langSummary
         ) { openSettingsSection(SettingsSection.LANGUAGE_LABELS) }
@@ -7178,7 +7202,7 @@ class MainActivity : AppCompatActivity() {
         addMenuRow(
             mainMenuCard,
             R.drawable.ic_my_location,
-            p.accent,
+            p.accentPrimary,
             AppStrings.secNavigationRouting(this),
             navSummary
         ) { openSettingsSection(SettingsSection.NAVIGATION_ROUTING) }
@@ -7186,7 +7210,7 @@ class MainActivity : AppCompatActivity() {
         addMenuRow(
             mainMenuCard,
             R.drawable.ic_cloud_sync,
-            if (isLiveConnected) p.green else p.amber,
+            if (isLiveConnected) p.accentPrimary else p.amber,
             AppStrings.secFieldDataSync(this),
             syncSummary
         ) { openSettingsSection(SettingsSection.FIELD_DATA_SYNC) }
@@ -7273,7 +7297,8 @@ class MainActivity : AppCompatActivity() {
                         b,
                         id == activeId,
                         p,
-                        activeColor?.invoke(id) ?: p.accent
+                        activeColor?.invoke(id) ?: p.accentPrimary,
+                        onTonalCard = true
                     )
                 }
             }
@@ -7289,7 +7314,7 @@ class MainActivity : AppCompatActivity() {
                     minWidth = 0
                     minimumWidth = 0
                     setPadding(dp(6), 0, dp(6), 0)
-                    cornerRadius = dp(10)
+                    cornerRadius = dp(12)
                     layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
                         if (idx < options.lastIndex) marginEnd = dp(6)
                     }
@@ -7313,10 +7338,6 @@ class MainActivity : AppCompatActivity() {
             card.addView(DesignSystem.createSettingsSwitchRow(this, title, subtitle, checked, p, onChange))
         }
 
-        body.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
-        })
-
         when (section) {
             SettingsSection.MAP_SHADERS -> {
                 val mapCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 6)
@@ -7327,7 +7348,7 @@ class MainActivity : AppCompatActivity() {
                     subtitle = "Crisp vector street grid or satellite hybrid imagery",
                     options = MapStyleMode.entries.map { it.id.toString() to it.label },
                     selectedId = mapStyleMode.id.toString(),
-                    activeColor = { id -> if (id == MapStyleMode.VECTOR.id.toString()) p.green else p.accent }
+                    activeColor = { p.accentPrimary }
                 ) { chosenId ->
                     val mode = MapStyleMode.fromId(chosenId.toIntOrNull() ?: MapStyleMode.VECTOR.id)
                     if (mapStyleMode != mode) {
@@ -7371,7 +7392,7 @@ class MainActivity : AppCompatActivity() {
                     subtitle = "Adjust relief depth for sunlight readability",
                     options = HillshadeIntensity.entries.map { it.id to it.label },
                     selectedId = DevicePrefs.getHillshadeIntensity(this).id,
-                    activeColor = { p.green }
+                    activeColor = { p.accentPrimary }
                 ) { id ->
                     val next = HillshadeIntensity.fromId(id)
                     DevicePrefs.setHillshadeIntensity(this, next)
@@ -7464,7 +7485,7 @@ class MainActivity : AppCompatActivity() {
                 val mapLangBtns = mutableMapOf<MapLabelLanguage, MaterialButton>()
                 fun syncMapLangBtns(activeLang: MapLabelLanguage) {
                     tvMapLangSub.text = activeLang.subtitle
-                    mapLangBtns.forEach { (l, b) -> DesignSystem.styleSegmentedButton(b, l == activeLang, p) }
+                    mapLangBtns.forEach { (l, b) -> DesignSystem.styleSegmentedButton(b, l == activeLang, p, onTonalCard = true) }
                 }
                 MapLabelLanguage.entries.forEachIndexed { idx, lang ->
                     val btn = MaterialButton(this).apply {
@@ -7476,7 +7497,7 @@ class MainActivity : AppCompatActivity() {
                         minWidth = 0
                         minimumWidth = 0
                         setPadding(dp(12), 0, dp(12), 0)
-                        cornerRadius = dp(10)
+                        cornerRadius = dp(12)
                         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                             if (idx < MapLabelLanguage.entries.lastIndex) marginEnd = dp(6)
                         }
@@ -7527,7 +7548,7 @@ class MainActivity : AppCompatActivity() {
                     subtitle = "Used for Route To previews and turn-by-turn navigation",
                     options = TravelMode.entries.map { it.id to "${it.icon} ${it.label}" },
                     selectedId = travelMode.id,
-                    activeColor = { id -> Color.parseColor(TravelMode.fromId(id).routeColorHex) }
+                    activeColor = { p.accentPrimary }
                 ) { id ->
                     val mode = TravelMode.fromId(id)
                     travelMode = mode
@@ -7651,8 +7672,10 @@ class MainActivity : AppCompatActivity() {
                     minimumHeight = 0
                     setPadding(dp(8), 0, dp(8), 0)
                     setTextColor(Color.WHITE)
-                    setBackgroundColor(p.green)
-                    cornerRadius = dp(10)
+                    setBackgroundColor(p.accentPrimary)
+                    elevation = 0f
+                    stateListAnimator = null
+                    cornerRadius = dp(12)
                     layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.05f).apply { marginEnd = dp(6) }
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
@@ -7674,9 +7697,11 @@ class MainActivity : AppCompatActivity() {
                     minHeight = 0
                     minimumHeight = 0
                     setPadding(dp(8), 0, dp(8), 0)
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(p.accent)
-                    cornerRadius = dp(10)
+                    setBackgroundColor(p.actionDark)
+                    setTextColor(p.onActionDark)
+                    elevation = 0f
+                    stateListAnimator = null
+                    cornerRadius = dp(12)
                     layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.05f).apply { marginEnd = dp(6) }
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener { openFullPage(::buildBookmarksAndTracksPage) }
@@ -7695,9 +7720,9 @@ class MainActivity : AppCompatActivity() {
                     minHeight = 0
                     minimumHeight = 0
                     setPadding(dp(12), 0, dp(12), 0)
-                    cornerRadius = dp(10)
+                    cornerRadius = dp(12)
                     layoutParams = LinearLayout.LayoutParams(0, dp(42), 0.72f)
-                    DesignSystem.styleSegmentedButton(this, false, p)
+                    DesignSystem.styleSegmentedButton(this, false, p, onTonalCard = true)
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
                         refreshJoinedSync()
@@ -7746,10 +7771,10 @@ class MainActivity : AppCompatActivity() {
                     insetBottom = 0
                     minWidth = 0
                     minimumWidth = 0
-                    setPadding(dp(12), 0, dp(12), 0)
-                    cornerRadius = dp(10)
+                    setPadding(dp(14), 0, dp(14), 0)
+                    cornerRadius = dp(12)
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
-                    DesignSystem.styleSegmentedButton(this, false, p)
+                    DesignSystem.styleSegmentedButton(this, false, p, onTonalCard = true)
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
                         showWorkingHoursDialog {
@@ -7782,18 +7807,15 @@ class MainActivity : AppCompatActivity() {
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(0, 0, 0, dp(8))
                 }
-                val etDeviceName = EditText(this).apply {
-                    hint = "Display name (e.g. Team 4 / Supervisor)"
+                val etDeviceName = DesignSystem.createThemedEditText(
+                    ctx = this,
+                    palette = p,
+                    hintText = "Display name (e.g. Team 4 / Supervisor)",
+                    initialText = DevicePrefs.getCustomName(this@MainActivity),
+                    singleLine = true,
+                    onTonalCard = true
+                ).apply {
                     textSize = 14f
-                    setTextColor(txtPrimary)
-                    setHintTextColor(txtSub)
-                    setSingleLine(true)
-                    setPadding(dp(12), dp(10), dp(12), dp(10))
-                    background = GradientDrawable().apply {
-                        setColor(p.chipSurface)
-                        cornerRadius = dp(10).toFloat()
-                    }
-                    setText(DevicePrefs.getCustomName(this@MainActivity))
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 }
                 nameRow.addView(etDeviceName)
@@ -7804,11 +7826,13 @@ class MainActivity : AppCompatActivity() {
                     insetTop = 0
                     insetBottom = 0
                     setTextColor(Color.WHITE)
-                    setBackgroundColor(p.accent)
-                    cornerRadius = dp(10)
+                    setBackgroundColor(p.accentPrimary)
+                    elevation = 0f
+                    stateListAnimator = null
+                    cornerRadius = dp(12)
                     layoutParams = LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT,
-                        dp(40)
+                        dp(42)
                     ).apply { marginStart = dp(8) }
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
@@ -8045,11 +8069,11 @@ class MainActivity : AppCompatActivity() {
                     isAllCaps = false
                     insetTop = 0
                     insetBottom = 0
-                    cornerRadius = dp(10)
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                    cornerRadius = dp(12)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply {
                         bottomMargin = dp(8)
                     }
-                    DesignSystem.styleSegmentedButton(this, false, p)
+                    DesignSystem.styleSegmentedButton(this, false, p, onTonalCard = true)
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener { openFullPage(::buildAboutPage) }
                 })
@@ -8154,7 +8178,7 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(bgColor)
                 elevation = 0f
                 stateListAnimator = null
-                cornerRadius = dp(14)
+                cornerRadius = dp(24)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
                     bottomMargin = dp(10)
                 }
@@ -9128,21 +9152,24 @@ class MainActivity : AppCompatActivity() {
         val compact = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         val btnSize = dp(if (compact) 40 else 46)
         val locSize = dp(if (compact) 48 else 56)
-        val gap = dp(if (compact) 4 else 10)
-        val smallGap = dp(if (compact) 4 else 10)
-        fun resize(v: View, size: Int, bottomMarginPx: Int) {
+        val utilPad = dp(if (compact) 10 else 13)
+        val locPad = dp(if (compact) 12 else 16)
+        val gap = dp(if (compact) 6 else 10)
+        val fabGap = dp(if (compact) 8 else 12)
+        fun resize(v: View, size: Int, padPx: Int, bottomMarginPx: Int) {
             val lp = v.layoutParams as? ViewGroup.MarginLayoutParams ?: return
             lp.width = size
             lp.height = size
             lp.bottomMargin = bottomMarginPx
             v.layoutParams = lp
+            v.setPadding(padPx, padPx, padPx, padPx)
         }
-        resize(btnLasso, btnSize, gap)
-        resize(btnRuler, btnSize, gap)
-        resize(btnZoomIn, btnSize, smallGap)
-        resize(btnZoomOut, btnSize, gap)
-        resize(btnImport, btnSize, gap)
-        resize(btnLocate, locSize, 0)
+        resize(btnLasso, btnSize, utilPad, gap)
+        resize(btnRuler, btnSize, utilPad, gap)
+        resize(btnZoomIn, btnSize, utilPad, gap)
+        resize(btnZoomOut, btnSize, utilPad, fabGap)
+        resize(btnImport, btnSize, utilPad, fabGap)
+        resize(btnLocate, locSize, locPad, 0)
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
