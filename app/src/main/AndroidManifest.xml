@@ -80,6 +80,41 @@
                 <data android:scheme="https" android:host="thamirakkurd.github.io" android:pathPrefix="/TerraSync/pin" />
             </intent-filter>
 
+            <!-- Standard geo: URIs (WhatsApp, Telegram, Contacts, etc.) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="geo" />
+            </intent-filter>
+
+            <!-- Common map links (Google Maps, short links, Organic Maps, OpenStreetMap) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:host="maps.google.com" />
+                <data android:host="maps.app.goo.gl" />
+                <data android:host="geo.me" />
+                <data android:host="ge0.me" />
+                <data android:host="omaps.app" />
+                <data android:host="openstreetmap.org" />
+                <data android:host="www.openstreetmap.org" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:host="www.google.com" />
+                <data android:host="google.com" />
+                <data android:host="goo.gl" />
+                <data android:pathPrefix="/maps" />
+            </intent-filter>
+
             <!-- Open KML / KMZ files from WhatsApp, Telegram, or file managers -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

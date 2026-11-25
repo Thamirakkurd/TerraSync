@@ -34,6 +34,8 @@ object MapCartography {
         addAndRecycle("pin-pending", MapBitmaps.createBookmarkPin(ctx, "#E69500", 1.0f))
         addAndRecycle("pin-done", MapBitmaps.createBookmarkPin(ctx, "#2E8B47", 1.0f))
         addAndRecycle("pin-issue", MapBitmaps.createBookmarkPin(ctx, "#D93025", 1.0f))
+        // Temporary preview pin for incoming geo: / shared map locations
+        addAndRecycle("pin-preview", MapBitmaps.createBookmarkPin(ctx, "#EE6A26", 1.05f))
 
         // Crisp Organic Maps white rectangular highway shields with thin black borders
         for (len in 1..6) {
