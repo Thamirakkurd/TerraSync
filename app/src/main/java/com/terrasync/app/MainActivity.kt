@@ -52,7 +52,6 @@ import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
-import okhttp3.OkHttpClient
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -437,25 +436,28 @@ class MainActivity : AppCompatActivity() {
             imeInsetBottom = ime.bottom
             sideInsetLeft = sys.left
             sideInsetRight = sys.right
+            val isLayoutRtl = resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
+            val insetStart = if (isLayoutRtl) sideInsetRight else sideInsetLeft
+            val insetEnd = if (isLayoutRtl) sideInsetLeft else sideInsetRight
             (topCluster.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 topMargin = statusBarInsetTop + dp(10)
-                marginStart = sideInsetLeft + dp(12)
-                marginEnd = sideInsetRight + dp(64)
+                marginStart = insetStart + dp(12)
+                marginEnd = insetEnd + dp(64)
             }
             (navBanner.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 topMargin = statusBarInsetTop + dp(10)
-                marginStart = sideInsetLeft + dp(12)
-                marginEnd = sideInsetRight + dp(12)
+                marginStart = insetStart + dp(12)
+                marginEnd = insetEnd + dp(12)
             }
             (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 bottomMargin = navBarInsetBottom + dp(10)
-                marginStart = sideInsetLeft
-                marginEnd = sideInsetRight
+                marginStart = insetStart
+                marginEnd = insetEnd
             }
             (inScreenSheet.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 topMargin = statusBarInsetTop + dp(12)
-                marginStart = sideInsetLeft
-                marginEnd = sideInsetRight
+                marginStart = insetStart
+                marginEnd = insetEnd
             }
             sheetContent.setPadding(dp(16), 0, dp(16), navBarInsetBottom + dp(20))
             val pageBottom = maxOf(navBarInsetBottom, imeInsetBottom)
@@ -491,7 +493,21 @@ class MainActivity : AppCompatActivity() {
                         UiAnimations.fadeShow(bottomDock, 180L)
                     }
                 }
-                override fun onSlide(bottomSheet: View, slideOffset: Float) {}
+                override fun onSlide(bottomSheet: View, slideOffset: Float) {
+                    if (UiAnimations.isReducedMotion(this@MainActivity)) return
+                    if (isRulerMode || isLassoMode || activeNavRoute != null) return
+                    bottomDock.animate().cancel()
+                    if (slideOffset < -0.2f) {
+                        val reveal = ((-slideOffset - 0.2f) / 0.8f).coerceIn(0f, 1f)
+                        if (bottomDock.visibility != View.VISIBLE) {
+                            bottomDock.visibility = View.VISIBLE
+                        }
+                        bottomDock.alpha = reveal
+                    } else if (bottomDock.visibility == View.VISIBLE) {
+                        bottomDock.alpha = 0f
+                        bottomDock.visibility = View.GONE
+                    }
+                }
             })
         }
 
@@ -568,36 +584,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun themedDialogBuilder(title: String): AlertDialog.Builder {
+        val p = currentPalette()
+        return AlertDialog.Builder(this)
+            .setCustomTitle(DesignSystem.createThemedDialogTitle(this, title, p))
+    }
+
+    private fun showThemedDialog(dlg: AlertDialog, destructivePositive: Boolean = false): AlertDialog {
+        val p = currentPalette()
+        dlg.show()
+        DesignSystem.styleAlertDialog(this, dlg, p, destructivePositive = destructivePositive)
+        return dlg
+    }
+
     private fun showFirstInstallOperatorDialog() {
+        val p = currentPalette()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
+            setPadding(dp(22), dp(8), dp(22), dp(4))
         }
         box.addView(TextView(this).apply {
             text = "Enter your operator or team name (e.g. Team 212, Ali, Supervisor) so every pin edit and cloud submission is stamped accurately."
             textSize = 13.5f
-            setLineSpacing(dp(2).toFloat(), 1.05f)
-            setTextColor(Color.parseColor("#6E6E73"))
-            setPadding(0, 0, 0, dp(12))
+            setLineSpacing(dp(2).toFloat(), 1.08f)
+            setTextColor(p.textSecondary)
+            setPadding(0, 0, 0, dp(14))
         })
 
-        val etName = EditText(this).apply {
-            hint = "Operator or Team Name"
-            textSize = 15f
-            setTextColor(Color.parseColor("#1C1C1E"))
-            setHintTextColor(Color.parseColor("#8E8E93"))
-            setSingleLine(true)
+        val etName = DesignSystem.createThemedEditText(this, p, "Operator or Team Name").apply {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F2F2F5"))
-                cornerRadius = dp(12).toFloat()
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
         }
         box.addView(etName)
 
@@ -605,9 +621,9 @@ class MainActivity : AppCompatActivity() {
         val tvPreview = TextView(this).apply {
             text = "Stamp preview: $baseDeviceStamp"
             textSize = 12f
-            setTextColor(Color.parseColor("#1E88E5"))
+            setTextColor(p.accent)
             setTypeface(null, Typeface.BOLD)
-            setPadding(dp(4), dp(8), dp(4), dp(4))
+            setPadding(dp(4), dp(10), dp(4), dp(4))
         }
         box.addView(tvPreview)
 
@@ -624,8 +640,7 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s: Editable?) {}
         })
 
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Field Operator Stamp")
+        val dlg = themedDialogBuilder("Field Operator Stamp")
             .setView(box)
             .setCancelable(false)
             .setPositiveButton("Save & Continue", null)
@@ -655,6 +670,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         dlg.setOnShowListener {
+            DesignSystem.styleAlertDialog(this, dlg, p)
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { trySave() }
             etName.requestFocus()
         }
@@ -824,32 +840,30 @@ class MainActivity : AppCompatActivity() {
         tvRulerDistance.setTextColor(p.textPrimary)
         tvRulerSubtitle.setTextColor(p.textSecondary)
         btnRulerReset.setTextColor(p.accent)
+        UiAnimations.applyRoundedRipple(this, btnRulerReset, p.accentSoft, 10f, night)
+        UiAnimations.attachSnappyPress(btnRulerReset)
         btnRulerUndo.setColorFilter(iconTint)
+        UiAnimations.attachSnappyPress(btnRulerUndo)
         btnRulerClose.setColorFilter(iconTint)
+        UiAnimations.attachSnappyPress(btnRulerClose)
 
         DesignSystem.applyFloatingSurface(this, lassoCard, p, radiusDp = 20f, elevationDp = 8f)
         tvLassoTitle.setTextColor(p.textPrimary)
         tvLassoSubtitle.setTextColor(p.textSecondary)
         btnLassoClose.setColorFilter(iconTint)
-        btnLassoMarkSent.background = GradientDrawable().apply {
-            setColor(p.green)
-            cornerRadius = dp(12).toFloat()
-        }
+        UiAnimations.attachSnappyPress(btnLassoClose)
+        UiAnimations.attachSnappyPress(btnLassoModeToggle)
+        UiAnimations.applyRoundedRipple(this, btnLassoMarkSent, p.green, 12f, isDark = true)
+        UiAnimations.attachSnappyPress(btnLassoMarkSent)
         btnLassoRedraw.setTextColor(p.textPrimary)
-        btnLassoRedraw.background = GradientDrawable().apply {
-            setColor(p.chipSurface)
-            cornerRadius = dp(12).toFloat()
-        }
+        UiAnimations.applyRoundedRipple(this, btnLassoRedraw, p.chipSurface, 12f, night)
+        UiAnimations.attachSnappyPress(btnLassoRedraw)
         btnLassoUndo.setTextColor(p.textPrimary)
-        btnLassoUndo.background = GradientDrawable().apply {
-            setColor(p.chipSurface)
-            cornerRadius = dp(12).toFloat()
-        }
+        UiAnimations.applyRoundedRipple(this, btnLassoUndo, p.chipSurface, 12f, night)
+        UiAnimations.attachSnappyPress(btnLassoUndo)
         btnLassoReset.setTextColor(p.red)
-        btnLassoReset.background = GradientDrawable().apply {
-            setColor(p.redSoft)
-            cornerRadius = dp(12).toFloat()
-        }
+        UiAnimations.applyRoundedRipple(this, btnLassoReset, p.redSoft, 12f, night)
+        UiAnimations.attachSnappyPress(btnLassoReset)
 
         DesignSystem.applyFloatingSurface(this, inScreenSheet, p, radiusDp = 20f, elevationDp = 12f, topOnly = true)
         sheetDragHandle.background = GradientDrawable().apply {
@@ -857,14 +871,23 @@ class MainActivity : AppCompatActivity() {
             cornerRadius = dp(4).toFloat()
         }
         DesignSystem.applyNavBannerSurface(this, navBanner, p)
+        tvNavArrow.background = GradientDrawable().apply {
+            setColor(Color.parseColor("#29FFFFFF"))
+            cornerRadius = dp(12).toFloat()
+        }
         tvNavMeta.setTextColor(p.navBannerSub)
+        UiAnimations.attachSnappyPress(btnNavVoice)
+        UiAnimations.attachSnappyPress(btnClearRouteFrom)
         if (isLassoMode) updateLassoUi()
     }
 
     private fun setupClickListeners() {
         btnSyncStatus.setOnClickListener {
+            UiAnimations.animatePulseBump(btnSyncStatus)
             val state = if (isLiveConnected) "Cloud Synced" else "Offline Cache"
-            Toast.makeText(this, "$state • ${pins.size} bookmarks", Toast.LENGTH_SHORT).show()
+            val localCnt = layers.count { LocalFolderStore.isLocalLayerId(it.id) }
+            val cloudCnt = layers.size - localCnt
+            Toast.makeText(this, "$state • $cloudCnt cloud, $localCnt local • ${pins.size} bookmarks", Toast.LENGTH_SHORT).show()
         }
 
         btnStyleToggle.setOnClickListener { anchor ->
@@ -890,6 +913,7 @@ class MainActivity : AppCompatActivity() {
             hideSentPins = !hideSentPins
             DevicePrefs.setHideSentPins(this, hideSentPins)
             updateSentToggleUi()
+            UiAnimations.animateScalePop(btnSentToggle, 0.92f, 160L)
             renderMapData()
             val sentCount = activeLocalSentCount()
             val msg = if (hideSentPins) {
@@ -936,6 +960,7 @@ class MainActivity : AppCompatActivity() {
             startLiveGpsUpdates(forceRestart = staleStream)
             isFollowingGps = true
             updateLocationIconTint()
+            UiAnimations.animatePulseBump(btnLocate)
             val loc = currentLocation
             if (loc != null) {
                 if (activeNavRoute != null) {
@@ -952,10 +977,14 @@ class MainActivity : AppCompatActivity() {
             val next = !DevicePrefs.isVoiceNav(this)
             DevicePrefs.setVoiceNav(this, next)
             btnNavVoice.alpha = if (next) 1.0f else 0.4f
+            UiAnimations.animateScalePop(btnNavVoice, 0.84f, 150L)
         }
         btnNavVoice.alpha = if (DevicePrefs.isVoiceNav(this)) 1.0f else 0.4f
 
-        findViewById<ImageButton>(R.id.btnNavStop).setOnClickListener { stopNavigation() }
+        findViewById<ImageButton>(R.id.btnNavStop).apply {
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener { stopNavigation() }
+        }
 
         btnTabSearch.setOnClickListener { openFullPage(::buildSearchPage) }
         btnTabBookmarks.setOnClickListener { openFullPage(::buildBookmarksAndTracksPage) }
@@ -1017,8 +1046,9 @@ class MainActivity : AppCompatActivity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(52)
-                setPadding(0, dp(6), 0, dp(6))
+                minimumHeight = dp(54)
+                setPadding(dp(2), dp(6), dp(2), dp(6))
+                UiAnimations.applyRowRipple(this@MainActivity, this, night)
             }
             if (dotColor != null) {
                 row.addView(View(this).apply {
@@ -1054,16 +1084,23 @@ class MainActivity : AppCompatActivity() {
                 DesignSystem.styleMaterialSwitch(this, p)
                 setOnCheckedChangeListener { _, checked -> onToggle(checked) }
             }
+            row.setOnClickListener { sw.toggle() }
             row.addView(textCol)
             row.addView(sw)
             card.addView(row)
             return sw
         }
 
+        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
+        val visibleFolderPins = pins.filter { it.layerId !in hiddenLayerIds }
+        val cntPending = visibleFolderPins.count { !it.status.equals("done", true) && !it.status.equals("issue", true) }
+        val cntDone = visibleFolderPins.count { it.status.equals("done", true) }
+        val cntIssue = visibleFolderPins.count { it.status.equals("issue", true) }
+
         swAll = makeFilterRow(
             dotColor = null,
             title = "All Statuses",
-            subtitle = "Show pending, done, and issue pins",
+            subtitle = "${visibleFolderPins.size} pins in visible folders",
             initialChecked = visibleStatuses.containsAll(ALL_STATUSES)
         ) { checked ->
             if (updatingUi) return@makeFilterRow
@@ -1073,9 +1110,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         listOf(
-            Triple("pending", AppStrings.pending(this), p.amber),
-            Triple("done", AppStrings.done(this), p.green),
-            Triple("issue", AppStrings.issue(this), p.red)
+            Triple("pending", "${AppStrings.pending(this)} ($cntPending)", p.amber),
+            Triple("done", "${AppStrings.done(this)} ($cntDone)", p.green),
+            Triple("issue", "${AppStrings.issue(this)} ($cntIssue)", p.red)
         ).forEach { (key, label, colorInt) ->
             statusSwitches[key] = makeFilterRow(
                 dotColor = colorInt,
@@ -1163,7 +1200,7 @@ class MainActivity : AppCompatActivity() {
                         val freshPin = pinById[qsPinId]
                         sheetQuickSelectPinId = null
                         if (freshPin != null) {
-                            showPinCard(freshPin, animateSwap = true)
+                            showPinCard(freshPin, animateSwap = true, swapForward = false)
                             return
                         }
                     }
@@ -1427,6 +1464,9 @@ class MainActivity : AppCompatActivity() {
             style.addLayer(
                 CircleLayer(PULSE_LAYER, PULSE_SOURCE).withProperties(
                     PropertyFactory.circleColor(Expression.get("color")),
+                    PropertyFactory.circleStrokeColor(Expression.get("color")),
+                    PropertyFactory.circleStrokeWidth(2f),
+                    PropertyFactory.circleStrokeOpacity(0f),
                     PropertyFactory.circleRadius(8f),
                     PropertyFactory.circleOpacity(0f)
                 )
@@ -1761,7 +1801,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fireStatusPulse(lat: Double, lng: Double, statusHex: String) {
-        if (!isActivityResumed) return
+        if (!isActivityResumed || UiAnimations.isReducedMotion(this)) return
         val style = map?.style ?: return
         if (!style.isFullyLoaded) return
         val f = Feature.fromGeometry(Point.fromLngLat(lng, lat)).apply {
@@ -1772,8 +1812,8 @@ class MainActivity : AppCompatActivity() {
 
         pulseAnimator?.cancel()
         pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 600L
-            interpolator = DecelerateInterpolator()
+            duration = 520L
+            interpolator = UiAnimations.EMPHASIZED_DECELERATE
             addUpdateListener { anim ->
                 val curStyle = map?.style
                 if (!isActivityStarted || curStyle !== style || !curStyle.isFullyLoaded) {
@@ -1781,10 +1821,13 @@ class MainActivity : AppCompatActivity() {
                     return@addUpdateListener
                 }
                 val v = anim.animatedValue as Float
+                val fade = 1f - v
                 runCatching {
                     curStyle.getLayerAs<CircleLayer>(PULSE_LAYER)?.setProperties(
-                        PropertyFactory.circleRadius(8f + 28f * v),
-                        PropertyFactory.circleOpacity(0.65f * (1f - v))
+                        PropertyFactory.circleRadius(8f + 30f * v),
+                        PropertyFactory.circleOpacity(0.42f * fade),
+                        PropertyFactory.circleStrokeWidth(2.4f - 1.6f * v),
+                        PropertyFactory.circleStrokeOpacity(0.85f * fade)
                     )
                 }
             }
@@ -1923,46 +1966,42 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Cleared old sent marks", Toast.LENGTH_SHORT).show()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("Reset Sent Marks?")
-            .setMessage("Clear all $active local sent marks on this phone? All pins remain safely in your folders.")
-            .setPositiveButton("Reset") { _, _ ->
-                DevicePrefs.clearLocalSentPins(this)
-                sentUndoStack.clear()
-                lassoPendingPinIds = emptyList()
-                lassoOverlay.clearLoop()
-                updateSentToggleUi()
-                updateLassoUi()
-                renderMapData()
-                Toast.makeText(this, "Cleared all local sent marks", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showThemedDialog(
+            themedDialogBuilder("Reset Sent Marks?")
+                .setMessage("Clear all $active local sent marks on this phone? All pins remain safely in your folders.")
+                .setPositiveButton("Reset") { _, _ ->
+                    DevicePrefs.clearLocalSentPins(this)
+                    sentUndoStack.clear()
+                    lassoPendingPinIds = emptyList()
+                    lassoOverlay.clearLoop()
+                    updateSentToggleUi()
+                    updateLassoUi()
+                    renderMapData()
+                    Toast.makeText(this, "Cleared all local sent marks", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .create(),
+            destructivePositive = true
+        )
     }
 
     private fun updateLassoUi() {
+        val p = currentPalette()
         val sel = lassoPendingPinIds.size
         val totalSent = activeLocalSentCount()
         if (lassoMoveMapMode) {
             btnLassoModeToggle.text = "Draw"
             btnLassoModeToggle.setTextColor(Color.WHITE)
-            btnLassoModeToggle.background = GradientDrawable().apply {
-                setColor(Color.parseColor("#16A34A"))
-                cornerRadius = dp(10).toFloat()
-            }
+            UiAnimations.applyRoundedRipple(this, btnLassoModeToggle, p.green, 10f, isDark = true)
             tvLassoTitle.text = "Move or zoom the map"
             tvLassoSubtitle.text = "Tap Draw when ready to circle pins"
             btnLassoMarkSent.text = "Mark Sent"
             btnLassoMarkSent.alpha = 0.45f
             btnLassoRedraw.alpha = 0.45f
         } else {
-            val night = isDarkMapUi()
             btnLassoModeToggle.text = "Move Map"
-            btnLassoModeToggle.setTextColor(Color.parseColor(if (night) "#93C5FD" else "#1D4ED8"))
-            btnLassoModeToggle.background = GradientDrawable().apply {
-                setColor(Color.parseColor(if (night) "#1E3A5F" else "#EFF6FF"))
-                cornerRadius = dp(10).toFloat()
-            }
+            btnLassoModeToggle.setTextColor(p.accent)
+            UiAnimations.applyRoundedRipple(this, btnLassoModeToggle, p.accentSoft, 10f, p.isDark)
             if (sel > 0) {
                 tvLassoTitle.text = "$sel pin${if (sel == 1) "" else "s"} selected"
                 tvLassoSubtitle.text = "Tap Mark Sent (local only • $totalSent sent total)"
@@ -2211,7 +2250,7 @@ class MainActivity : AppCompatActivity() {
 
     // --- Polished Pin Card (Stacked Cycler, Route To / Route From, Owner-Only Delete) ---
 
-    private fun showPinCard(pin: PinItem, animateSwap: Boolean = false) {
+    private fun showPinCard(pin: PinItem, animateSwap: Boolean = false, swapForward: Boolean = true) {
         sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
@@ -2223,7 +2262,7 @@ class MainActivity : AppCompatActivity() {
 
         sheetContent.removeAllViews()
 
-        // 1. Exact-Coordinate Stacked Pin Banner + Animated Next Button
+        // 1. Exact-Coordinate Stacked Pin Banner + Animated Prev/Next Buttons
         val stackedPins = findExactStackedPins(pin)
         if (stackedPins.size > 1) {
             val currentIdx = stackedPins.indexOfFirst { it.id == pin.id }.coerceAtLeast(0)
@@ -2232,9 +2271,9 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(12), dp(8), dp(8), dp(8))
                 background = GradientDrawable().apply {
-                    setColor(Color.parseColor(if (night) "#1E3A5F" else "#EFF6FF"))
+                    setColor(p.accentSoft)
                     cornerRadius = dp(12).toFloat()
-                    setStroke(dp(1), Color.parseColor(if (night) "#3B82F6" else "#BFDBFE"))
+                    setStroke(dp(1), if (night) Color.parseColor("#3D3B9BFF") else Color.parseColor("#331E88E5"))
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2243,12 +2282,45 @@ class MainActivity : AppCompatActivity() {
             }
 
             stackRow.addView(TextView(this).apply {
-                text = "${stackedPins.size} stacked here • ${currentIdx + 1}/${stackedPins.size}"
+                text = "${stackedPins.size} stacked • ${currentIdx + 1}/${stackedPins.size}"
                 textSize = 13f
                 setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.parseColor(if (night) "#93C5FD" else "#1D4ED8"))
+                setTextColor(p.accent)
+                DesignSystem.applyTabularNumerals(this)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
+
+            fun jumpStacked(delta: Int, forward: Boolean) {
+                val nextIdx = (currentIdx + delta + stackedPins.size) % stackedPins.size
+                val nextPin = stackedPins[nextIdx]
+                selectedPinId = nextPin.id
+                selectedMarkerLatLng = LatLng(nextPin.lat, nextPin.lng)
+                selectedMarkerIcon = statusIconId(nextPin.status)
+                renderSelectedMarker()
+                fireStatusPulse(nextPin.lat, nextPin.lng, statusColorHex(nextPin.status))
+                showPinCard(nextPin, animateSwap = true, swapForward = forward)
+            }
+
+            if (stackedPins.size > 2) {
+                stackRow.addView(MaterialButton(this).apply {
+                    text = "‹"
+                    textSize = 15f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setPadding(dp(11), 0, dp(11), 0)
+                    setTextColor(p.accent)
+                    setBackgroundColor(if (night) p.cardSurface else Color.WHITE)
+                    cornerRadius = dp(10)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
+                        marginEnd = dp(6)
+                    }
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener { jumpStacked(-1, forward = false) }
+                })
+            }
 
             stackRow.addView(MaterialButton(this).apply {
                 text = "Next →"
@@ -2260,19 +2332,11 @@ class MainActivity : AppCompatActivity() {
                 minimumWidth = 0
                 setPadding(dp(12), 0, dp(12), 0)
                 setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#2563EB"))
+                setBackgroundColor(p.accent)
                 cornerRadius = dp(10)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34))
-                UiAnimations.attachSpringTouch(this)
-                setOnClickListener {
-                    val nextPin = stackedPins[(currentIdx + 1) % stackedPins.size]
-                    selectedPinId = nextPin.id
-                    selectedMarkerLatLng = LatLng(nextPin.lat, nextPin.lng)
-                    selectedMarkerIcon = statusIconId(nextPin.status)
-                    renderSelectedMarker()
-                    fireStatusPulse(nextPin.lat, nextPin.lng, statusColorHex(nextPin.status))
-                    showPinCard(nextPin, animateSwap = true)
-                }
+                UiAnimations.attachSnappyPress(this)
+                setOnClickListener { jumpStacked(1, forward = true) }
             })
             sheetContent.addView(stackRow)
         }
@@ -2310,8 +2374,12 @@ class MainActivity : AppCompatActivity() {
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 starred = DevicePrefs.toggleBookmark(this@MainActivity, pin.id)
-                setImageResource(if (starred) R.drawable.ic_star_filled else R.drawable.ic_star_outline)
-                if (starred) clearColorFilter() else setColorFilter(p.iconMuted)
+                UiAnimations.animateIconSwap(
+                    this,
+                    if (starred) R.drawable.ic_star_filled else R.drawable.ic_star_outline,
+                    newTint = if (starred) null else p.iconMuted,
+                    clearTint = starred
+                )
                 Toast.makeText(this@MainActivity, if (starred) "Starred" else "Unstarred", Toast.LENGTH_SHORT).show()
             }
         })
@@ -2558,15 +2626,16 @@ class MainActivity : AppCompatActivity() {
             minimumWidth = 0
             setPadding(dp(6), 0, dp(6), 0)
             setTextColor(if (localSent) Color.WHITE else txtPrimary)
-            setBackgroundColor(if (localSent) Color.parseColor("#16A34A") else chipBg)
+            setBackgroundColor(if (localSent) p.green else chipBg)
             cornerRadius = dp(12)
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
-            UiAnimations.attachSpringTouch(this)
+            UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 localSent = DevicePrefs.toggleLocalSentPin(this@MainActivity, pin.id)
                 text = if (localSent) "Sent ✓" else "Mark Sent"
                 setTextColor(if (localSent) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (localSent) Color.parseColor("#16A34A") else chipBg)
+                setBackgroundColor(if (localSent) p.green else chipBg)
+                UiAnimations.animateScalePop(this, 0.92f, 160L)
                 updateSentToggleUi()
                 renderMapData()
                 Toast.makeText(
@@ -2607,13 +2676,16 @@ class MainActivity : AppCompatActivity() {
 
         if (pin.isEdited && pin.editedBy.isNotBlank()) {
             val stampTime = if (pin.editedAt > 0L) SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(pin.editedAt)) else ""
+            val tealText = Color.parseColor(if (night) "#2DD4BF" else "#0F766E")
+            val tealBg = Color.parseColor(if (night) "#222DD4BF" else "#180F766E")
             sheetContent.addView(TextView(this).apply {
                 text = "✎ Edited by ${pin.editedBy}${if (stampTime.isNotBlank()) " • $stampTime" else ""}"
                 textSize = 12.5f
-                setTextColor(Color.parseColor("#0F766E"))
+                setTextColor(tealText)
+                DesignSystem.applyTabularNumerals(this)
                 setPadding(dp(12), dp(8), dp(12), dp(8))
                 background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#1A0F766E"))
+                    setColor(tealBg)
                     cornerRadius = dp(10).toFloat()
                 }
                 layoutParams = LinearLayout.LayoutParams(
@@ -2722,19 +2794,21 @@ class MainActivity : AppCompatActivity() {
                         gravity = Gravity.CENTER
                         setPadding(dp(10), dp(4), dp(8), dp(4))
                         setOnClickListener {
-                            AlertDialog.Builder(this@MainActivity)
-                                .setTitle("Delete this edit?")
-                                .setMessage("$line\n\nOnly this edit will be removed. The pin stays on the map and its status recalculates from the remaining edits.")
-                                .setPositiveButton("Delete Edit") { _, _ ->
-                                    val updated = deletePinHistoryEntryUnified(pin, idx)
-                                    selectedMarkerIcon = statusIconId(updated.status)
-                                    renderMapData()
-                                    fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
-                                    showPinCard(updated, animateSwap = true)
-                                    Toast.makeText(this@MainActivity, "Edit deleted — pin kept", Toast.LENGTH_SHORT).show()
-                                }
-                                .setNegativeButton("Cancel", null)
-                                .show()
+                            showThemedDialog(
+                                themedDialogBuilder("Delete this edit?")
+                                    .setMessage("$line\n\nOnly this edit will be removed. The pin stays on the map and its status recalculates from the remaining edits.")
+                                    .setPositiveButton("Delete Edit") { _, _ ->
+                                        val updated = deletePinHistoryEntryUnified(pin, idx)
+                                        selectedMarkerIcon = statusIconId(updated.status)
+                                        renderSelectedMarker()
+                                        fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
+                                        showPinCard(updated, animateSwap = true)
+                                        Toast.makeText(this@MainActivity, "Edit deleted — pin kept", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .setNegativeButton("Cancel", null)
+                                    .create(),
+                                destructivePositive = true
+                            )
                         }
                     })
                     sheetContent.addView(row)
@@ -2767,26 +2841,28 @@ class MainActivity : AppCompatActivity() {
                 isAllCaps = false
                 insetTop = 0
                 insetBottom = 0
-                setTextColor(Color.parseColor("#D97706"))
-                setBackgroundColor(Color.parseColor("#1AF59E0B"))
+                setTextColor(p.amber)
+                setBackgroundColor(p.amberSoft)
                 cornerRadius = dp(10)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)).apply {
                     bottomMargin = dp(6)
                 }
+                UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle("Reset status to Pending?")
-                        .setMessage("Clears the current status and note while keeping \"${pin.name}\" on the map.")
-                        .setPositiveButton("Reset") { _, _ ->
-                            val updated = resetPinStatusUnified(pin)
-                            selectedMarkerIcon = statusIconId(updated.status)
-                            renderMapData()
-                            fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
-                            showPinCard(updated, animateSwap = true)
-                            Toast.makeText(this@MainActivity, "Status reset to Pending", Toast.LENGTH_SHORT).show()
-                        }
-                        .setNegativeButton("Cancel", null)
-                        .show()
+                    showThemedDialog(
+                        themedDialogBuilder("Reset status to Pending?")
+                            .setMessage("Clears the current status and note while keeping \"${pin.name}\" on the map.")
+                            .setPositiveButton("Reset") { _, _ ->
+                                val updated = resetPinStatusUnified(pin)
+                                selectedMarkerIcon = statusIconId(updated.status)
+                                renderSelectedMarker()
+                                fireStatusPulse(updated.lat, updated.lng, statusColorHex(updated.status))
+                                showPinCard(updated, animateSwap = true)
+                                Toast.makeText(this@MainActivity, "Status reset to Pending", Toast.LENGTH_SHORT).show()
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .create()
+                    )
                 }
             })
         }
@@ -2797,30 +2873,34 @@ class MainActivity : AppCompatActivity() {
                 isAllCaps = false
                 insetTop = 0
                 insetBottom = 0
-                setTextColor(Color.parseColor("#EF4444"))
-                setBackgroundColor(Color.TRANSPARENT)
+                setTextColor(p.red)
+                setBackgroundColor(p.redSoft)
+                cornerRadius = dp(10)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42))
+                UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     val delMsg = if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
                         "This removes the pin from this phone."
                     } else {
                         "This removes the pin for everyone in this folder."
                     }
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle("Delete \"${pin.name}\"?")
-                        .setMessage(delMsg)
-                        .setPositiveButton("Delete") { _, _ ->
-                            deletePinUnified(pin)
-                            hideInScreenSheet()
-                        }
-                        .setNegativeButton("Cancel", null)
-                        .show()
+                    showThemedDialog(
+                        themedDialogBuilder("Delete \"${pin.name}\"?")
+                            .setMessage(delMsg)
+                            .setPositiveButton("Delete") { _, _ ->
+                                deletePinUnified(pin)
+                                hideInScreenSheet()
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .create(),
+                        destructivePositive = true
+                    )
                 }
             })
         }
 
         if (animateSwap) {
-            UiAnimations.animateContentSwap(sheetContent)
+            UiAnimations.animateContentSwap(sheetContent, forward = swapForward)
         }
 
         val peekHeight = if (stackedPins.size > 1) 345 else 305
@@ -3317,9 +3397,10 @@ class MainActivity : AppCompatActivity() {
         }
         val etaMin = (etaSec / 60.0).toInt().coerceAtLeast(1)
 
-        val unit = DevicePrefs.getSpeedUnit(this)
-        tvNavArrow.text = step.arrow
-        tvNavInstruction.text = if (isRerouting) "Recalculating route..." else step.instruction
+        val unit = cachedSpeedUnit
+        val nextInstr = if (isRerouting) "Recalculating route..." else step.instruction
+        UiAnimations.animateCrossfadeText(tvNavArrow, step.arrow, slideDp = 5f)
+        UiAnimations.animateCrossfadeText(tvNavInstruction, nextInstr, slideDp = 5f)
         tvNavMeta.text = "${formatDistanceShort(distToStep, unit)} • ${formatDistanceShort(remainingRoadMeters, unit)} (${etaMin}m) • ${route.engineLabel}"
 
         val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
@@ -3434,14 +3515,15 @@ class MainActivity : AppCompatActivity() {
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         if (LocationManagerCompat.isLocationEnabled(lm)) return true
 
-        AlertDialog.Builder(this)
-            .setTitle("Location is turned off")
-            .setMessage("Turn on your phone's Location / GPS to find your position, measure speed, and start navigation.")
-            .setPositiveButton("Turn On") { _, _ ->
-                runCatching { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showThemedDialog(
+            themedDialogBuilder("Location is turned off")
+                .setMessage("Turn on your phone's Location / GPS to find your position, measure speed, and start navigation.")
+                .setPositiveButton("Turn On") { _, _ ->
+                    runCatching { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                }
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
         return false
     }
 
@@ -3526,10 +3608,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateSpeedBadge(loc: Location?) {
         if (!DevicePrefs.isSpeedIndicatorEnabled(this)) {
-            speedBadge.visibility = View.GONE
+            UiAnimations.animateSpeedBadgeVisibility(speedBadge, false)
             return
         }
-        val unit = DevicePrefs.getSpeedUnit(this)
+        val unit = cachedSpeedUnit
         val reliableSpeed = loc != null && loc.hasSpeed() &&
             (loc.provider == LocationManager.GPS_PROVIDER || !loc.hasAccuracy() || loc.accuracy <= 35f)
         val rawKmh = if (reliableSpeed) (loc!!.speed * 3.6f).roundToInt().coerceAtLeast(0) else 0
@@ -3539,10 +3621,8 @@ class MainActivity : AppCompatActivity() {
         if (shouldShow) {
             tvSpeedValue.text = "$displayVal"
             tvSpeedUnit.text = unit.speedSuffix
-            speedBadge.visibility = View.VISIBLE
-        } else {
-            speedBadge.visibility = View.GONE
         }
+        UiAnimations.animateSpeedBadgeVisibility(speedBadge, shouldShow)
     }
 
     private fun onNewLocation(loc: Location) {
@@ -3959,8 +4039,10 @@ class MainActivity : AppCompatActivity() {
         val rowShowAll = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(48)
-            setPadding(0, dp(4), 0, dp(4))
+            minimumHeight = dp(50)
+            setPadding(dp(2), dp(4), dp(2), dp(4))
+            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            setOnClickListener { swShowAll.toggle() }
         }
         val showAllCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -3983,11 +4065,21 @@ class MainActivity : AppCompatActivity() {
         rowShowAll.addView(swShowAll)
         footer.addView(rowShowAll)
 
+        val swShowTitles = MaterialSwitch(this).apply {
+            isChecked = DevicePrefs.isShowBookmarkTitles(this@MainActivity)
+            DesignSystem.styleMaterialSwitch(this, p)
+            setOnCheckedChangeListener { _, checked ->
+                DevicePrefs.setShowBookmarkTitles(this@MainActivity, checked)
+                renderMapData()
+            }
+        }
         val rowShowTitles = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(48)
-            setPadding(0, dp(2), 0, dp(2))
+            minimumHeight = dp(50)
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            setOnClickListener { swShowTitles.toggle() }
         }
         rowShowTitles.addView(TextView(this).apply {
             text = AppStrings.showBookmarkTitles(this@MainActivity)
@@ -3996,14 +4088,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        rowShowTitles.addView(MaterialSwitch(this).apply {
-            isChecked = DevicePrefs.isShowBookmarkTitles(this@MainActivity)
-            DesignSystem.styleMaterialSwitch(this, p)
-            setOnCheckedChangeListener { _, checked ->
-                DevicePrefs.setShowBookmarkTitles(this@MainActivity, checked)
-                renderMapData()
-            }
-        })
+        rowShowTitles.addView(swShowTitles)
         footer.addView(rowShowTitles)
         outer.addView(footer)
 
@@ -4146,12 +4231,52 @@ class MainActivity : AppCompatActivity() {
             })
 
             if (layers.isEmpty() && bookmarkedPins.isEmpty()) {
-                body.addView(TextView(this).apply {
-                    text = "No bookmark folders yet. Tap + above to import a KML/KMZ file or join a shared folder."
-                    textSize = 14f
-                    setTextColor(txtSub)
-                    setPadding(dp(6), dp(18), dp(6), dp(18))
+                val emptyCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 18)
+                emptyCard.addView(TextView(this).apply {
+                    text = "No bookmark folders yet"
+                    textSize = 16f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
                 })
+                emptyCard.addView(TextView(this).apply {
+                    text = "Import a KML / KMZ field map from your phone or join a live team folder using a 6-character share code."
+                    textSize = 13.5f
+                    setLineSpacing(dp(2).toFloat(), 1.08f)
+                    setTextColor(txtSub)
+                    setPadding(0, dp(6), 0, dp(14))
+                })
+                val emptyBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                emptyBtnRow.addView(MaterialButton(this).apply {
+                    text = "Import KML / KMZ"
+                    textSize = 13f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(p.green)
+                    cornerRadius = dp(12)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener {
+                        closeFullPage()
+                        kmlPicker.launch(arrayOf("*/*"))
+                    }
+                })
+                emptyBtnRow.addView(MaterialButton(this).apply {
+                    text = "Join by Code"
+                    textSize = 13f
+                    isAllCaps = false
+                    insetTop = 0
+                    insetBottom = 0
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(p.accent)
+                    cornerRadius = dp(12)
+                    layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                    UiAnimations.attachSnappyPress(this)
+                    setOnClickListener { showJoinCodeDialog() }
+                })
+                emptyCard.addView(emptyBtnRow)
+                body.addView(emptyCard)
                 return
             }
 
@@ -4242,8 +4367,11 @@ class MainActivity : AppCompatActivity() {
                     setOnClickListener {
                         val next = !DevicePrefs.isLayerVisible(this@MainActivity, layer.id)
                         DevicePrefs.setLayerVisible(this@MainActivity, layer.id, next)
-                        setImageResource(if (next) R.drawable.ic_eye_on else R.drawable.ic_eye_off)
-                        setColorFilter(if (next) p.accent else p.iconMuted)
+                        UiAnimations.animateIconSwap(
+                            this,
+                            if (next) R.drawable.ic_eye_on else R.drawable.ic_eye_off,
+                            newTint = if (next) p.accent else p.iconMuted
+                        )
                         syncMasterVisibilitySwitch()
                         renderMapData()
                     }
@@ -4279,10 +4407,10 @@ class MainActivity : AppCompatActivity() {
                         text = "LOCAL"
                         textSize = 10f
                         setTypeface(null, Typeface.BOLD)
-                        setTextColor(Color.parseColor("#0F766E"))
+                        setTextColor(Color.parseColor(if (night) "#2DD4BF" else "#0F766E"))
                         setPadding(dp(6), dp(2), dp(6), dp(2))
                         background = GradientDrawable().apply {
-                            setColor(Color.parseColor("#CCFBF1"))
+                            setColor(Color.parseColor(if (night) "#242DD4BF" else "#CCFBF1"))
                             cornerRadius = dp(6).toFloat()
                         }
                         layoutParams = LinearLayout.LayoutParams(
@@ -4296,10 +4424,10 @@ class MainActivity : AppCompatActivity() {
                         text = "📌 PINNED"
                         textSize = 10f
                         setTypeface(null, Typeface.BOLD)
-                        setTextColor(Color.parseColor("#B45309"))
+                        setTextColor(p.amber)
                         setPadding(dp(6), dp(2), dp(6), dp(2))
                         background = GradientDrawable().apply {
-                            setColor(Color.parseColor("#FEF3C7"))
+                            setColor(p.amberSoft)
                             cornerRadius = dp(6).toFloat()
                         }
                         layoutParams = LinearLayout.LayoutParams(
@@ -4488,23 +4616,27 @@ class MainActivity : AppCompatActivity() {
             entries.add(Triple("Pending & Unsent (${pendingUnsentPins.size})", pendingUnsentPins, "Pending_Unsent"))
         }
 
+        val p = currentPalette()
         val labels = entries.map { it.first }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Export KML: ${layer.name}")
-            .setItems(labels) { _, which ->
-                val (_, subset, suffix) = entries[which]
-                val tracksToExport = if (suffix.isEmpty()) layerTracks else emptyList()
-                if (subset.isEmpty() && tracksToExport.isEmpty()) {
-                    Toast.makeText(this, "No matching pins to export", Toast.LENGTH_SHORT).show()
-                } else {
-                    KmlCsvExporter.exportAndShareKml(this, layer, subset, tracksToExport, suffix)
+        val adapter = DesignSystem.createThemedDialogListAdapter(this, labels, p)
+        showThemedDialog(
+            themedDialogBuilder("Export KML: ${layer.name}")
+                .setAdapter(adapter) { _, which ->
+                    val (_, subset, suffix) = entries[which]
+                    val tracksToExport = if (suffix.isEmpty()) layerTracks else emptyList()
+                    if (subset.isEmpty() && tracksToExport.isEmpty()) {
+                        Toast.makeText(this, "No matching pins to export", Toast.LENGTH_SHORT).show()
+                    } else {
+                        KmlCsvExporter.exportAndShareKml(this, layer, subset, tracksToExport, suffix)
+                    }
                 }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun showDailyWhatsAppReportDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
+        val p = currentPalette()
         val report = DailyReportGenerator.buildReport(
             layer.name,
             layerPins,
@@ -4513,81 +4645,82 @@ class MainActivity : AppCompatActivity() {
             DevicePrefs.getWorkEndMinutes(this)
         )
         val scroll = android.widget.ScrollView(this).apply {
-            setPadding(dp(20), dp(12), dp(20), dp(8))
+            setPadding(dp(22), dp(10), dp(22), dp(8))
         }
         scroll.addView(TextView(this).apply {
             text = report.whatsappText
             textSize = 13.5f
+            setTextColor(p.textPrimary)
             setTextIsSelectable(true)
-            setLineSpacing(dp(2).toFloat(), 1.0f)
+            setLineSpacing(dp(2).toFloat(), 1.08f)
         })
-        AlertDialog.Builder(this)
-            .setTitle("End-of-Day Team Report")
-            .setView(scroll)
-            .setPositiveButton("Share to WhatsApp") { _, _ ->
-                val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(android.content.Intent.EXTRA_TEXT, report.whatsappText)
+        showThemedDialog(
+            themedDialogBuilder("End-of-Day Team Report")
+                .setView(scroll)
+                .setPositiveButton("Share to WhatsApp") { _, _ ->
+                    val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(android.content.Intent.EXTRA_TEXT, report.whatsappText)
+                    }
+                    safeStartActivity(android.content.Intent.createChooser(share, "Share Daily Report"))
                 }
-                safeStartActivity(android.content.Intent.createChooser(share, "Share Daily Report"))
-            }
-            .setNeutralButton("Copy") { _, _ ->
-                copyToClipboard("Daily Report", report.whatsappText)
-            }
-            .setNegativeButton("Share KML + Text") { _, _ ->
-                KmlCsvExporter.exportAndShareKml(this, layer, layerPins, layerTracks, "", report.whatsappText)
-            }
-            .show()
+                .setNeutralButton("Copy") { _, _ ->
+                    copyToClipboard("Daily Report", report.whatsappText)
+                }
+                .setNegativeButton("Share KML + Text") { _, _ ->
+                    KmlCsvExporter.exportAndShareKml(this, layer, layerPins, layerTracks, "", report.whatsappText)
+                }
+                .create()
+        )
     }
 
     private fun showRenameFolderDialog(layer: LayerItem) {
+        val p = currentPalette()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
+            setPadding(dp(22), dp(10), dp(22), dp(4))
         }
-        val etName = EditText(this).apply {
-            hint = "Folder name"
-            setText(layer.name)
-            setSingleLine(true)
-            setSelection(layer.name.length)
-        }
+        val etName = DesignSystem.createThemedEditText(this, p, "Folder name", initialText = layer.name)
         box.addView(etName)
 
-        AlertDialog.Builder(this)
-            .setTitle("Rename Folder")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                val next = etName.text.toString().trim()
-                if (next.isBlank()) {
-                    Toast.makeText(this, "Folder name cannot be empty", Toast.LENGTH_SHORT).show()
-                } else {
-                    if (LocalFolderStore.isLocalLayerId(layer.id)) {
-                        LocalFolderStore.renameLayer(this, layer.id, next)
-                        applyMergedFoldersAndRender()
+        showThemedDialog(
+            themedDialogBuilder("Rename Folder")
+                .setView(box)
+                .setPositiveButton("Save") { _, _ ->
+                    val next = etName.text.toString().trim()
+                    if (next.isBlank()) {
+                        Toast.makeText(this, "Folder name cannot be empty", Toast.LENGTH_SHORT).show()
                     } else {
-                        repo.renameLayer(layer.id, next, ::notifySyncError)
+                        if (LocalFolderStore.isLocalLayerId(layer.id)) {
+                            LocalFolderStore.renameLayer(this, layer.id, next)
+                            applyMergedFoldersAndRender()
+                        } else {
+                            repo.renameLayer(layer.id, next, ::notifySyncError)
+                        }
+                        Toast.makeText(this, "Renamed to \"$next\"", Toast.LENGTH_SHORT).show()
                     }
-                    Toast.makeText(this, "Renamed to \"$next\"", Toast.LENGTH_SHORT).show()
                 }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun showDeleteCloudDialog(layer: LayerItem, layerPins: List<PinItem>, layerTracks: List<TrackItem>) {
-        AlertDialog.Builder(this)
-            .setTitle("Delete \"${layer.name}\" from Cloud?")
-            .setMessage("This permanently removes all ${layerPins.size} bookmarks for every team member.")
-            .setPositiveButton("Delete Cloud") { _, _ ->
-                val deletedPinIds = layerPins.map { it.id }
-                DevicePrefs.removeJoinedLayerId(this, layer.id)
-                DevicePrefs.removePinReferences(this, deletedPinIds)
-                repo.deleteLayer(layer.id, deletedPinIds, layerTracks.map { it.id }, ::notifySyncError)
-                refreshJoinedSync()
-                Toast.makeText(this, "Deleted \"${layer.name}\" from cloud", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showThemedDialog(
+            themedDialogBuilder("Delete \"${layer.name}\" from Cloud?")
+                .setMessage("This permanently removes all ${layerPins.size} bookmarks for every team member.")
+                .setPositiveButton("Delete Cloud") { _, _ ->
+                    val deletedPinIds = layerPins.map { it.id }
+                    DevicePrefs.removeJoinedLayerId(this, layer.id)
+                    DevicePrefs.removePinReferences(this, deletedPinIds)
+                    repo.deleteLayer(layer.id, deletedPinIds, layerTracks.map { it.id }, ::notifySyncError)
+                    refreshJoinedSync()
+                    Toast.makeText(this, "Deleted \"${layer.name}\" from cloud", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .create(),
+            destructivePositive = true
+        )
     }
 
     // --- Subpage: Folder Bookmarks List ---
@@ -5004,9 +5137,15 @@ class MainActivity : AppCompatActivity() {
             val cnt = selectedPinIds.size
             btnSelectMode.text = if (selectionMode) "Done" else "Select"
             DesignSystem.styleSegmentedButton(btnSelectMode, selectionMode, p, p.accent)
-            autoSelectScroll.visibility = if (selectionMode) View.VISIBLE else View.GONE
-            selectionDivider.visibility = if (selectionMode) View.VISIBLE else View.GONE
-            selectionBar.visibility = if (selectionMode) View.VISIBLE else View.GONE
+            if (selectionMode) {
+                UiAnimations.fadeShow(autoSelectScroll, 160L)
+                selectionDivider.visibility = View.VISIBLE
+                UiAnimations.showSlideBottom(selectionBar, 180L)
+            } else {
+                UiAnimations.fadeHide(autoSelectScroll, 120L)
+                selectionDivider.visibility = View.GONE
+                UiAnimations.hideSlideBottom(selectionBar, 140L)
+            }
             tvSelSummary.text = if (cnt == 0) "Tap bookmarks or use Auto-Select above" else "$cnt bookmark${if (cnt == 1) "" else "s"} selected"
             val hasAny = cnt > 0
             listOf(btnSelZoom, btnSelExport, btnSelStatus, btnSelDelete).forEach { b ->
@@ -5098,6 +5237,7 @@ class MainActivity : AppCompatActivity() {
                                         setStroke(dp(2), p.iconMuted)
                                     }
                                 }
+                                UiAnimations.animateScalePop(badge, 0.72f, 160L)
                             }
                             updateSelectionBarState()
                         } else {
@@ -5294,32 +5434,34 @@ class MainActivity : AppCompatActivity() {
             val chosen = currentSourcePins().filter { it.id in selectedPinIds }
             if (chosen.isEmpty()) return@setOnClickListener
             val items = arrayOf("Mark Pending", "Mark Done", "Mark Issue", "Mark Sent (This Phone)")
-            AlertDialog.Builder(this)
-                .setTitle("Update ${chosen.size} Selected Bookmark${if (chosen.size == 1) "" else "s"}")
-                .setItems(items) { _, which ->
-                    val stamp = DevicePrefs.getDeviceStamp(this)
-                    when (which) {
-                        0 -> savePinsStatusBatchUnified(chosen, "pending", stamp)
-                        1 -> savePinsStatusBatchUnified(chosen, "done", stamp)
-                        2 -> savePinsStatusBatchUnified(chosen, "issue", stamp, "Flagged in bulk")
-                        3 -> {
-                            DevicePrefs.addLocalSentPinIds(this, chosen.map { it.id })
-                            updateSentToggleUi()
-                            renderMapData()
+            val adapter = DesignSystem.createThemedDialogListAdapter(this, items, p)
+            showThemedDialog(
+                themedDialogBuilder("Update ${chosen.size} Selected Bookmark${if (chosen.size == 1) "" else "s"}")
+                    .setAdapter(adapter) { _, which ->
+                        val stamp = DevicePrefs.getDeviceStamp(this)
+                        when (which) {
+                            0 -> savePinsStatusBatchUnified(chosen, "pending", stamp)
+                            1 -> savePinsStatusBatchUnified(chosen, "done", stamp)
+                            2 -> savePinsStatusBatchUnified(chosen, "issue", stamp, "Flagged in bulk")
+                            3 -> {
+                                DevicePrefs.addLocalSentPinIds(this, chosen.map { it.id })
+                                updateSentToggleUi()
+                                renderMapData()
+                            }
                         }
+                        selectedPinIds.clear()
+                        selectionMode = false
+                        renderPinRows()
+                        Toast.makeText(this, "Updated ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
                     }
-                    selectedPinIds.clear()
-                    selectionMode = false
-                    renderPinRows()
-                    Toast.makeText(this, "Updated ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
+                    .setNegativeButton("Cancel", null)
+                    .create()
+            )
         }
         btnSelDelete.setOnClickListener {
             val chosen = currentSourcePins()
                 .filter { it.id in selectedPinIds }
-                .filter { pin -> isLayerOwner(layers.find { l -> l.id == pin.layerId }) }
+                .filter { pin -> isLayerOwner(layerById[pin.layerId]) }
             if (chosen.isEmpty()) {
                 Toast.makeText(this, "Only folder owners can delete cloud bookmarks", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
@@ -5329,18 +5471,20 @@ class MainActivity : AppCompatActivity() {
             } else {
                 "Delete ${chosen.size} selected bookmark${if (chosen.size == 1) "" else "s"} from this phone?"
             }
-            AlertDialog.Builder(this)
-                .setTitle("Delete ${chosen.size} Bookmark${if (chosen.size == 1) "" else "s"}?")
-                .setMessage(scopeMsg)
-                .setPositiveButton("Delete") { _, _ ->
-                    deletePinsUnified(chosen)
-                    selectedPinIds.clear()
-                    selectionMode = false
-                    renderPinRows()
-                    Toast.makeText(this, "Deleted ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
+            showThemedDialog(
+                themedDialogBuilder("Delete ${chosen.size} Bookmark${if (chosen.size == 1) "" else "s"}?")
+                    .setMessage(scopeMsg)
+                    .setPositiveButton("Delete") { _, _ ->
+                        deletePinsUnified(chosen)
+                        selectedPinIds.clear()
+                        selectionMode = false
+                        renderPinRows()
+                        Toast.makeText(this, "Deleted ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .create(),
+                destructivePositive = true
+            )
         }
 
         btnSort.setOnClickListener {
@@ -5369,17 +5513,19 @@ class MainActivity : AppCompatActivity() {
     // --- Subpage: KML Folder Pin Edit History & Working-Hours Audit ---
 
     private fun showWorkingHoursDialog(onSaved: () -> Unit) {
+        val p = currentPalette()
         val curStart = DevicePrefs.getWorkStartMinutes(this)
         val curEnd = DevicePrefs.getWorkEndMinutes(this)
 
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
+            setPadding(dp(22), dp(8), dp(22), dp(4))
         }
         box.addView(TextView(this).apply {
             text = "Submissions made outside this shift window are automatically flagged as After Hours."
             textSize = 13f
-            setTextColor(Color.parseColor("#6E6E73"))
+            setLineSpacing(dp(2).toFloat(), 1.05f)
+            setTextColor(p.textSecondary)
             setPadding(0, 0, 0, dp(12))
         })
 
@@ -5396,7 +5542,7 @@ class MainActivity : AppCompatActivity() {
                 text = label
                 textSize = 14.5f
                 setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.parseColor("#1C1C1E"))
+                setTextColor(p.textPrimary)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
             val btnPick = MaterialButton(this).apply {
@@ -5406,10 +5552,11 @@ class MainActivity : AppCompatActivity() {
                 insetTop = 0
                 insetBottom = 0
                 setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#1E88E5"))
+                setBackgroundColor(p.accent)
                 cornerRadius = dp(10)
                 DesignSystem.applyTabularNumerals(this)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
+                UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     val cur = if (label.startsWith("Start")) chosenStartMin else chosenEndMin
                     android.app.TimePickerDialog(
@@ -5437,7 +5584,7 @@ class MainActivity : AppCompatActivity() {
             text = "Quick presets:"
             textSize = 12f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#6E6E73"))
+            setTextColor(p.textSecondary)
             setPadding(0, dp(10), 0, dp(6))
         })
         val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -5456,13 +5603,14 @@ class MainActivity : AppCompatActivity() {
                 minWidth = 0
                 minimumWidth = 0
                 setPadding(dp(6), 0, dp(6), 0)
-                setTextColor(Color.parseColor("#1C1C1E"))
-                setBackgroundColor(Color.parseColor("#E8E8EE"))
+                setTextColor(p.textPrimary)
+                setBackgroundColor(p.chipSurface)
                 cornerRadius = dp(8)
                 DesignSystem.applyTabularNumerals(this)
                 layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply {
                     if (idx < 2) marginEnd = dp(6)
                 }
+                UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     chosenStartMin = sMin
                     chosenEndMin = eMin
@@ -5476,18 +5624,19 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(presetRow)
 
-        dialogRef = AlertDialog.Builder(this)
-            .setTitle("Working Hours Window")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                DevicePrefs.setWorkStartMinutes(this, chosenStartMin)
-                DevicePrefs.setWorkEndMinutes(this, chosenEndMin)
-                val win = "${PinEditHistoryAudit.formatMinutes(chosenStartMin)}–${PinEditHistoryAudit.formatMinutes(chosenEndMin)}"
-                Toast.makeText(this, "Working hours set to $win", Toast.LENGTH_SHORT).show()
-                onSaved()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        dialogRef = showThemedDialog(
+            themedDialogBuilder("Working Hours Window")
+                .setView(box)
+                .setPositiveButton("Save") { _, _ ->
+                    DevicePrefs.setWorkStartMinutes(this, chosenStartMin)
+                    DevicePrefs.setWorkEndMinutes(this, chosenEndMin)
+                    val win = "${PinEditHistoryAudit.formatMinutes(chosenStartMin)}–${PinEditHistoryAudit.formatMinutes(chosenEndMin)}"
+                    Toast.makeText(this, "Working hours set to $win", Toast.LENGTH_SHORT).show()
+                    onSaved()
+                }
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun buildEditHistoryPage(layer: LayerItem): View {
@@ -5902,17 +6051,20 @@ class MainActivity : AppCompatActivity() {
                             layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
                                 marginStart = dp(6)
                             }
+                            UiAnimations.attachSnappyPress(this)
                             setOnClickListener {
-                                AlertDialog.Builder(this@MainActivity)
-                                    .setTitle("Remove this submission?")
-                                    .setMessage("[${entry.fullTimeLabel}] ${entry.operatorShort}\n${entry.pin.name} → ${entry.actionSummary}\n\nOnly this edit will be removed. The pin remains on the map.")
-                                    .setPositiveButton("Delete Edit") { _, _ ->
-                                        deletePinHistoryEntryUnified(entry.pin, entry.historyLineIndex)
-                                        Toast.makeText(this@MainActivity, "Submission removed", Toast.LENGTH_SHORT).show()
-                                        renderAudit()
-                                    }
-                                    .setNegativeButton("Cancel", null)
-                                    .show()
+                                showThemedDialog(
+                                    themedDialogBuilder("Remove this submission?")
+                                        .setMessage("[${entry.fullTimeLabel}] ${entry.operatorShort}\n${entry.pin.name} → ${entry.actionSummary}\n\nOnly this edit will be removed. The pin remains on the map.")
+                                        .setPositiveButton("Delete Edit") { _, _ ->
+                                            deletePinHistoryEntryUnified(entry.pin, entry.historyLineIndex)
+                                            Toast.makeText(this@MainActivity, "Submission removed", Toast.LENGTH_SHORT).show()
+                                            renderAudit()
+                                        }
+                                        .setNegativeButton("Cancel", null)
+                                        .create(),
+                                    destructivePositive = true
+                                )
                             }
                         })
                     }
@@ -6269,6 +6421,7 @@ class MainActivity : AppCompatActivity() {
                         webCard.addView(row)
                     }
                     webResultsBox.addView(webCard)
+                    UiAnimations.animateResultReveal(webCard)
                 }
             }
         }
@@ -7161,6 +7314,8 @@ class MainActivity : AppCompatActivity() {
                     val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                         max = 100
                         visibility = View.GONE
+                        progressTintList = android.content.res.ColorStateList.valueOf(p.accent)
+                        indeterminateTintList = android.content.res.ColorStateList.valueOf(p.accent)
                     }
                     card.addView(progressBar)
 
@@ -7210,7 +7365,9 @@ class MainActivity : AppCompatActivity() {
                         }
                         progressBar.visibility = if (busy) View.VISIBLE else View.GONE
                         progressBar.isIndeterminate = !st.isDownloading && st.isRoadDownloading
-                        if (st.isDownloading) progressBar.progress = st.progressPercent
+                        if (st.isDownloading) {
+                            progressBar.setProgress(st.progressPercent, !UiAnimations.isReducedMotion(this@MainActivity))
+                        }
 
                         btnDl.text = when {
                             busy -> "Pause"
@@ -7236,16 +7393,18 @@ class MainActivity : AppCompatActivity() {
                             Toast.makeText(this@MainActivity, "Nothing downloaded for $title", Toast.LENGTH_SHORT).show()
                             return@setOnClickListener
                         }
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("Delete \"$title\" Offline Pack?")
-                            .setMessage("This removes the downloaded offline map tiles and road graph for $title from this phone.")
-                            .setPositiveButton("Delete") { _, _ ->
-                                offlineMaps.deletePack(packId) { msg ->
-                                    runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                        showThemedDialog(
+                            themedDialogBuilder("Delete \"$title\" Offline Pack?")
+                                .setMessage("This removes the downloaded offline map tiles and road graph for $title from this phone.")
+                                .setPositiveButton("Delete") { _, _ ->
+                                    offlineMaps.deletePack(packId) { msg ->
+                                        runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                                    }
                                 }
-                            }
-                            .setNegativeButton("Cancel", null)
-                            .show()
+                                .setNegativeButton("Cancel", null)
+                                .create(),
+                            destructivePositive = true
+                        )
                     }
 
                     btnRow.addView(btnDl)
@@ -7471,8 +7630,8 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             setOnClickListener {
-                val fresh = pins.find { it.id == pin.id } ?: pin
-                showPinCard(fresh, animateSwap = true)
+                val fresh = pinById[pin.id] ?: pin
+                showPinCard(fresh, animateSwap = true, swapForward = false)
             }
         })
         val titleCol = LinearLayout(this).apply {
@@ -7598,8 +7757,8 @@ class MainActivity : AppCompatActivity() {
             DesignSystem.styleSegmentedButton(this, false, p)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
-                val fresh = pins.find { it.id == pin.id } ?: pin
-                showPinCard(fresh, animateSwap = true)
+                val fresh = pinById[pin.id] ?: pin
+                showPinCard(fresh, animateSwap = true, swapForward = false)
             }
         })
         btnRow.addView(MaterialButton(this).apply {
@@ -7623,63 +7782,77 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showEditPinDialog(pin: PinItem) {
+        val p = currentPalette()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
+            setPadding(dp(22), dp(10), dp(22), dp(4))
         }
-        val etName = EditText(this).apply { hint = "Pin name"; setText(pin.name) }
-        val etDesc = EditText(this).apply { hint = "Description / notes"; setText(pin.description); minLines = 2 }
+        val etName = DesignSystem.createThemedEditText(this, p, "Pin name", initialText = pin.name).apply {
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10)
+        }
+        val etDesc = DesignSystem.createThemedEditText(this, p, "Description / notes", initialText = pin.description, singleLine = false, minLines = 2)
         box.addView(etName)
         box.addView(etDesc)
 
-        AlertDialog.Builder(this)
-            .setTitle("Edit Pin")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                val stamp = DevicePrefs.getDeviceStamp(this)
-                savePinTextUnified(pin, etName.text.toString().trim(), etDesc.text.toString().trim(), stamp)
-                Toast.makeText(this, "Saved & stamped", Toast.LENGTH_SHORT).show()
-                hideInScreenSheet()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showThemedDialog(
+            themedDialogBuilder("Edit Pin")
+                .setView(box)
+                .setPositiveButton("Save") { _, _ ->
+                    val stamp = DevicePrefs.getDeviceStamp(this)
+                    savePinTextUnified(pin, etName.text.toString().trim(), etDesc.text.toString().trim(), stamp)
+                    Toast.makeText(this, "Saved & stamped", Toast.LENGTH_SHORT).show()
+                    hideInScreenSheet()
+                }
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun showAddPinDialog(latLng: LatLng, prefillName: String = "", prefillDesc: String = "") {
+        val p = currentPalette()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
+            setPadding(dp(22), dp(8), dp(22), dp(4))
         }
-        val etName = EditText(this).apply { hint = "Pin name"; setText(prefillName) }
-        val etDesc = EditText(this).apply { hint = "Description (optional)"; setText(prefillDesc) }
+        box.addView(TextView(this).apply {
+            text = "${"%.6f".format(Locale.US, latLng.latitude)}, ${"%.6f".format(Locale.US, latLng.longitude)}"
+            textSize = 12.5f
+            setTextColor(p.textSecondary)
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(dp(2), 0, 0, dp(10))
+        })
+        val etName = DesignSystem.createThemedEditText(this, p, "Pin name", initialText = prefillName).apply {
+            (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10)
+        }
+        val etDesc = DesignSystem.createThemedEditText(this, p, "Description (optional)", initialText = prefillDesc, singleLine = false, minLines = 2)
         box.addView(etName)
         box.addView(etDesc)
 
-        AlertDialog.Builder(this)
-            .setTitle("Save Bookmark")
-            .setMessage("${"%.6f".format(latLng.latitude)}, ${"%.6f".format(latLng.longitude)}")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                val stamp = DevicePrefs.getDeviceStamp(this)
-                val devId = DevicePrefs.getDeviceId(this)
-                val savedPin = LocalFolderStore.addManualPin(
-                    this,
-                    etName.text.toString().trim(),
-                    etDesc.text.toString().trim(),
-                    latLng.latitude,
-                    latLng.longitude,
-                    stamp,
-                    devId
-                )
-                DevicePrefs.setLayerVisible(this, savedPin.layerId, true)
-                ensurePinVisibleOnMap(savedPin)
-                applyMergedFoldersAndRender()
-                fireStatusPulse(savedPin.lat, savedPin.lng, "#F59E0B")
-                Toast.makeText(this, "Saved \"${savedPin.name}\" locally", Toast.LENGTH_SHORT).show()
-                hideInScreenSheet()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showThemedDialog(
+            themedDialogBuilder("Save Bookmark")
+                .setView(box)
+                .setPositiveButton("Save") { _, _ ->
+                    val stamp = DevicePrefs.getDeviceStamp(this)
+                    val devId = DevicePrefs.getDeviceId(this)
+                    val savedPin = LocalFolderStore.addManualPin(
+                        this,
+                        etName.text.toString().trim(),
+                        etDesc.text.toString().trim(),
+                        latLng.latitude,
+                        latLng.longitude,
+                        stamp,
+                        devId
+                    )
+                    DevicePrefs.setLayerVisible(this, savedPin.layerId, true)
+                    ensurePinVisibleOnMap(savedPin)
+                    applyMergedFoldersAndRender()
+                    fireStatusPulse(savedPin.lat, savedPin.lng, "#F59E0B")
+                    Toast.makeText(this, "Saved \"${savedPin.name}\" locally", Toast.LENGTH_SHORT).show()
+                    hideInScreenSheet()
+                }
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun shareLayerLink(layer: LayerItem) {
@@ -7693,13 +7866,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showJoinCodeDialog() {
-        val input = EditText(this).apply { hint = "Enter 6-character code (e.g. AKR742)" }
-        AlertDialog.Builder(this)
-            .setTitle("Join Shared Folder")
-            .setView(input)
-            .setPositiveButton("Join") { _, _ -> joinShareCode(input.text.toString()) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        val p = currentPalette()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), dp(4))
+        }
+        val input = DesignSystem.createThemedEditText(this, p, "Enter 6-character code (e.g. AKR742)").apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        }
+        box.addView(input)
+        showThemedDialog(
+            themedDialogBuilder("Join Shared Folder")
+                .setView(box)
+                .setPositiveButton("Join") { _, _ -> joinShareCode(input.text.toString()) }
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun showCombineFoldersDialog() {
@@ -7707,34 +7890,36 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Need at least 2 folders to combine", Toast.LENGTH_SHORT).show()
             return
         }
-
+        val p = currentPalette()
         val scroll = ScrollView(this)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(8))
+            setPadding(dp(22), dp(10), dp(22), dp(8))
         }
 
-        val etName = EditText(this).apply {
-            hint = "New combined folder name"
-            setSingleLine(true)
-        }
+        val etName = DesignSystem.createThemedEditText(this, p, "New combined folder name")
         box.addView(etName)
 
         box.addView(TextView(this).apply {
             text = "Select folders to combine:"
             textSize = 13f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#64748B"))
-            setPadding(0, dp(12), 0, dp(4))
+            setTextColor(p.textSecondary)
+            setPadding(0, dp(14), 0, dp(6))
         })
 
         val selectedIds = mutableSetOf<String>()
+        val cbTint = android.content.res.ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf(-android.R.attr.state_checked)),
+            intArrayOf(p.accent, p.iconMuted)
+        )
         layers.forEach { layer ->
-            val count = pins.count { it.layerId == layer.id }
+            val count = pinsByLayerId[layer.id]?.size ?: 0
             val cb = CheckBox(this).apply {
                 text = "${layer.name} ($count pins)"
                 textSize = 14f
-                setTextColor(Color.parseColor("#0F172A"))
+                setTextColor(p.textPrimary)
+                buttonTintList = cbTint
                 setPadding(dp(4), dp(6), dp(4), dp(6))
                 setOnCheckedChangeListener { _, checked ->
                     if (checked) selectedIds.add(layer.id) else selectedIds.remove(layer.id)
@@ -7744,7 +7929,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         box.addView(View(this).apply {
-            setBackgroundColor(Color.parseColor("#E2E8F0"))
+            setBackgroundColor(p.divider)
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
                 topMargin = dp(8)
                 bottomMargin = dp(8)
@@ -7754,7 +7939,8 @@ class MainActivity : AppCompatActivity() {
         val cbDedup = CheckBox(this).apply {
             text = "Skip exact duplicates (same name, desc & GPS)"
             textSize = 13f
-            setTextColor(Color.parseColor("#334155"))
+            setTextColor(p.textSecondary)
+            buttonTintList = cbTint
             isChecked = false
         }
         box.addView(cbDedup)
@@ -7762,21 +7948,22 @@ class MainActivity : AppCompatActivity() {
         val cbHideOriginals = CheckBox(this).apply {
             text = "Hide original folders on map"
             textSize = 13f
-            setTextColor(Color.parseColor("#334155"))
+            setTextColor(p.textSecondary)
+            buttonTintList = cbTint
             isChecked = true
         }
         box.addView(cbHideOriginals)
 
         scroll.addView(box)
 
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("Combine Folders")
+        val dlg = themedDialogBuilder("Combine Folders")
             .setView(scroll)
             .setPositiveButton("Combine", null)
             .setNegativeButton("Cancel", null)
             .create()
 
         dlg.setOnShowListener {
+            DesignSystem.styleAlertDialog(this, dlg, p)
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 if (selectedIds.size < 2) {
                     Toast.makeText(this, "Select at least 2 folders", Toast.LENGTH_SHORT).show()
@@ -7888,54 +8075,57 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Already uploading \"${layer.name}\"...", Toast.LENGTH_SHORT).show()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("Upload \"${layer.name}\" to Cloud?")
-            .setMessage("Creates a live shared folder with a 6-character code for your teams and replaces the local-only copy.")
-            .setPositiveButton("Upload") { _, _ ->
-                if (!uploadingLayerIds.add(layer.id)) return@setPositiveButton
-                Toast.makeText(this, "Uploading \"${layer.name}\" to cloud...", Toast.LENGTH_SHORT).show()
-                val newCloudId = UUID.randomUUID().toString()
-                val stamp = DevicePrefs.getDeviceStamp(this)
-                val devId = DevicePrefs.getDeviceId(this)
-                val parsed = ParsedKml(
-                    pins = layerPins.map { it.copy(id = it.id.ifBlank { UUID.randomUUID().toString() }, layerId = newCloudId) },
-                    tracks = layerTracks.map { it.copy(id = it.id.ifBlank { UUID.randomUUID().toString() }, layerId = newCloudId) },
-                    documentName = layer.name
-                )
-                repo.importLayer(newCloudId, layer.name, stamp, devId, parsed, requireServerCommit = true) { ok, msg, _ ->
-                    runOnUiThread {
-                        uploadingLayerIds.remove(layer.id)
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                        if (ok) {
-                            val wasPinned = DevicePrefs.isLayerPinned(this, layer.id)
-                            LocalFolderStore.deleteLayer(this, layer.id)
-                            DevicePrefs.removeJoinedLayerId(this, layer.id)
-                            DevicePrefs.addJoinedLayerId(this, newCloudId)
-                            if (wasPinned) DevicePrefs.toggleLayerPinned(this, newCloudId)
-                            refreshJoinedSync()
+        showThemedDialog(
+            themedDialogBuilder("Upload \"${layer.name}\" to Cloud?")
+                .setMessage("Creates a live shared folder with a 6-character code for your teams and replaces the local-only copy.")
+                .setPositiveButton("Upload") { _, _ ->
+                    if (!uploadingLayerIds.add(layer.id)) return@setPositiveButton
+                    Toast.makeText(this, "Uploading \"${layer.name}\" to cloud...", Toast.LENGTH_SHORT).show()
+                    val newCloudId = UUID.randomUUID().toString()
+                    val stamp = DevicePrefs.getDeviceStamp(this)
+                    val devId = DevicePrefs.getDeviceId(this)
+                    val parsed = ParsedKml(
+                        pins = layerPins.map { it.copy(id = it.id.ifBlank { UUID.randomUUID().toString() }, layerId = newCloudId) },
+                        tracks = layerTracks.map { it.copy(id = it.id.ifBlank { UUID.randomUUID().toString() }, layerId = newCloudId) },
+                        documentName = layer.name
+                    )
+                    repo.importLayer(newCloudId, layer.name, stamp, devId, parsed, requireServerCommit = true) { ok, msg, _ ->
+                        runOnUiThread {
+                            uploadingLayerIds.remove(layer.id)
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                            if (ok) {
+                                val wasPinned = DevicePrefs.isLayerPinned(this, layer.id)
+                                LocalFolderStore.deleteLayer(this, layer.id)
+                                DevicePrefs.removeJoinedLayerId(this, layer.id)
+                                DevicePrefs.addJoinedLayerId(this, newCloudId)
+                                if (wasPinned) DevicePrefs.toggleLayerPinned(this, newCloudId)
+                                refreshJoinedSync()
+                            }
                         }
                     }
                 }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+                .setNegativeButton("Cancel", null)
+                .create()
+        )
     }
 
     private fun showDeleteLocalDialog(layer: LayerItem, pinCount: Int) {
-        AlertDialog.Builder(this)
-            .setTitle("Delete Local Folder \"${layer.name}\"?")
-            .setMessage("Removes all $pinCount pins stored locally on this phone.")
-            .setPositiveButton("Delete") { _, _ ->
-                val deletedPinIds = pins.filter { it.layerId == layer.id }.map { it.id }
-                LocalFolderStore.deleteLayer(this, layer.id)
-                DevicePrefs.removeJoinedLayerId(this, layer.id)
-                DevicePrefs.removePinReferences(this, deletedPinIds)
-                applyMergedFoldersAndRender()
-                Toast.makeText(this, "Deleted local folder \"${layer.name}\"", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        showThemedDialog(
+            themedDialogBuilder("Delete Local Folder \"${layer.name}\"?")
+                .setMessage("Removes all $pinCount pins stored locally on this phone.")
+                .setPositiveButton("Delete") { _, _ ->
+                    val deletedPinIds = pinsByLayerId[layer.id]?.map { it.id }.orEmpty()
+                    LocalFolderStore.deleteLayer(this, layer.id)
+                    DevicePrefs.removeJoinedLayerId(this, layer.id)
+                    DevicePrefs.removePinReferences(this, deletedPinIds)
+                    applyMergedFoldersAndRender()
+                    Toast.makeText(this, "Deleted local folder \"${layer.name}\"", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("Cancel", null)
+                .create(),
+            destructivePositive = true
+        )
     }
 
     private fun isLayerOwner(layer: LayerItem?): Boolean {

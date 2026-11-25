@@ -227,8 +227,8 @@ class ContourOverlayManager {
             mainHandler.post {
                 if (seq.get() != mySeq) return@post
                 runCatching {
-                    val curStyle = map.style ?: return@post
-                    if (!curStyle.isFullyLoaded) return@post
+                    val curStyle = map.style ?: return@runCatching
+                    if (!curStyle.isFullyLoaded) return@runCatching
                     lastViewportKey = vpKey
                     curStyle.getSourceAs<GeoJsonSource>(CONTOURS_SOURCE)?.setGeoJson(fc)
                 }

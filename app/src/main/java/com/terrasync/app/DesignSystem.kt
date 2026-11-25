@@ -11,8 +11,11 @@ import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 
@@ -336,8 +339,9 @@ object DesignSystem {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = (52 * d).toInt()
-            setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
+            minimumHeight = (54 * d).toInt()
+            setPadding((2 * d).toInt(), (8 * d).toInt(), (2 * d).toInt(), (8 * d).toInt())
+            UiAnimations.applyRowRipple(ctx, this, palette.isDark)
         }
         val textCol = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -363,8 +367,125 @@ object DesignSystem {
             styleMaterialSwitch(this, palette)
             setOnCheckedChangeListener { _, isChecked -> onChange(isChecked) }
         }
+        row.setOnClickListener { sw.toggle() }
         row.addView(textCol)
         row.addView(sw)
         return row
+    }
+
+    /** Creates a clean, rounded, dark/light-aware EditText for dialogs and forms. */
+    fun createThemedEditText(
+        ctx: Context,
+        palette: ThemePalette,
+        hintText: String,
+        initialText: String = "",
+        singleLine: Boolean = true,
+        minLines: Int = 1
+    ): EditText {
+        val d = ctx.resources.displayMetrics.density
+        return EditText(ctx).apply {
+            hint = hintText
+            if (initialText.isNotEmpty()) {
+                setText(initialText)
+                setSelection(initialText.length)
+            }
+            textSize = 15f
+            setTextColor(palette.textPrimary)
+            setHintTextColor(palette.iconMuted)
+            if (singleLine) {
+                setSingleLine(true)
+            } else {
+                setSingleLine(false)
+                this.minLines = minLines
+                gravity = Gravity.TOP or Gravity.START
+            }
+            setPadding((14 * d).toInt(), (12 * d).toInt(), (14 * d).toInt(), (12 * d).toInt())
+            background = buildOpaqueDrawable(
+                ctx = ctx,
+                fillColor = palette.cardSurface,
+                radiusDp = 12f,
+                strokeColor = if (palette.isDark) palette.cardBorder else palette.divider,
+                strokeDp = 1f
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+    }
+
+    /** Creates a themed header view for AlertDialogs so title contrast is guaranteed in both Day & Night modes. */
+    fun createThemedDialogTitle(ctx: Context, title: String, palette: ThemePalette): TextView {
+        val d = ctx.resources.displayMetrics.density
+        return TextView(ctx).apply {
+            text = title
+            textSize = 18f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(palette.textPrimary)
+            setPadding((22 * d).toInt(), (20 * d).toInt(), (22 * d).toInt(), (6 * d).toInt())
+        }
+    }
+
+    /** Creates a themed list adapter for AlertDialog item pickers so items stay crisp in Night mode. */
+    fun createThemedDialogListAdapter(ctx: Context, items: Array<String>, palette: ThemePalette): ArrayAdapter<String> {
+        val d = ctx.resources.displayMetrics.density
+        return object : ArrayAdapter<String>(ctx, android.R.layout.simple_list_item_1, items) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val tv = (convertView as? TextView) ?: TextView(ctx).apply {
+                    textSize = 15f
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = (50 * d).toInt()
+                    setPadding((22 * d).toInt(), (12 * d).toInt(), (22 * d).toInt(), (12 * d).toInt())
+                    UiAnimations.applyRowRipple(ctx, this, palette.isDark)
+                }
+                tv.text = getItem(position)
+                tv.setTextColor(palette.textPrimary)
+                return tv
+            }
+        }
+    }
+
+    /** Applies consistent Day/Night surface, rounded corners, text contrast, button tints, and crisp entrance to an AlertDialog. */
+    fun styleAlertDialog(
+        ctx: Context,
+        dialog: AlertDialog,
+        palette: ThemePalette,
+        destructivePositive: Boolean = false
+    ) {
+        dialog.window?.setBackgroundDrawable(
+            buildOpaqueDrawable(
+                ctx = ctx,
+                fillColor = palette.sheetSurface,
+                radiusDp = 20f,
+                strokeColor = if (palette.isDark) palette.cardBorder else Color.TRANSPARENT,
+                strokeDp = if (palette.isDark) 1f else 0f
+            )
+        )
+        dialog.findViewById<TextView>(android.R.id.message)?.apply {
+            setTextColor(palette.textSecondary)
+            textSize = 14f
+        }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
+            setTextColor(if (destructivePositive) palette.red else palette.accent)
+            isAllCaps = false
+            setTypeface(null, Typeface.BOLD)
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {
+            setTextColor(palette.textSecondary)
+            isAllCaps = false
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.apply {
+            setTextColor(palette.green)
+            isAllCaps = false
+            setTypeface(null, Typeface.BOLD)
+        }
+        dialog.listView?.let { lv ->
+            lv.divider = GradientDrawable().apply {
+                setColor(palette.divider)
+                setSize(-1, (1f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(1))
+            }
+            lv.dividerHeight = (1f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+        }
+        UiAnimations.animateDialogEnter(dialog.window?.decorView)
     }
 }

@@ -13,6 +13,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.PathInterpolator
+import android.widget.ImageView
+import android.widget.TextView
 
 /**
  * Crisp, GPU-accelerated utilitarian motion system for Organic Maps minimalism:
@@ -30,6 +32,10 @@ object UiAnimations {
     /** Clean decisive exit curve */
     val FAST_EXIT = PathInterpolator(0.35f, 0.0f, 0.85f, 0.15f)
 
+    /** Subtle crisp spring-snap for small confirmation icons & badges (no floaty bounce) */
+    val SPRING_SNAP = PathInterpolator(0.22f, 1.12f, 0.36f, 1.0f)
+
+    private const val TAG_EXITING = "terrasync_exiting_view"
     private val pressAttached = java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
 
     fun isReducedMotion(ctx: Context): Boolean {
@@ -84,6 +90,211 @@ object UiAnimations {
         view.background = RippleDrawable(ColorStateList.valueOf(rippleColor), null, mask)
     }
 
+    fun applyRoundedRipple(ctx: Context, view: View, fillColor: Int, radiusDp: Float, isDark: Boolean = false) {
+        val d = ctx.resources.displayMetrics.density
+        val rPx = radiusDp * d
+        val content = GradientDrawable().apply {
+            setColor(fillColor)
+            cornerRadius = rPx
+        }
+        val mask = GradientDrawable().apply {
+            setColor(Color.WHITE)
+            cornerRadius = rPx
+        }
+        val ripple = Color.parseColor(if (isDark) "#2AFFFFFF" else "#1E1C1C1E")
+        view.background = RippleDrawable(ColorStateList.valueOf(ripple), content, mask)
+    }
+
+    /** Crisp 180ms confirmation pop for checkmarks, stars, and active badges. */
+    fun animateScalePop(view: View, startScale: Float = 0.82f, durationMs: Long = 180L) {
+        if (isReducedMotion(view.context)) {
+            view.scaleX = 1f
+            view.scaleY = 1f
+            return
+        }
+        view.animate().cancel()
+        view.scaleX = startScale
+        view.scaleY = startScale
+        view.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(durationMs)
+            .setInterpolator(SPRING_SNAP)
+            .withLayer()
+            .start()
+    }
+
+    /** Quick single-pulse confirmation bump for GPS lock or sync taps. */
+    fun animatePulseBump(view: View, peakScale: Float = 1.12f) {
+        if (isReducedMotion(view.context)) return
+        view.animate().cancel()
+        view.animate()
+            .scaleX(peakScale)
+            .scaleY(peakScale)
+            .setDuration(90L)
+            .setInterpolator(FAST_OUT_SLOW_IN)
+            .withLayer()
+            .withEndAction {
+                view.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(140L)
+                    .setInterpolator(SPRING_SNAP)
+                    .withLayer()
+                    .start()
+            }
+            .start()
+    }
+
+    /** Crisp 150ms scale/fade micro-morph when swapping an icon drawable & tint. */
+    fun animateIconSwap(view: ImageView, newRes: Int, newTint: Int? = null, clearTint: Boolean = false) {
+        if (isReducedMotion(view.context)) {
+            view.setImageResource(newRes)
+            if (clearTint) view.clearColorFilter() else newTint?.let { view.setColorFilter(it) }
+            view.scaleX = 1f
+            view.scaleY = 1f
+            view.alpha = 1f
+            return
+        }
+        view.animate().cancel()
+        view.animate()
+            .scaleX(0.76f)
+            .scaleY(0.76f)
+            .alpha(0.35f)
+            .setDuration(70L)
+            .setInterpolator(FAST_EXIT)
+            .withLayer()
+            .withEndAction {
+                view.setImageResource(newRes)
+                if (clearTint) view.clearColorFilter() else newTint?.let { view.setColorFilter(it) }
+                view.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .alpha(1f)
+                    .setDuration(140L)
+                    .setInterpolator(SPRING_SNAP)
+                    .withLayer()
+                    .start()
+            }
+            .start()
+    }
+
+    /** Subtle directional text crossfade for navigation maneuvers and state labels. */
+    fun animateCrossfadeText(tv: TextView, newText: CharSequence, slideDp: Float = 6f) {
+        if (tv.text?.toString() == newText.toString()) return
+        if (isReducedMotion(tv.context)) {
+            tv.text = newText
+            tv.alpha = 1f
+            tv.translationY = 0f
+            return
+        }
+        val d = tv.resources.displayMetrics.density
+        tv.animate().cancel()
+        tv.animate()
+            .alpha(0f)
+            .translationY(-slideDp * d)
+            .setDuration(85L)
+            .setInterpolator(FAST_EXIT)
+            .withEndAction {
+                tv.text = newText
+                tv.translationY = slideDp * d
+                tv.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(145L)
+                    .setInterpolator(EMPHASIZED_DECELERATE)
+                    .start()
+            }
+            .start()
+    }
+
+    /** Smooth scale + fade entrance/exit for circular Speed HUD badge. */
+    fun animateSpeedBadgeVisibility(view: View, show: Boolean) {
+        if (show) {
+            if (view.visibility == View.VISIBLE && view.alpha >= 0.99f && view.scaleX >= 0.99f) return
+            view.animate().cancel()
+            view.visibility = View.VISIBLE
+            if (isReducedMotion(view.context)) {
+                view.alpha = 1f
+                view.scaleX = 1f
+                view.scaleY = 1f
+                return
+            }
+            view.alpha = 0f
+            view.scaleX = 0.84f
+            view.scaleY = 0.84f
+            view.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(180L)
+                .setInterpolator(EMPHASIZED_DECELERATE)
+                .withLayer()
+                .start()
+        } else {
+            if (view.visibility != View.VISIBLE) return
+            view.animate().cancel()
+            if (isReducedMotion(view.context)) {
+                view.visibility = View.GONE
+                view.alpha = 1f
+                view.scaleX = 1f
+                view.scaleY = 1f
+                return
+            }
+            view.animate()
+                .alpha(0f)
+                .scaleX(0.86f)
+                .scaleY(0.86f)
+                .setDuration(130L)
+                .setInterpolator(FAST_EXIT)
+                .withLayer()
+                .withEndAction {
+                    view.visibility = View.GONE
+                    view.alpha = 1f
+                    view.scaleX = 1f
+                    view.scaleY = 1f
+                }
+                .start()
+        }
+    }
+
+    /** Subtle scale-fade entrance for AlertDialogs. */
+    fun animateDialogEnter(decorView: View?) {
+        if (decorView == null || isReducedMotion(decorView.context)) return
+        decorView.animate().cancel()
+        decorView.alpha = 0f
+        decorView.scaleX = 0.95f
+        decorView.scaleY = 0.95f
+        decorView.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(175L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
+    }
+
+    /** Lightweight reveal for dynamically populated search/filter results inside an open page. */
+    fun animateResultReveal(view: View) {
+        if (isReducedMotion(view.context)) {
+            view.alpha = 1f
+            view.translationY = 0f
+            return
+        }
+        val shift = 10f * view.resources.displayMetrics.density
+        view.animate().cancel()
+        view.alpha = 0f
+        view.translationY = shift
+        view.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(175L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
+            .start()
+    }
+
     fun showSlideTop(view: View, durationMs: Long = 175L) {
         view.animate().cancel()
         if (isReducedMotion(view.context)) {
@@ -94,9 +305,11 @@ object UiAnimations {
         }
         if (view.visibility == View.VISIBLE && view.alpha >= 0.99f && view.translationY == 0f) return
         val shift = -(14f * view.resources.displayMetrics.density)
-        view.visibility = View.VISIBLE
-        view.alpha = 0f
-        view.translationY = shift
+        if (view.visibility != View.VISIBLE) {
+            view.visibility = View.VISIBLE
+            view.alpha = 0f
+            view.translationY = shift
+        }
         view.animate()
             .alpha(1f)
             .translationY(0f)
@@ -140,9 +353,11 @@ object UiAnimations {
         }
         if (view.visibility == View.VISIBLE && view.alpha >= 0.99f && view.translationY == 0f) return
         val shift = 16f * view.resources.displayMetrics.density
-        view.visibility = View.VISIBLE
-        view.alpha = 0f
-        view.translationY = shift
+        if (view.visibility != View.VISIBLE) {
+            view.visibility = View.VISIBLE
+            view.alpha = 0f
+            view.translationY = shift
+        }
         view.animate()
             .alpha(1f)
             .translationY(0f)
@@ -259,14 +474,29 @@ object UiAnimations {
             .start()
     }
 
+    private fun pruneExitingChildren(container: ViewGroup): List<View> {
+        val active = ArrayList<View>()
+        val stale = ArrayList<View>()
+        for (i in 0 until container.childCount) {
+            val child = container.getChildAt(i)
+            child.animate().cancel()
+            if (child.tag == TAG_EXITING) {
+                stale.add(child)
+            } else {
+                active.add(child)
+            }
+        }
+        stale.forEach { container.removeView(it) }
+        return active
+    }
+
     /**
      * Smooth native dual-view horizontal Push (e.g., Settings Menu -> Section Sub-Page).
      * Outgoing view glides slightly left while incoming sub-page slides cleanly from right.
-     * Zero map bleed-through.
+     * Zero map bleed-through and leak-safe across rapid taps.
      */
     fun transitionSubPagePush(container: ViewGroup, incoming: View, isRtl: Boolean) {
-        val outgoingViews = (0 until container.childCount).map { container.getChildAt(it) }
-        outgoingViews.forEach { it.animate().cancel() }
+        val outgoingViews = pruneExitingChildren(container)
 
         if (isReducedMotion(container.context) || outgoingViews.isEmpty()) {
             container.removeAllViews()
@@ -276,18 +506,21 @@ object UiAnimations {
 
         val dir = if (isRtl) -1f else 1f
         val d = container.resources.displayMetrics.density
-        val inStart = 76f * d * dir
-        val outEnd = -28f * d * dir
+        val widthPx = container.width.takeIf { it > 0 }?.toFloat() ?: (360f * d)
+        val inStart = (widthPx * 0.24f).coerceIn(72f * d, 120f * d) * dir
+        val outEnd = -(widthPx * 0.08f).coerceIn(24f * d, 40f * d) * dir
 
         incoming.translationX = inStart
-        incoming.alpha = 0.72f
+        incoming.alpha = 0.68f
+        incoming.elevation = 6f * d
         container.addView(incoming)
 
         outgoingViews.forEach { old ->
+            old.tag = TAG_EXITING
             old.animate()
                 .translationX(outEnd)
-                .alpha(0.84f)
-                .setDuration(210L)
+                .alpha(0.80f)
+                .setDuration(220L)
                 .setInterpolator(EMPHASIZED_DECELERATE)
                 .withLayer()
                 .withEndAction { container.removeView(old) }
@@ -297,9 +530,10 @@ object UiAnimations {
         incoming.animate()
             .translationX(0f)
             .alpha(1f)
-            .setDuration(220L)
+            .setDuration(235L)
             .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
+            .withEndAction { incoming.elevation = 0f }
             .start()
     }
 
@@ -308,8 +542,7 @@ object UiAnimations {
      * Previous menu glides gently back from left while outgoing sub-page slides out right.
      */
     fun transitionSubPagePop(container: ViewGroup, backView: View, isRtl: Boolean) {
-        val outgoingViews = (0 until container.childCount).map { container.getChildAt(it) }
-        outgoingViews.forEach { it.animate().cancel() }
+        val outgoingViews = pruneExitingChildren(container)
 
         if (isReducedMotion(container.context) || outgoingViews.isEmpty()) {
             container.removeAllViews()
@@ -319,26 +552,29 @@ object UiAnimations {
 
         val dir = if (isRtl) -1f else 1f
         val d = container.resources.displayMetrics.density
-        val backStart = -28f * d * dir
-        val outEnd = 76f * d * dir
+        val widthPx = container.width.takeIf { it > 0 }?.toFloat() ?: (360f * d)
+        val backStart = -(widthPx * 0.08f).coerceIn(24f * d, 40f * d) * dir
+        val outEnd = (widthPx * 0.24f).coerceIn(72f * d, 120f * d) * dir
 
         backView.translationX = backStart
-        backView.alpha = 0.85f
+        backView.alpha = 0.82f
         container.addView(backView, 0)
 
         backView.animate()
             .translationX(0f)
             .alpha(1f)
-            .setDuration(205L)
+            .setDuration(215L)
             .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
             .start()
 
         outgoingViews.forEach { old ->
+            old.tag = TAG_EXITING
+            old.elevation = 6f * d
             old.animate()
                 .translationX(outEnd)
                 .alpha(0f)
-                .setDuration(185L)
+                .setDuration(195L)
                 .setInterpolator(FAST_OUT_SLOW_IN)
                 .withLayer()
                 .withEndAction { container.removeView(old) }
@@ -348,8 +584,7 @@ object UiAnimations {
 
     /** Clean in-place crossfade (e.g., switching Day/Night or App Language inside a Settings sub-page). */
     fun transitionCrossfade(container: ViewGroup, incoming: View) {
-        val outgoingViews = (0 until container.childCount).map { container.getChildAt(it) }
-        outgoingViews.forEach { it.animate().cancel() }
+        val outgoingViews = pruneExitingChildren(container)
 
         if (isReducedMotion(container.context) || outgoingViews.isEmpty()) {
             container.removeAllViews()
@@ -357,11 +592,12 @@ object UiAnimations {
             return
         }
 
+        outgoingViews.forEach { it.tag = TAG_EXITING }
         incoming.alpha = 0f
         container.addView(incoming)
         incoming.animate()
             .alpha(1f)
-            .setDuration(150L)
+            .setDuration(160L)
             .setInterpolator(FAST_OUT_SLOW_IN)
             .withLayer()
             .withEndAction {
@@ -370,20 +606,21 @@ object UiAnimations {
             .start()
     }
 
-    fun animateContentSwap(view: View) {
+    fun animateContentSwap(view: View, forward: Boolean = true) {
         view.animate().cancel()
         if (isReducedMotion(view.context)) {
             view.alpha = 1f
             view.translationX = 0f
             return
         }
-        val shift = 14f * view.resources.displayMetrics.density
+        val dir = if (forward) 1f else -1f
+        val shift = 18f * view.resources.displayMetrics.density * dir
         view.alpha = 0f
         view.translationX = shift
         view.animate()
             .alpha(1f)
             .translationX(0f)
-            .setDuration(155L)
+            .setDuration(170L)
             .setInterpolator(EMPHASIZED_DECELERATE)
             .withLayer()
             .start()
