@@ -240,7 +240,7 @@ object DevicePrefs {
     fun isVoiceNav(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_VOICE_NAV, true)
     fun setVoiceNav(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_VOICE_NAV, v).apply()
 
-    fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, true)
+    fun isHillshadeEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_HILLSHADE, false)
     fun setHillshadeEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_HILLSHADE, v).apply()
 
     fun getHillshadeIntensity(ctx: Context): HillshadeIntensity =
@@ -248,7 +248,7 @@ object DevicePrefs {
     fun setHillshadeIntensity(ctx: Context, intensity: HillshadeIntensity) =
         prefs(ctx).edit().putString(KEY_HILLSHADE_INTENSITY, intensity.id).apply()
 
-    fun isContoursEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CONTOURS, true)
+    fun isContoursEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CONTOURS, false)
     fun setContoursEnabled(ctx: Context, v: Boolean) = prefs(ctx).edit().putBoolean(KEY_CONTOURS, v).apply()
 
     fun getAppLanguage(ctx: Context): AppLanguage =
