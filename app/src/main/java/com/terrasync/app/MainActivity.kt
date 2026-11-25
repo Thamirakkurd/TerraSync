@@ -1499,15 +1499,7 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.iconImage(Expression.get("icon")),
                     PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
                     PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
-                    PropertyFactory.iconSize(
-                        Expression.interpolate(
-                            Expression.linear(),
-                            Expression.zoom(),
-                            Expression.stop(7f, 0.72f),
-                            Expression.stop(11f, 0.86f),
-                            Expression.stop(15f, 1.00f)
-                        )
-                    ),
+                    PropertyFactory.iconSize(1.0f),
                     PropertyFactory.iconAllowOverlap(true),
                     PropertyFactory.iconIgnorePlacement(true)
                 )
@@ -1552,11 +1544,11 @@ class MainActivity : AppCompatActivity() {
             style.addSource(GeoJsonSource(SELECTED_SOURCE))
             style.addLayer(
                 CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
-                    PropertyFactory.circleColor("#3B82F6"),
-                    PropertyFactory.circleOpacity(0.22f),
-                    PropertyFactory.circleRadius(13f),
-                    PropertyFactory.circleStrokeColor("#2563EB"),
-                    PropertyFactory.circleStrokeWidth(1.4f)
+                    PropertyFactory.circleColor("#5AA8E8"),
+                    PropertyFactory.circleOpacity(0.90f),
+                    PropertyFactory.circleRadius(12.5f),
+                    PropertyFactory.circleStrokeWidth(0f),
+                    PropertyFactory.circleStrokeOpacity(0f)
                 )
             )
             style.addLayer(
@@ -1564,15 +1556,7 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.iconImage(Expression.get("icon")),
                     PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
                     PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
-                    PropertyFactory.iconSize(
-                        Expression.interpolate(
-                            Expression.linear(),
-                            Expression.zoom(),
-                            Expression.stop(7f, 0.92f),
-                            Expression.stop(11f, 1.10f),
-                            Expression.stop(15f, 1.28f)
-                        )
-                    ),
+                    PropertyFactory.iconSize(1.0f),
                     PropertyFactory.iconAllowOverlap(true),
                     PropertyFactory.iconIgnorePlacement(true)
                 )
