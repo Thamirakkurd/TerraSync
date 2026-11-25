@@ -2993,6 +2993,8 @@ class MainActivity : AppCompatActivity() {
 
         val routeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -3002,8 +3004,16 @@ class MainActivity : AppCompatActivity() {
             text = AppStrings.routeTo(this@MainActivity)
             textSize = 13.5f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(Color.WHITE)
             setBackgroundColor(p.accent)
             cornerRadius = dp(12)
@@ -3015,8 +3025,16 @@ class MainActivity : AppCompatActivity() {
             text = AppStrings.routeFrom(this@MainActivity)
             textSize = 13.5f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(Color.WHITE)
             setBackgroundColor(p.green)
             cornerRadius = dp(12)
@@ -3026,13 +3044,25 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(routeRow)
 
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+            gravity = Gravity.CENTER_VERTICAL
+        }
         btnRow.addView(MaterialButton(this).apply {
             text = AppStrings.savePin(this@MainActivity)
             textSize = 13f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(txtPrimary)
             setBackgroundColor(chipBg)
             cornerRadius = dp(12)
@@ -3046,8 +3076,16 @@ class MainActivity : AppCompatActivity() {
             text = AppStrings.copyGps(this@MainActivity)
             textSize = 13f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(txtPrimary)
             setBackgroundColor(chipBg)
             cornerRadius = dp(12)
@@ -3230,6 +3268,8 @@ class MainActivity : AppCompatActivity() {
         // Travel Mode Switcher (Car / Bicycle / Walk)
         val modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+            gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -3244,10 +3284,15 @@ class MainActivity : AppCompatActivity() {
                 text = "${mode.icon} ${mode.label}"
                 textSize = 12.5f
                 isAllCaps = false
+                setSingleLine(true)
+                ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER
                 insetTop = 0
                 insetBottom = 0
                 minWidth = 0
                 minimumWidth = 0
+                minHeight = 0
+                minimumHeight = 0
                 setPadding(dp(6), 0, dp(6), 0)
                 setTextColor(if (active) Color.WHITE else txtPrimary)
                 setBackgroundColor(if (active) Color.parseColor(mode.routeColorHex) else chipBg)
@@ -3255,7 +3300,7 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
                     if (idx < TravelMode.entries.lastIndex) marginEnd = dp(6)
                 }
-                UiAnimations.attachSpringTouch(this)
+                UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     if (mode != route.mode) openRoutePreview(destLat, destLng, destTitle, mode)
                 }
@@ -3263,18 +3308,30 @@ class MainActivity : AppCompatActivity() {
         }
         sheetContent.addView(modeRow)
 
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+            gravity = Gravity.CENTER_VERTICAL
+        }
         btnRow.addView(MaterialButton(this).apply {
             text = if (routeOriginLatLng != null) "Navigate from GPS" else "Start Navigation"
             textSize = 13.5f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(Color.WHITE)
             setBackgroundColor(modeColor)
             cornerRadius = dp(12)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1.4f).apply { marginEnd = dp(8) }
-            UiAnimations.attachSpringTouch(this)
+            UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 if (routeOriginLatLng != null) {
                     clearRouteOrigin()
@@ -3288,13 +3345,21 @@ class MainActivity : AppCompatActivity() {
             text = "External"
             textSize = 13f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(txtPrimary)
             setBackgroundColor(chipBg)
             cornerRadius = dp(12)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 0.8f)
-            UiAnimations.attachSpringTouch(this)
+            UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 val label = Uri.encode(destTitle)
                 val geoUri = Uri.parse("geo:$destLat,$destLng?q=$destLat,$destLng($label)")
@@ -4245,13 +4310,25 @@ class MainActivity : AppCompatActivity() {
                     setTextColor(txtSub)
                     setPadding(0, dp(6), 0, dp(14))
                 })
-                val emptyBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val emptyBtnRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    isBaselineAligned = false
+                    gravity = Gravity.CENTER_VERTICAL
+                }
                 emptyBtnRow.addView(MaterialButton(this).apply {
-                    text = "Import KML / KMZ"
+                    text = "Import KML/KMZ"
                     textSize = 13f
                     isAllCaps = false
+                    setSingleLine(true)
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
                     insetTop = 0
                     insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    minHeight = 0
+                    minimumHeight = 0
+                    setPadding(dp(10), 0, dp(10), 0)
                     setTextColor(Color.WHITE)
                     setBackgroundColor(p.green)
                     cornerRadius = dp(12)
@@ -4266,8 +4343,16 @@ class MainActivity : AppCompatActivity() {
                     text = "Join by Code"
                     textSize = 13f
                     isAllCaps = false
+                    setSingleLine(true)
+                    ellipsize = TextUtils.TruncateAt.END
+                    gravity = Gravity.CENTER
                     insetTop = 0
                     insetBottom = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    minHeight = 0
+                    minimumHeight = 0
+                    setPadding(dp(10), 0, dp(10), 0)
                     setTextColor(Color.WHITE)
                     setBackgroundColor(p.accent)
                     cornerRadius = dp(12)
@@ -7745,13 +7830,25 @@ class MainActivity : AppCompatActivity() {
         sheetContent.addView(presetsCard)
         sheetContent.addView(etReason)
 
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
+            gravity = Gravity.CENTER_VERTICAL
+        }
         btnRow.addView(MaterialButton(this).apply {
             text = "Cancel"
             textSize = 13.5f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             cornerRadius = dp(12)
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 0.8f).apply { marginEnd = dp(8) }
             DesignSystem.styleSegmentedButton(this, false, p)
@@ -7765,8 +7862,16 @@ class MainActivity : AppCompatActivity() {
             text = if (isIssue) "Save Issue" else "Save Done"
             textSize = 13.5f
             isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
             insetTop = 0
             insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
             setTextColor(Color.WHITE)
             setBackgroundColor(accentColor)
             cornerRadius = dp(12)
