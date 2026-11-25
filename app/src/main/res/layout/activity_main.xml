@@ -19,52 +19,31 @@
         android:layout_height="match_parent"
         android:visibility="gone" />
 
-    <!-- Top Left Controls + Optional Route-From Origin Pill (aligned to 16dp grid, leaves top-right clear for compass) -->
+    <!-- Top Rail Controls: Single Cloud Sync (left) + Frosted Compass (right) on exact 14dp rails -->
     <LinearLayout
         android:id="@+id/topCluster"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="70dp"
+        android:layout_gravity="top"
+        android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp"
         android:clipChildren="false"
         android:clipToPadding="false"
         android:orientation="vertical">
 
         <LinearLayout
             android:id="@+id/topBar"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:clickable="true"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <ImageButton
-                android:id="@+id/btnStyleToggle"
-                android:layout_width="46dp"
-                android:layout_height="46dp"
-                android:contentDescription="Map Style"
-                android:padding="13dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_layers" />
-
-            <ImageButton
-                android:id="@+id/btnStatusFilter"
-                android:layout_width="46dp"
-                android:layout_height="46dp"
-                android:layout_marginStart="10dp"
-                android:contentDescription="Filter Pins"
-                android:padding="13dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_filter" />
-
-            <ImageButton
                 android:id="@+id/btnSyncStatus"
-                android:layout_width="46dp"
-                android:layout_height="46dp"
-                android:layout_marginStart="10dp"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
                 android:contentDescription="Sync Status"
                 android:padding="13dp"
                 android:scaleType="fitCenter"
@@ -80,13 +59,28 @@
                 android:focusable="true"
                 android:gravity="center"
                 android:maxLines="1"
-                android:maxWidth="132dp"
+                android:maxWidth="136dp"
                 android:paddingStart="14dp"
                 android:paddingEnd="14dp"
                 android:text="All Pins"
                 android:textColor="#1C1E1B"
                 android:textSize="13sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <ImageButton
+                android:id="@+id/btnCompass"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:contentDescription="Reset Compass North"
+                android:padding="11dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_compass_dial" />
         </LinearLayout>
 
         <!-- Custom Route-From Indicator Banner -->
@@ -94,7 +88,7 @@
             android:id="@+id/routeFromBanner"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="10dp"
             android:elevation="5dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
@@ -112,7 +106,7 @@
                 android:maxLines="1"
                 android:maxWidth="220dp"
                 android:text="From: Custom Point"
-                android:textColor="#1C1C1E"
+                android:textColor="#1C1E1B"
                 android:textSize="13sp"
                 android:textStyle="bold" />
 
@@ -135,8 +129,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:layout_marginStart="12dp"
-        android:layout_marginEnd="12dp"
+        android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp"
         android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -203,7 +197,7 @@
             android:src="@drawable/ic_close" />
     </LinearLayout>
 
-    <!-- Bottom Controls Container -->
+    <!-- Bottom Controls Container (locked to exact 14dp left/right rails) -->
     <LinearLayout
         android:id="@+id/bottomDock"
         android:layout_width="match_parent"
@@ -212,15 +206,15 @@
         android:clipChildren="false"
         android:clipToPadding="false"
         android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp">
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp">
 
-        <!-- Speedometer + Scale Bar (left) and Map Action Stack (right) -->
+        <!-- Left (Speed HUD + Scale Bar) and Right (Optional Zoom Pill + Quarter-Circle Arc + Oversized Primary FAB) -->
         <LinearLayout
             android:id="@+id/mapControlsRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp"
+            android:layout_marginBottom="14dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:gravity="bottom"
@@ -228,10 +222,11 @@
 
             <!-- Left Column: Live Driving Speed Indicator + Scale Bar -->
             <LinearLayout
+                android:id="@+id/leftBottomColumn"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:layout_marginBottom="4dp"
+                android:layout_weight="1"
                 android:clipChildren="false"
                 android:clipToPadding="false"
                 android:gravity="start|bottom"
@@ -254,7 +249,7 @@
                         android:fontFeatureSettings="tnum"
                         android:includeFontPadding="false"
                         android:text="0"
-                        android:textColor="#1C1C1E"
+                        android:textColor="#1C1E1B"
                         android:textSize="21sp"
                         android:textStyle="bold" />
 
@@ -264,7 +259,7 @@
                         android:layout_height="wrap_content"
                         android:includeFontPadding="false"
                         android:text="km/h"
-                        android:textColor="#6E6E73"
+                        android:textColor="#6E716B"
                         android:textSize="10sp"
                         android:textStyle="bold" />
                 </LinearLayout>
@@ -274,7 +269,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:paddingStart="2dp"
+                    android:paddingStart="0dp"
                     android:paddingTop="2dp"
                     android:paddingEnd="2dp"
                     android:paddingBottom="2dp">
@@ -285,13 +280,13 @@
                         android:layout_height="wrap_content"
                         android:fontFeatureSettings="tnum"
                         android:paddingStart="2dp"
-                        android:shadowColor="#E6FAF9F6"
+                        android:shadowColor="#E6F9F9F7"
                         android:shadowDx="0"
                         android:shadowDy="0"
                         android:shadowRadius="4"
                         android:text="5 km"
                         android:textColor="#1C1E1B"
-                        android:textSize="12sp"
+                        android:textSize="12.5sp"
                         android:textStyle="bold" />
 
                     <com.terrasync.app.ScaleBarView
@@ -302,73 +297,130 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Right-Edge Floating Controls (46dp pure circles + 56dp primary dark FAB) -->
+            <!-- Right Chrome Column: Optional Extra Tools + Optional Slim Vertical Zoom Pill + Quarter-Circle Arc -->
             <LinearLayout
+                android:id="@+id/rightChromeColumn"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:clipChildren="false"
                 android:clipToPadding="false"
-                android:gravity="center_horizontal"
+                android:gravity="end|bottom"
                 android:orientation="vertical">
 
                 <ImageButton
                     android:id="@+id/btnLasso"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
                     android:layout_marginBottom="10dp"
                     android:contentDescription="Circle Select Sent Pins"
                     android:padding="13dp"
                     android:scaleType="fitCenter"
-                    android:src="@drawable/ic_lasso" />
-
-                <ImageButton
-                    android:id="@+id/btnRuler"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:layout_marginBottom="10dp"
-                    android:contentDescription="Measure Distance"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_ruler" />
-
-                <ImageButton
-                    android:id="@+id/btnZoomIn"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:layout_marginBottom="10dp"
-                    android:contentDescription="Zoom In"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_plus" />
-
-                <ImageButton
-                    android:id="@+id/btnZoomOut"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:layout_marginBottom="12dp"
-                    android:contentDescription="Zoom Out"
-                    android:padding="13dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_minus" />
+                    android:src="@drawable/ic_lasso"
+                    android:visibility="gone" />
 
                 <ImageButton
                     android:id="@+id/btnImport"
-                    android:layout_width="46dp"
-                    android:layout_height="46dp"
-                    android:layout_marginBottom="12dp"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:layout_marginBottom="10dp"
                     android:contentDescription="Import KML or KMZ"
                     android:padding="13dp"
                     android:scaleType="fitCenter"
-                    android:src="@drawable/ic_import_file" />
+                    android:src="@drawable/ic_import_file"
+                    android:visibility="gone" />
 
-                <ImageButton
-                    android:id="@+id/btnLocate"
-                    android:layout_width="56dp"
-                    android:layout_height="56dp"
-                    android:contentDescription="My Location"
-                    android:padding="16dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_my_location" />
+                <!-- Option B: Slim Frosted Vertical + / - Pill (Default OFF; toggled via Settings) -->
+                <LinearLayout
+                    android:id="@+id/zoomPillContainer"
+                    android:layout_width="46dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <ImageButton
+                        android:id="@+id/btnZoomIn"
+                        android:layout_width="46dp"
+                        android:layout_height="45dp"
+                        android:background="@android:color/transparent"
+                        android:contentDescription="Zoom In"
+                        android:padding="12dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_plus" />
+
+                    <View
+                        android:id="@+id/zoomPillDivider"
+                        android:layout_width="24dp"
+                        android:layout_height="1dp" />
+
+                    <ImageButton
+                        android:id="@+id/btnZoomOut"
+                        android:layout_width="46dp"
+                        android:layout_height="45dp"
+                        android:background="@android:color/transparent"
+                        android:contentDescription="Zoom Out"
+                        android:padding="12dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_minus" />
+                </LinearLayout>
+
+                <!-- Concept Quarter-Circle Arc (52dp Frosted Circles) around Oversized 66dp Dark Primary FAB -->
+                <FrameLayout
+                    android:id="@+id/rightArcCluster"
+                    android:layout_width="138dp"
+                    android:layout_height="138dp"
+                    android:clipChildren="false"
+                    android:clipToPadding="false">
+
+                    <!-- 1. Directly above FAB: Layers -->
+                    <ImageButton
+                        android:id="@+id/btnStyleToggle"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:layout_gravity="bottom|end"
+                        android:layout_marginBottom="78dp"
+                        android:contentDescription="Map Style"
+                        android:padding="13dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_layers" />
+
+                    <!-- 2. Diagonally top-left of FAB: Ruler -->
+                    <ImageButton
+                        android:id="@+id/btnRuler"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:layout_gravity="bottom|end"
+                        android:layout_marginEnd="59dp"
+                        android:layout_marginBottom="59dp"
+                        android:contentDescription="Measure Distance"
+                        android:padding="13dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_ruler" />
+
+                    <!-- 3. Directly left of FAB: Filter -->
+                    <ImageButton
+                        android:id="@+id/btnStatusFilter"
+                        android:layout_width="52dp"
+                        android:layout_height="52dp"
+                        android:layout_gravity="bottom|end"
+                        android:layout_marginEnd="78dp"
+                        android:contentDescription="Filter Pins"
+                        android:padding="13dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_filter" />
+
+                    <!-- Oversized 66dp Deep Espresso-Charcoal Primary Recenter FAB -->
+                    <ImageButton
+                        android:id="@+id/btnLocate"
+                        android:layout_width="66dp"
+                        android:layout_height="66dp"
+                        android:layout_gravity="bottom|end"
+                        android:contentDescription="My Location"
+                        android:padding="19dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_my_location" />
+                </FrameLayout>
             </LinearLayout>
         </LinearLayout>
 
@@ -410,7 +462,7 @@
                     android:layout_height="wrap_content"
                     android:fontFeatureSettings="tnum"
                     android:text="0 m"
-                    android:textColor="#1C1C1E"
+                    android:textColor="#1C1E1B"
                     android:textSize="22sp"
                     android:textStyle="bold" />
 
@@ -420,7 +472,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
                     android:text="Tap map to add measurement points"
-                    android:textColor="#6E6E73"
+                    android:textColor="#6E716B"
                     android:textSize="12.5sp" />
 
                 <TextView
@@ -428,12 +480,12 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:minHeight="36dp"
                     android:gravity="center"
+                    android:minHeight="36dp"
                     android:paddingStart="12dp"
                     android:paddingEnd="12dp"
                     android:text="Clear points"
-                    android:textColor="#1E88E5"
+                    android:textColor="#18794E"
                     android:textSize="13.5sp"
                     android:textStyle="bold" />
             </LinearLayout>
@@ -480,7 +532,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Draw circle around sent pins"
-                        android:textColor="#1C1C1E"
+                        android:textColor="#1C1E1B"
                         android:textSize="15.5sp"
                         android:textStyle="bold" />
 
@@ -490,7 +542,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:text="Local to this phone only"
-                        android:textColor="#6E6E73"
+                        android:textColor="#6E716B"
                         android:textSize="12sp" />
                 </LinearLayout>
 
@@ -504,7 +556,7 @@
                     android:paddingStart="12dp"
                     android:paddingEnd="12dp"
                     android:text="Move Map"
-                    android:textColor="#1E88E5"
+                    android:textColor="#18794E"
                     android:textSize="12.5sp"
                     android:textStyle="bold" />
 
@@ -530,8 +582,8 @@
                     android:id="@+id/btnLassoMarkSent"
                     android:layout_width="0dp"
                     android:layout_height="42dp"
-                    android:layout_weight="1.35"
                     android:layout_marginEnd="6dp"
+                    android:layout_weight="1.35"
                     android:gravity="center"
                     android:maxLines="1"
                     android:text="Mark Sent"
@@ -543,12 +595,12 @@
                     android:id="@+id/btnLassoRedraw"
                     android:layout_width="0dp"
                     android:layout_height="42dp"
-                    android:layout_weight="0.9"
                     android:layout_marginEnd="6dp"
+                    android:layout_weight="0.9"
                     android:gravity="center"
                     android:maxLines="1"
                     android:text="Redraw"
-                    android:textColor="#1C1C1E"
+                    android:textColor="#1C1E1B"
                     android:textSize="12.5sp"
                     android:textStyle="bold" />
 
@@ -556,12 +608,12 @@
                     android:id="@+id/btnLassoUndo"
                     android:layout_width="0dp"
                     android:layout_height="42dp"
-                    android:layout_weight="0.8"
                     android:layout_marginEnd="6dp"
+                    android:layout_weight="0.8"
                     android:gravity="center"
                     android:maxLines="1"
                     android:text="Undo"
-                    android:textColor="#1C1C1E"
+                    android:textColor="#1C1E1B"
                     android:textSize="12.5sp"
                     android:textStyle="bold" />
 
@@ -579,18 +631,12 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Floating Capsule Bottom Navigation Dock (32dp radius, 58dp height, 6dp padding) -->
-        <FrameLayout
+        <!-- Two-Layer Floating Bottom Navigation Bar: Frosted Outer Tray (62dp, 32dp radius, 6dp padding) + 4 Neutral White Inner Pills -->
+        <com.terrasync.app.SwipeDockFrameLayout
             android:id="@+id/bottomNavDock"
             android:layout_width="match_parent"
-            android:layout_height="58dp"
+            android:layout_height="62dp"
             android:padding="6dp">
-
-            <View
-                android:id="@+id/navActiveIndicator"
-                android:layout_width="74dp"
-                android:layout_height="match_parent"
-                android:layout_gravity="start|center_vertical" />
 
             <LinearLayout
                 android:id="@+id/bottomIconRow"
@@ -603,8 +649,8 @@
                     android:id="@+id/btnTabSearch"
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
+                    android:layout_marginEnd="5dp"
                     android:layout_weight="1"
-                    android:background="@android:color/transparent"
                     android:contentDescription="Search"
                     android:padding="12dp"
                     android:scaleType="fitCenter"
@@ -614,8 +660,8 @@
                     android:id="@+id/btnTabBookmarks"
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
+                    android:layout_marginEnd="5dp"
                     android:layout_weight="1"
-                    android:background="@android:color/transparent"
                     android:contentDescription="Bookmarks"
                     android:padding="12dp"
                     android:scaleType="fitCenter"
@@ -625,8 +671,8 @@
                     android:id="@+id/btnTabSettings"
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
+                    android:layout_marginEnd="5dp"
                     android:layout_weight="1"
-                    android:background="@android:color/transparent"
                     android:contentDescription="Settings"
                     android:padding="12dp"
                     android:scaleType="fitCenter"
@@ -637,16 +683,25 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
-                    android:background="@android:color/transparent"
                     android:contentDescription="About"
                     android:padding="12dp"
                     android:scaleType="fitCenter"
                     android:src="@drawable/ic_info" />
             </LinearLayout>
-        </FrameLayout>
+        </com.terrasync.app.SwipeDockFrameLayout>
     </LinearLayout>
 
-    <!-- Smooth In-Screen Peek -> Expand Bottom Sheet (28dp top corners, warm #FAF9F6 canvas) -->
+    <!-- Invisible Bottom-Edge Swipe-Up Catcher (Active Only in Full-Screen Clean Map Mode) -->
+    <View
+        android:id="@+id/fullScreenSwipeUpCatcher"
+        android:layout_width="match_parent"
+        android:layout_height="34dp"
+        android:layout_gravity="bottom"
+        android:clickable="true"
+        android:focusable="false"
+        android:visibility="gone" />
+
+    <!-- Calm Solid Alabaster Bottom Sheet (28dp top corners, centered 36x4dp handle, zero inner shadows) -->
     <LinearLayout
         android:id="@+id/inScreenSheet"
         android:layout_width="match_parent"

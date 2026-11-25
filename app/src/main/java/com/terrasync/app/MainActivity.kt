@@ -35,7 +35,6 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -108,8 +107,6 @@ class MainActivity : AppCompatActivity() {
         private const val PINS_LABELS_LAYER = "terrasync-pins-labels-layer"
         private const val SELECTED_SOURCE = "terrasync-selected-source"
         private const val SELECTED_HALO_LAYER = "terrasync-selected-halo-layer"
-        private const val PREVIEW_PIN_SOURCE = "terrasync-preview-pin-source"
-        private const val PREVIEW_PIN_LAYER = "terrasync-preview-pin-layer"
         private const val PULSE_SOURCE = "terrasync-pulse-source"
         private const val PULSE_LAYER = "terrasync-pulse-layer"
         private const val USER_LOC_SOURCE = "terrasync-userloc-source"
@@ -179,7 +176,7 @@ class MainActivity : AppCompatActivity() {
         val pinId: String,
         val zoom: Double? = null,
         val sourceHint: String = "Shared via TerraSync",
-        val showPreviewPin: Boolean = true
+        val hasExplicitLabel: Boolean = false
     )
     private data class PendingRouteReq(
         val destLat: Double,
@@ -196,6 +193,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvRouteFromText: TextView
     private lateinit var btnClearRouteFrom: ImageButton
     private lateinit var btnSyncStatus: ImageButton
+    private lateinit var btnCompass: ImageButton
     private lateinit var btnStyleToggle: ImageButton
     private lateinit var btnStatusFilter: ImageButton
     private lateinit var btnSentToggle: TextView
@@ -211,6 +209,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnLassoReset: TextView
     private lateinit var btnLassoModeToggle: TextView
     private lateinit var btnLassoClose: ImageButton
+    private lateinit var leftBottomColumn: LinearLayout
+    private lateinit var rightChromeColumn: LinearLayout
+    private lateinit var rightArcCluster: FrameLayout
+    private lateinit var zoomPillContainer: LinearLayout
+    private lateinit var zoomPillDivider: View
     private lateinit var btnZoomIn: ImageButton
     private lateinit var btnZoomOut: ImageButton
     private lateinit var btnLocate: ImageButton
@@ -221,10 +224,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTabAbout: ImageButton
     private lateinit var bottomDock: LinearLayout
     private lateinit var mapControlsRow: LinearLayout
-    private lateinit var bottomNavDock: FrameLayout
-    private lateinit var navActiveIndicator: View
+    private lateinit var bottomNavDock: SwipeDockFrameLayout
     private lateinit var bottomIconRow: LinearLayout
-    private var activeBottomTabIdx: Int = 0
+    private lateinit var fullScreenSwipeUpCatcher: View
+    private var activeOpenNavTab: Int = -1
+    private var isFullScreenMapMode: Boolean = false
     private lateinit var speedBadge: LinearLayout
     private lateinit var tvSpeedValue: TextView
     private lateinit var tvSpeedUnit: TextView
@@ -310,10 +314,9 @@ class MainActivity : AppCompatActivity() {
     private var isRulerMode = false
     private val rulerPoints = mutableListOf<LatLng>()
 
-    // Selected pin or tapped location sky-blue dot marker + temporary external preview pin
+    // Selected pin or tapped location sky-blue dot marker
     private var selectedPinId: String? = null
     private var selectedMarkerLatLng: LatLng? = null
-    private var previewPinLatLng: LatLng? = null
     private var pulseAnimator: ValueAnimator? = null
 
     // Custom Route From Origin
@@ -463,18 +466,21 @@ class MainActivity : AppCompatActivity() {
             val insetEnd = if (isLayoutRtl) sideInsetLeft else sideInsetRight
             (topCluster.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 topMargin = statusBarInsetTop + dp(12)
-                marginStart = insetStart + dp(16)
-                marginEnd = insetEnd + dp(70)
+                marginStart = insetStart + dp(14)
+                marginEnd = insetEnd + dp(14)
             }
             (navBanner.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 topMargin = statusBarInsetTop + dp(12)
-                marginStart = insetStart + dp(16)
-                marginEnd = insetEnd + dp(16)
+                marginStart = insetStart + dp(14)
+                marginEnd = insetEnd + dp(14)
             }
             (bottomDock.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                bottomMargin = maxOf(navBarInsetBottom, dp(12)) + dp(12)
+                bottomMargin = maxOf(navBarInsetBottom, dp(12)) + dp(10)
                 marginStart = insetStart
                 marginEnd = insetEnd
+            }
+            (fullScreenSwipeUpCatcher.layoutParams as ViewGroup.MarginLayoutParams).apply {
+                height = maxOf(navBarInsetBottom, dp(14)) + dp(28)
             }
             (inScreenSheet.layoutParams as ViewGroup.MarginLayoutParams).apply {
                 topMargin = statusBarInsetTop + dp(12)
@@ -489,8 +495,8 @@ class MainActivity : AppCompatActivity() {
             topCluster.requestLayout()
             navBanner.requestLayout()
             bottomDock.requestLayout()
+            fullScreenSwipeUpCatcher.requestLayout()
             inScreenSheet.requestLayout()
-            map?.uiSettings?.setCompassMargins(0, statusBarInsetTop + dp(12), sideInsetRight + dp(16), 0)
             insets
         }
 
@@ -512,8 +518,10 @@ class MainActivity : AppCompatActivity() {
                         if (activeNavRoute == null) {
                             resetMapPadding()
                         }
-                        bottomDock.translationY = 0f
-                        UiAnimations.fadeShow(bottomDock, 165L)
+                        if (!isFullScreenMapMode) {
+                            bottomDock.translationY = 0f
+                            UiAnimations.fadeShow(bottomDock, 165L)
+                        }
                     } else if ((newState == BottomSheetBehavior.STATE_COLLAPSED || newState == BottomSheetBehavior.STATE_EXPANDED) &&
                         !isRulerMode && !isLassoMode && activeNavRoute == null
                     ) {
@@ -525,7 +533,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onSlide(bottomSheet: View, slideOffset: Float) {
                     if (UiAnimations.isReducedMotion(this@MainActivity)) return
-                    if (isRulerMode || isLassoMode || activeNavRoute != null) return
+                    if (isFullScreenMapMode || isRulerMode || isLassoMode || activeNavRoute != null) return
                     bottomDock.animate().cancel()
                     if (slideOffset < -0.15f) {
                         val reveal = ((-slideOffset - 0.15f) / 0.85f).coerceIn(0f, 1f)
@@ -548,9 +556,7 @@ class MainActivity : AppCompatActivity() {
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { m ->
             map = m
-            m.uiSettings.isCompassEnabled = true
-            m.uiSettings.setCompassFadeFacingNorth(true)
-            m.uiSettings.setCompassMargins(0, statusBarInsetTop + dp(12), dp(16), 0)
+            m.uiSettings.isCompassEnabled = false
             m.uiSettings.isLogoEnabled = false
             m.uiSettings.isAttributionEnabled = false
             m.cameraPosition = CameraPosition.Builder()
@@ -563,6 +569,9 @@ class MainActivity : AppCompatActivity() {
 
             m.addOnCameraMoveListener {
                 updateScaleBar()
+                if (::btnCompass.isInitialized) {
+                    btnCompass.rotation = (-m.cameraPosition.bearing).toFloat()
+                }
                 if (isLassoMode && lassoPendingPinIds.isNotEmpty()) {
                     clearLassoSelection()
                 }
@@ -716,6 +725,7 @@ class MainActivity : AppCompatActivity() {
         tvRouteFromText = findViewById(R.id.tvRouteFromText)
         btnClearRouteFrom = findViewById(R.id.btnClearRouteFrom)
         btnSyncStatus = findViewById(R.id.btnSyncStatus)
+        btnCompass = findViewById(R.id.btnCompass)
         btnStyleToggle = findViewById(R.id.btnStyleToggle)
         btnStatusFilter = findViewById(R.id.btnStatusFilter)
         btnSentToggle = findViewById(R.id.btnSentToggle)
@@ -731,11 +741,17 @@ class MainActivity : AppCompatActivity() {
         btnLassoReset = findViewById(R.id.btnLassoReset)
         btnLassoModeToggle = findViewById(R.id.btnLassoModeToggle)
         btnLassoClose = findViewById(R.id.btnLassoClose)
+        leftBottomColumn = findViewById(R.id.leftBottomColumn)
+        rightChromeColumn = findViewById(R.id.rightChromeColumn)
+        rightArcCluster = findViewById(R.id.rightArcCluster)
+        zoomPillContainer = findViewById(R.id.zoomPillContainer)
+        zoomPillDivider = findViewById(R.id.zoomPillDivider)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
         btnLocate = findViewById(R.id.btnLocate)
         btnImport = findViewById(R.id.btnImport)
         applyExtraMapToolsVisibility()
+        applyZoomButtonsVisibility()
         applyResponsiveChromeSizing()
         btnTabSearch = findViewById(R.id.btnTabSearch)
         btnTabBookmarks = findViewById(R.id.btnTabBookmarks)
@@ -744,13 +760,19 @@ class MainActivity : AppCompatActivity() {
         bottomDock = findViewById(R.id.bottomDock)
         mapControlsRow = findViewById(R.id.mapControlsRow)
         bottomNavDock = findViewById(R.id.bottomNavDock)
-        navActiveIndicator = findViewById(R.id.navActiveIndicator)
         bottomIconRow = findViewById(R.id.bottomIconRow)
-        bottomNavDock.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
-            if ((right - left) != (oldRight - oldLeft)) {
-                syncNavDockIndicator(animate = false)
+        fullScreenSwipeUpCatcher = findViewById(R.id.fullScreenSwipeUpCatcher)
+        bottomNavDock.onSwipeDown = {
+            if (activeNavRoute == null &&
+                !isRulerMode &&
+                !isLassoMode &&
+                pageOverlayContainer.visibility != View.VISIBLE &&
+                sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN
+            ) {
+                setFullScreenMapMode(true)
             }
         }
+        setupFullScreenSwipeUpCatcher()
         speedBadge = findViewById(R.id.speedBadge)
         tvSpeedValue = findViewById(R.id.tvSpeedValue)
         tvSpeedUnit = findViewById(R.id.tvSpeedUnit)
@@ -798,22 +820,136 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun syncNavDockIndicator(animate: Boolean) {
-        if (!::bottomNavDock.isInitialized || !::navActiveIndicator.isInitialized) return
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun setupFullScreenSwipeUpCatcher() {
+        var downY = 0f
+        var restored = false
+        val triggerPx = dp(22).toFloat()
+        fullScreenSwipeUpCatcher.setOnTouchListener { _, ev ->
+            if (!isFullScreenMapMode) return@setOnTouchListener false
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downY = ev.rawY
+                    restored = false
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (!restored && (downY - ev.rawY) >= triggerPx) {
+                        restored = true
+                        setFullScreenMapMode(false)
+                    }
+                    true
+                }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (!restored && (downY - ev.rawY) >= triggerPx * 0.5f) {
+                        restored = true
+                        setFullScreenMapMode(false)
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    /**
+     * 120fps GPU-only Full-Screen Clean Map Mode:
+     * Top controls glide UP, right-side arc + FAB glide RIGHT, bottom dock + scale bar glide DOWN.
+     * Transparent Android status bar stays visible so time/signal/battery remain readable outdoors.
+     */
+    private fun setFullScreenMapMode(enabled: Boolean, animate: Boolean = true) {
+        if (isFullScreenMapMode == enabled) return
+        isFullScreenMapMode = enabled
+        val isRtl = resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
+        val rightShift = (if (isRtl) -dp(170) else dp(170)).toFloat()
+        val topShift = -dp(96).toFloat()
+        val bottomShift = dp(110).toFloat()
+        val dur = if (animate) 220L else 0L
+
+        if (enabled) {
+            fullScreenSwipeUpCatcher.visibility = View.VISIBLE
+            UiAnimations.animateChromeSlide(topCluster, hide = true, shiftY = topShift, durationMs = dur)
+            UiAnimations.animateChromeSlide(rightChromeColumn, hide = true, shiftX = rightShift, durationMs = dur)
+            UiAnimations.animateChromeSlide(leftBottomColumn, hide = true, shiftY = bottomShift, durationMs = dur)
+            UiAnimations.animateChromeSlide(bottomNavDock, hide = true, shiftY = bottomShift, durationMs = dur)
+        } else {
+            fullScreenSwipeUpCatcher.visibility = View.GONE
+            if (bottomDock.visibility != View.VISIBLE && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
+                bottomDock.alpha = 1f
+                bottomDock.translationY = 0f
+                bottomDock.visibility = View.VISIBLE
+            }
+            if (activeNavRoute == null) {
+                UiAnimations.animateChromeSlide(topCluster, hide = false, shiftY = topShift, durationMs = dur)
+            }
+            UiAnimations.animateChromeSlide(rightChromeColumn, hide = false, shiftX = rightShift, durationMs = dur)
+            UiAnimations.animateChromeSlide(leftBottomColumn, hide = false, shiftY = bottomShift, durationMs = dur)
+            if (activeNavRoute == null && !isRulerMode && !isLassoMode) {
+                UiAnimations.animateChromeSlide(bottomNavDock, hide = false, shiftY = bottomShift, durationMs = dur)
+            }
+        }
+    }
+
+    /**
+     * Styles the 4 individual equal-width inner pills inside the frosted bottom navigation tray.
+     * On the map (activeOpenNavTab == -1), ALL 4 pills remain neutral white with dark icons.
+     * Only a pressed pill or currently open section turns solid forest emerald with a white icon.
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun syncNavDockPills(pressedIdx: Int = -1) {
+        if (!::bottomNavDock.isInitialized) return
         val p = currentPalette()
         val tabs = listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout)
-        val innerW = bottomNavDock.width - bottomNavDock.paddingStart - bottomNavDock.paddingEnd
-        if (innerW > 0) {
-            val slotW = innerW / tabs.size
-            // Sleek compact emerald capsule matching the target design (~74-76dp wide x 46dp tall)
-            val pillW = (slotW - dp(10)).coerceIn(dp(56), dp(76))
-            val isRtl = bottomNavDock.layoutDirection == View.LAYOUT_DIRECTION_RTL
-            val visualIdx = if (isRtl) (tabs.lastIndex - activeBottomTabIdx) else activeBottomTabIdx
-            val targetX = visualIdx * slotW + (slotW - pillW) / 2f
-            UiAnimations.animateNavIndicator(navActiveIndicator, targetX, pillW, animate)
-        }
         tabs.forEachIndexed { idx, btn ->
-            btn.setColorFilter(if (idx == activeBottomTabIdx) p.onDarkSurface else p.inactiveNavIcon)
+            val active = (idx == activeOpenNavTab) || (idx == pressedIdx)
+            val fill = if (active) p.accentPrimary else p.navPillNeutral
+            val iconColor = if (active) Color.WHITE else p.inactiveNavIcon
+            val content = DesignSystem.buildOpaqueDrawable(
+                ctx = this,
+                fillColor = fill,
+                radiusDp = 25f
+            )
+            val mask = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(25).toFloat()
+            }
+            val rippleCol = if (active) Color.parseColor("#2EFFFFFF") else p.rippleColor
+            btn.background = android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(rippleCol),
+                content,
+                mask
+            )
+            btn.setColorFilter(iconColor)
+            btn.setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        if (!UiAnimations.isReducedMotion(v.context)) {
+                            v.animate().cancel()
+                            v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(60L)
+                                .setInterpolator(UiAnimations.FAST_OUT_SLOW_IN).withLayer().start()
+                        }
+                        if (activeOpenNavTab != idx) {
+                            (v as? ImageButton)?.let { ib ->
+                                ib.background = DesignSystem.buildOpaqueDrawable(this, p.accentPrimary, 25f)
+                                ib.setColorFilter(Color.WHITE)
+                            }
+                        }
+                    }
+                    android.view.MotionEvent.ACTION_UP,
+                    android.view.MotionEvent.ACTION_CANCEL,
+                    android.view.MotionEvent.ACTION_OUTSIDE -> {
+                        if (!UiAnimations.isReducedMotion(v.context)) {
+                            v.animate().cancel()
+                            v.animate().scaleX(1f).scaleY(1f).setDuration(110L)
+                                .setInterpolator(UiAnimations.FAST_OUT_SLOW_IN).withLayer().start()
+                        }
+                        if (event.actionMasked != android.view.MotionEvent.ACTION_UP || activeOpenNavTab != idx) {
+                            v.post { if (activeOpenNavTab != idx) syncNavDockPills() }
+                        }
+                    }
+                }
+                false
+            }
         }
     }
 
@@ -825,17 +961,18 @@ class MainActivity : AppCompatActivity() {
         updateSystemBarContrast()
         val iconTint = p.iconTint
         val scaleColor = Color.parseColor(if (darkMapBg) "#F4F4F0" else "#1C1E1B")
-        val scaleHaloColor = Color.parseColor(if (darkMapBg) "#CC161715" else "#E6FAF9F6")
+        val scaleHaloColor = Color.parseColor(if (darkMapBg) "#CC161715" else "#E6F9F9F7")
 
-        // Pure circular 46dp floating utility map controls (#FFFFFF / #20221F + crisp border + soft diffused shadow)
-        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 23f, 5f)
-        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 23f, 5f)
-        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 23f, 5f)
+        // Frosted 52dp circular utility controls (#E8F8F8F5 Light / #E3212320 Dark + directional downward shadow)
+        DesignSystem.applyFloatingControl(this, btnSyncStatus, p, 26f, 5f)
+        DesignSystem.applyFloatingControl(this, btnCompass, p, 26f, 5f)
+        DesignSystem.applyFloatingControl(this, btnStyleToggle, p, 26f, 5f)
+        DesignSystem.applyFloatingControl(this, btnStatusFilter, p, 26f, 5f)
         DesignSystem.applyFloatingControl(
             this,
             btnLasso,
             p,
-            23f,
+            26f,
             5f,
             activeFillColor = if (isLassoMode) p.accentPrimary else null
         )
@@ -843,36 +980,45 @@ class MainActivity : AppCompatActivity() {
             this,
             btnRuler,
             p,
-            23f,
+            26f,
             5f,
             activeFillColor = if (isRulerMode) p.accentPrimary else null
         )
-        DesignSystem.applyFloatingControl(this, btnZoomIn, p, 23f, 5f)
-        DesignSystem.applyFloatingControl(this, btnZoomOut, p, 23f, 5f)
-        DesignSystem.applyFloatingControl(this, btnImport, p, 23f, 5f)
+        DesignSystem.applyFloatingControl(this, btnImport, p, 26f, 5f)
 
-        // Floating Capsule Bottom Navigation Dock (30dp full capsule, 58dp height, 6dp inner padding, emerald active tab)
+        // Custom frosted compass dial with apricot-orange North tick (#F0651F)
+        btnCompass.setImageResource(if (night) R.drawable.ic_compass_dial_dark else R.drawable.ic_compass_dial)
+        btnCompass.clearColorFilter()
+
+        // Option B: Slim Frosted Vertical Zoom Pill (46dp wide, 23dp radius)
+        DesignSystem.applyFloatingSurface(
+            this,
+            zoomPillContainer,
+            p,
+            radiusDp = 23f,
+            elevationDp = 5f,
+            fillOverride = p.surfaceFrosted,
+            strokeOverride = p.floatingBorder
+        )
+        zoomPillDivider.setBackgroundColor(p.borderSubtle)
+        UiAnimations.applyRoundedRipple(this, btnZoomIn, Color.TRANSPARENT, 20f, night)
+        UiAnimations.applyRoundedRipple(this, btnZoomOut, Color.TRANSPARENT, 20f, night)
+        UiAnimations.attachSnappyPress(btnZoomIn, 0.90f)
+        UiAnimations.attachSnappyPress(btnZoomOut, 0.90f)
+
+        // Two-Layer Floating Bottom Navigation Bar: Frosted Outer Tray (62dp, 31dp radius, 6dp padding) + 4 Neutral White Inner Pills
         DesignSystem.applyFloatingSurface(
             this,
             bottomNavDock,
             p,
-            radiusDp = 30f,
-            elevationDp = 10f,
-            fillOverride = p.surfaceFloating,
+            radiusDp = 31f,
+            elevationDp = 8f,
+            fillOverride = p.surfaceFrostedTray,
             strokeOverride = p.floatingBorder
-        )
-        navActiveIndicator.background = DesignSystem.buildOpaqueDrawable(
-            this,
-            fillColor = p.accentPrimary,
-            radiusDp = 23f
         )
         bottomIconRow.background = null
         bottomIconRow.elevation = 0f
-        listOf(btnTabSearch, btnTabBookmarks, btnTabSettings, btnTabAbout).forEach { btn ->
-            UiAnimations.applyRoundedRipple(this, btn, Color.TRANSPARENT, 23f, night)
-            UiAnimations.attachSnappyPress(btn, 0.93f)
-        }
-        bottomNavDock.post { syncNavDockIndicator(animate = false) }
+        syncNavDockPills()
 
         btnStyleToggle.setColorFilter(
             when (mapStyleMode) {
@@ -890,10 +1036,10 @@ class MainActivity : AppCompatActivity() {
         updateLocationIconTint()
         btnSyncStatus.setColorFilter(if (isLiveConnected) p.accentPrimary else p.amber)
 
-        // Crisp minimalist bracketed scale bar (zero relayout on zoom/pan)
+        // Crisp minimalist bracketed scale bar (locked on 14dp left rail, zero relayout on zoom/pan)
         scaleBarContainer.background = null
         scaleBarContainer.elevation = 0f
-        scaleBarContainer.setPadding(dp(2), dp(2), dp(2), dp(2))
+        scaleBarContainer.setPadding(0, dp(2), dp(2), dp(2))
         tvScaleLabel.setTextColor(scaleColor)
         tvScaleLabel.setShadowLayer(4f, 0f, 0f, scaleHaloColor)
         scaleBarLine.setBarStyle(scaleColor, scaleHaloColor)
@@ -972,22 +1118,41 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "$state • $cloudCnt cloud, $localCnt local • ${pins.size} bookmarks", Toast.LENGTH_SHORT).show()
         }
 
-        btnStyleToggle.setOnClickListener { anchor ->
-            val menu = PopupMenu(this, anchor)
-            MapStyleMode.entries.forEachIndexed { idx, mode ->
-                val prefix = if (mode == mapStyleMode) "✓ " else ""
-                menu.menu.add(0, idx, idx, "$prefix${mode.label}")
+        btnCompass.setOnClickListener {
+            UiAnimations.animatePulseBump(btnCompass, 1.08f)
+            map?.let { m ->
+                val reset = CameraPosition.Builder(m.cameraPosition)
+                    .bearing(0.0)
+                    .tilt(0.0)
+                    .build()
+                m.animateCamera(CameraUpdateFactory.newCameraPosition(reset), 280)
             }
-            menu.setOnMenuItemClickListener { item ->
-                val chosen = MapStyleMode.entries[item.itemId]
-                mapStyleMode = chosen
-                DevicePrefs.setMapStyleMode(this, chosen)
-                applyMapChromeTheme()
-                loadMapStyle()
-                Toast.makeText(this, chosen.label, Toast.LENGTH_SHORT).show()
-                true
-            }
-            menu.show()
+        }
+
+        btnStyleToggle.setOnClickListener {
+            val p = currentPalette()
+            DesignSystem.showActionBottomSheet(
+                ctx = this,
+                palette = p,
+                title = "Map Style",
+                subtitle = "Choose cartography style",
+                actions = MapStyleMode.entries.map { mode ->
+                    SheetActionItem(
+                        title = mode.label,
+                        subtitle = if (mode == MapStyleMode.VECTOR) "Crisp vector roads, terrain & bilingual labels" else "High-resolution aerial imagery + road overlay",
+                        iconRes = if (mode == MapStyleMode.VECTOR) R.drawable.ic_map else R.drawable.ic_layers,
+                        checked = mode == mapStyleMode
+                    ) {
+                        if (mapStyleMode != mode) {
+                            mapStyleMode = mode
+                            DevicePrefs.setMapStyleMode(this, mode)
+                            applyMapChromeTheme()
+                            loadMapStyle()
+                            Toast.makeText(this, mode.label, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            )
         }
 
         btnStatusFilter.setOnClickListener { showMultiStatusFilterDialog() }
@@ -1069,23 +1234,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnTabSearch.setOnClickListener {
-            activeBottomTabIdx = 0
-            syncNavDockIndicator(animate = true)
+            activeOpenNavTab = 0
+            syncNavDockPills()
             openFullPage(::buildSearchPage)
         }
         btnTabBookmarks.setOnClickListener {
-            activeBottomTabIdx = 1
-            syncNavDockIndicator(animate = true)
+            activeOpenNavTab = 1
+            syncNavDockPills()
             openFullPage(::buildBookmarksAndTracksPage)
         }
         btnTabSettings.setOnClickListener {
-            activeBottomTabIdx = 2
-            syncNavDockIndicator(animate = true)
+            activeOpenNavTab = 2
+            syncNavDockPills()
             openFullPage(::buildSettingsPage)
         }
         btnTabAbout.setOnClickListener {
-            activeBottomTabIdx = 3
-            syncNavDockIndicator(animate = true)
+            activeOpenNavTab = 3
+            syncNavDockPills()
             openFullPage(::buildAboutPage)
         }
     }
@@ -1302,6 +1467,10 @@ class MainActivity : AppCompatActivity() {
                     hideInScreenSheet()
                     return
                 }
+                if (isFullScreenMapMode) {
+                    setFullScreenMapMode(false)
+                    return
+                }
                 moveTaskToBack(true)
             }
         }
@@ -1333,11 +1502,18 @@ class MainActivity : AppCompatActivity() {
         ) {
             val lat = data.getQueryParameter("lat")?.toDoubleOrNull()
             val lng = data.getQueryParameter("lng")?.toDoubleOrNull()
-            val name = data.getQueryParameter("name")?.trim().orEmpty().ifBlank { "Shared Pin" }
+            val rawName = data.getQueryParameter("name")?.trim().orEmpty()
             val pinId = data.getQueryParameter("id")?.trim().orEmpty()
             if (lat != null && lng != null && lat in -90.0..90.0 && lng in -180.0..180.0) {
                 hasAutoZoomedInitial = true
-                val target = SharedPinTarget(lat, lng, name, pinId, sourceHint = "Shared via TerraSync")
+                val target = SharedPinTarget(
+                    lat = lat,
+                    lng = lng,
+                    name = rawName.ifBlank { "Selected Location" },
+                    pinId = pinId,
+                    sourceHint = "Shared via TerraSync",
+                    hasExplicitLabel = rawName.isNotBlank()
+                )
                 if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
             }
             return
@@ -1380,15 +1556,15 @@ class MainActivity : AppCompatActivity() {
         if (parsed.hasValidCoordinates) {
             val lat = parsed.lat!!
             val lng = parsed.lng!!
-            val label = parsed.label.ifBlank { "Shared Location" }
+            val hasLabel = parsed.label.isNotBlank()
             val target = SharedPinTarget(
                 lat = lat,
                 lng = lng,
-                name = label,
+                name = if (hasLabel) parsed.label else "Selected Location",
                 pinId = "",
                 zoom = parsed.zoom,
                 sourceHint = parsed.sourceHint,
-                showPreviewPin = true
+                hasExplicitLabel = hasLabel
             )
             if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
             return
@@ -1402,14 +1578,15 @@ class MainActivity : AppCompatActivity() {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     val top = places.firstOrNull()
                     if (top != null) {
+                        val resolvedName = top.title.ifBlank { parsed.searchQuery }
                         val target = SharedPinTarget(
                             lat = top.lat,
                             lng = top.lng,
-                            name = top.title.ifBlank { parsed.searchQuery },
+                            name = resolvedName,
                             pinId = "",
                             zoom = parsed.zoom ?: 16.0,
                             sourceHint = top.subtitle.ifBlank { parsed.sourceHint },
-                            showPreviewPin = true
+                            hasExplicitLabel = resolvedName.isNotBlank()
                         )
                         if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
                     } else {
@@ -1446,6 +1623,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openSharedPinTarget(target: SharedPinTarget) {
         hasAutoZoomedInitial = true
+        if (isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
         if (isFollowingGps) {
             isFollowingGps = false
             updateLocationIconTint()
@@ -1459,43 +1637,62 @@ class MainActivity : AppCompatActivity() {
         val matched = if (target.pinId.isNotBlank()) pinById[target.pinId] else null
         if (matched != null) {
             activeSharedPinId = null
-            previewPinLatLng = null
             ensurePinVisibleOnMap(matched)
             selectPinAndOpenCard(matched, zoomIfFar = true)
             return
         }
         val destLatLng = LatLng(target.lat, target.lng)
         activeSharedPinId = target.pinId.ifBlank { null }
-        selectedPinId = null
-        selectedMarkerLatLng = destLatLng
-        previewPinLatLng = if (target.showPreviewPin) destLatLng else null
-        renderSelectedMarker()
         val desiredZoom = (target.zoom ?: (map?.cameraPosition?.zoom ?: 15.0).coerceAtLeast(16.0)).coerceIn(4.0, 20.0)
-        mapView.post {
-            if (!isFinishing && !isDestroyed) {
-                centerUpperHalf(destLatLng, desiredZoom)
-                fireStatusPulse(target.lat, target.lng, "#EE6A26")
+        // Route straight into native map-coordinate selection (single sky-blue dot + native place sheet, zero orange overlay pin)
+        selectCoordinateOnMap(
+            latLng = destLatLng,
+            explicitTitle = if (target.hasExplicitLabel) target.name else null,
+            fallbackSub = target.sourceHint,
+            zoomTo = desiredZoom
+        )
+    }
+
+    private fun selectCoordinateOnMap(
+        latLng: LatLng,
+        explicitTitle: String?,
+        fallbackSub: String = "",
+        zoomTo: Double? = null
+    ) {
+        selectedPinId = null
+        selectedMarkerLatLng = latLng
+        renderSelectedMarker()
+
+        if (zoomTo != null) {
+            mapView.post {
+                if (!isFinishing && !isDestroyed) {
+                    centerUpperHalf(latLng, zoomTo)
+                }
             }
         }
-        showTappedPlaceCard(target.name, target.sourceHint, target.lat, target.lng)
-        if (target.name == "Shared Location") {
-            RoutingEngine.reverseGeocode(target.lat, target.lng) { place ->
-                if (place != null) {
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        if (activeTappedLatLng != destLatLng || selectedPinId != null) return@runOnUiThread
-                        if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
-                        tappedResolvedTitle = place.title
-                        tappedResolvedSub = place.subtitle.ifBlank { target.sourceHint }
-                        tappedTitleView?.text = tappedResolvedTitle
-                        val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
-                        val distText = currentLocation?.let {
-                            "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, target.lat, target.lng), unit)} away"
-                        } ?: ""
-                        val subLine = listOf(tappedResolvedSub, distText).filter { it.isNotBlank() }.joinToString(" • ")
-                        tappedSubView?.text = subLine
-                        tappedSubView?.visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
-                    }
+
+        val cleanExplicit = explicitTitle?.trim().orEmpty()
+        val initialTitle = cleanExplicit.ifBlank { "Selected Location" }
+        showTappedPlaceCard(initialTitle, fallbackSub, latLng.latitude, latLng.longitude)
+
+        RoutingEngine.reverseGeocode(latLng.latitude, latLng.longitude) { place ->
+            if (place != null) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (activeTappedLatLng != latLng || selectedPinId != null) return@runOnUiThread
+                    if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
+                    val bestTitle = if (cleanExplicit.isNotBlank()) cleanExplicit else place.title
+                    val bestSub = place.subtitle.ifBlank { fallbackSub }
+                    tappedResolvedTitle = bestTitle
+                    tappedResolvedSub = bestSub
+                    tappedTitleView?.text = bestTitle
+                    val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
+                    val distText = currentLocation?.let {
+                        "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)} away"
+                    } ?: ""
+                    val subLine = listOf(bestSub, distText).filter { it.isNotBlank() }.joinToString(" • ")
+                    tappedSubView?.text = subLine
+                    tappedSubView?.visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
                 }
             }
         }
@@ -1721,21 +1918,6 @@ class MainActivity : AppCompatActivity() {
             style.addLayer(
                 SymbolLayer(PINS_LAYER, PINS_SOURCE).withProperties(
                     PropertyFactory.iconImage(Expression.get("icon")),
-                    PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                    PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
-                    PropertyFactory.iconSize(1.0f),
-                    PropertyFactory.iconAllowOverlap(true),
-                    PropertyFactory.iconIgnorePlacement(true)
-                )
-            )
-        }
-
-        // Temporary preview pin for incoming external geo: / map link locations
-        if (style.getSource(PREVIEW_PIN_SOURCE) == null) {
-            style.addSource(GeoJsonSource(PREVIEW_PIN_SOURCE))
-            style.addLayer(
-                SymbolLayer(PREVIEW_PIN_LAYER, PREVIEW_PIN_SOURCE).withProperties(
-                    PropertyFactory.iconImage("pin-preview"),
                     PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
                     PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
                     PropertyFactory.iconSize(1.0f),
@@ -1971,13 +2153,6 @@ class MainActivity : AppCompatActivity() {
         } else emptyList()
         style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
             ?.setGeoJson(FeatureCollection.fromFeatures(selFeatures))
-
-        val prevLoc = previewPinLatLng
-        val previewFeatures = if (prevLoc != null) {
-            listOf(Feature.fromGeometry(Point.fromLngLat(prevLoc.longitude, prevLoc.latitude)))
-        } else emptyList()
-        style.getSourceAs<GeoJsonSource>(PREVIEW_PIN_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(previewFeatures))
     }
 
     private fun renderMapData() {
@@ -2100,6 +2275,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleLassoMode(enabled: Boolean) {
+        if (enabled && isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
         if (enabled && isRulerMode) toggleRulerMode(false)
         isLassoMode = enabled
         lassoMoveMapMode = false
@@ -2261,6 +2437,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleRulerMode(enabled: Boolean) {
+        if (enabled && isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
         if (enabled && isLassoMode) toggleLassoMode(false)
         isRulerMode = enabled
         if (enabled) {
@@ -2374,6 +2551,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        // In Full-Screen Clean Map Mode, tapping empty map restores controls cleanly without dropping a dot
+        if (isFullScreenMapMode) {
+            setFullScreenMapMode(false)
+            return
+        }
+
         val smallBox = RectF(
             screenPt.x - dp(14).toFloat(),
             screenPt.y - dp(14).toFloat(),
@@ -2395,41 +2578,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        selectedPinId = null
-        selectedMarkerLatLng = latLng
-        previewPinLatLng = null
-        renderSelectedMarker()
-
-        val initialTitle = detectedTitle.ifBlank { "Selected Location" }
-        showTappedPlaceCard(initialTitle, detectedSub, latLng.latitude, latLng.longitude)
-
-        RoutingEngine.reverseGeocode(latLng.latitude, latLng.longitude) { place ->
-            if (place != null) {
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    if (activeTappedLatLng != latLng || selectedPinId != null) return@runOnUiThread
-                    if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
-                    val bestTitle = if (detectedTitle.isNotBlank()) detectedTitle else place.title
-                    val bestSub = place.subtitle.ifBlank { detectedSub }
-                    tappedResolvedTitle = bestTitle
-                    tappedResolvedSub = bestSub
-                    tappedTitleView?.text = bestTitle
-                    val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
-                    val distText = currentLocation?.let {
-                        "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)} away"
-                    } ?: ""
-                    val subLine = listOf(bestSub, distText).filter { it.isNotBlank() }.joinToString(" • ")
-                    tappedSubView?.text = subLine
-                    tappedSubView?.visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
-                }
-            }
-        }
+        selectCoordinateOnMap(
+            latLng = latLng,
+            explicitTitle = detectedTitle.ifBlank { null },
+            fallbackSub = detectedSub,
+            zoomTo = null
+        )
     }
 
     private fun selectPinAndOpenCard(pin: PinItem, zoomIfFar: Boolean = false) {
         selectedPinId = pin.id
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
-        previewPinLatLng = null
         renderSelectedMarker()
         map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
@@ -2439,10 +2598,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun clearSelectedMarker() {
-        val hadSelection = selectedPinId != null || selectedMarkerLatLng != null || previewPinLatLng != null
+        val hadSelection = selectedPinId != null || selectedMarkerLatLng != null
         selectedPinId = null
         selectedMarkerLatLng = null
-        previewPinLatLng = null
         activeSharedPinId = null
         activeTappedLatLng = null
         tappedTitleView = null
@@ -2612,7 +2770,7 @@ class MainActivity : AppCompatActivity() {
             p,
             bgColor = badgeBg,
             glyphColor = badgeGlyph,
-            sizeDp = 44
+            sizeDp = 54
         ).apply {
             (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(12)
         }
@@ -2633,7 +2791,7 @@ class MainActivity : AppCompatActivity() {
         }
         titleCol.addView(TextView(this).apply {
             text = pin.name
-            textSize = 19f
+            textSize = 19.5f
             letterSpacing = -0.01f
             setLineSpacing(0f, 1.12f)
             setTextColor(txtPrimary)
@@ -2651,13 +2809,31 @@ class MainActivity : AppCompatActivity() {
             DesignSystem.applyTabularNumerals(this)
             setPadding(0, dp(2), 0, 0)
         })
-        titleCol.addView(TextView(this).apply {
+        val coordRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, 0)
+        }
+        coordRow.addView(TextView(this).apply {
             text = "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}"
             textSize = 12.5f
             setTextColor(txtSub)
             DesignSystem.applyTabularNumerals(this)
-            setPadding(0, dp(1), 0, 0)
         })
+        coordRow.addView(ImageButton(this).apply {
+            setImageResource(R.drawable.ic_copy)
+            setColorFilter(p.accentPrimary)
+            contentDescription = "Copy Coordinates"
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginStart = dp(4) }
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            UiAnimations.attachSnappyPress(this, 0.90f)
+            setOnClickListener {
+                copyToClipboard("GPS", "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}")
+            }
+        })
+        titleCol.addView(coordRow)
         headerRow.addView(titleCol)
 
         var starred = DevicePrefs.isBookmarked(this, pin.id)
@@ -2805,9 +2981,9 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(22)
+            cornerRadius = dp(23)
             DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { openRoutePreview(pin.lat, pin.lng, pin.name) }
         })
@@ -2821,9 +2997,9 @@ class MainActivity : AppCompatActivity() {
             minWidth = 0
             minimumWidth = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(22)
+            cornerRadius = dp(23)
             DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { setRouteOrigin(pin.lat, pin.lng, pin.name) }
         })
@@ -2909,17 +3085,10 @@ class MainActivity : AppCompatActivity() {
         })
         sheetContent.addView(actionRow)
 
-        // 7. Expanded Details Section
-        sheetContent.addView(View(this).apply {
-            setBackgroundColor(dividerColor)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                bottomMargin = dp(12)
-            }
-        })
-
+        // 7. Expanded Details Section (separated by generous whitespace, zero divider lines)
         if (pin.description.isNotBlank()) {
             sheetContent.addView(DesignSystem.createSectionHeader(this, "Details", p).apply {
-                setPadding(dp(2), dp(4), dp(2), dp(8))
+                setPadding(dp(2), dp(14), dp(2), dp(8))
             })
             sheetContent.addView(TextView(this).apply {
                 text = pin.description
@@ -3198,7 +3367,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         header.addView(
-            DesignSystem.createHeaderBadge(this, R.drawable.ic_location_pin_glyph, p, sizeDp = 44).apply {
+            DesignSystem.createHeaderBadge(this, R.drawable.ic_location_pin_glyph, p, sizeDp = 54).apply {
                 (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(12)
             }
         )
@@ -3216,7 +3385,7 @@ class MainActivity : AppCompatActivity() {
         }
         tappedTitleView = TextView(this).apply {
             text = title
-            textSize = 19.5f
+            textSize = 20f
             letterSpacing = -0.01f
             setTextColor(txtPrimary)
             setTypeface(null, Typeface.BOLD)
@@ -3234,13 +3403,31 @@ class MainActivity : AppCompatActivity() {
             visibility = if (subLine.isNotBlank()) View.VISIBLE else View.GONE
         }
         titleCol.addView(tappedSubView)
-        titleCol.addView(TextView(this).apply {
+        val tappedCoordRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, 0)
+        }
+        tappedCoordRow.addView(TextView(this).apply {
             text = "${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}"
             textSize = 12.5f
             setTextColor(txtSub)
             DesignSystem.applyTabularNumerals(this)
-            setPadding(0, dp(1), 0, 0)
         })
+        tappedCoordRow.addView(ImageButton(this).apply {
+            setImageResource(R.drawable.ic_copy)
+            setColorFilter(p.accentPrimary)
+            contentDescription = "Copy Coordinates"
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginStart = dp(4) }
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            UiAnimations.attachSnappyPress(this, 0.90f)
+            setOnClickListener {
+                copyToClipboard("GPS", "${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}")
+            }
+        })
+        titleCol.addView(tappedCoordRow)
         header.addView(titleCol)
 
         header.addView(ImageButton(this).apply {
@@ -3285,9 +3472,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(22)
+            cornerRadius = dp(23)
             DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { openRoutePreview(lat, lng, tappedResolvedTitle) }
         })
@@ -3305,9 +3492,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(22)
+            cornerRadius = dp(23)
             DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { setRouteOrigin(lat, lng, tappedResolvedTitle) }
         })
@@ -3590,9 +3777,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(22)
+            cornerRadius = dp(23)
             DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1.4f).apply { marginEnd = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1.4f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 if (routeOriginLatLng != null) {
@@ -3617,9 +3804,9 @@ class MainActivity : AppCompatActivity() {
             minHeight = 0
             minimumHeight = 0
             setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(22)
+            cornerRadius = dp(23)
             DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 0.8f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(46), 0.8f)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
                 val label = Uri.encode(destTitle)
@@ -3780,6 +3967,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyNavigationChrome(inNav: Boolean) {
         if (inNav) {
+            if (isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
             if (isLassoMode) toggleLassoMode(false)
             if (isRulerMode) toggleRulerMode(false)
             UiAnimations.hideSlideTop(topCluster)
@@ -3794,6 +3982,7 @@ class MainActivity : AppCompatActivity() {
             UiAnimations.showSlideTop(topCluster)
             btnRuler.visibility = View.VISIBLE
             applyExtraMapToolsVisibility()
+            applyZoomButtonsVisibility()
             if (!isRulerMode && !isLassoMode && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
                 UiAnimations.showSlideBottom(bottomNavDock)
             }
@@ -4025,10 +4214,10 @@ class MainActivity : AppCompatActivity() {
     private fun updateLocationIconTint() {
         val p = currentPalette()
         if (isFollowingGps) {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 7f, activeFillColor = p.accentPrimary)
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 9f, activeFillColor = p.accentPrimary)
             btnLocate.setColorFilter(Color.WHITE)
         } else {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 28f, 7f, activeFillColor = p.actionDark)
+            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 9f, activeFillColor = p.actionDark)
             btnLocate.setColorFilter(p.onActionDark)
         }
     }
@@ -4162,6 +4351,9 @@ class MainActivity : AppCompatActivity() {
         offlineMaps.setStateListener(null)
         hideSoftKeyboard()
         pageBackStack.clear()
+        // Reset nav bar pills back to neutral white whenever returning to the map
+        activeOpenNavTab = -1
+        syncNavDockPills()
         updateSystemBarContrast(forFullPage = false)
         if (pageOverlayContainer.visibility != View.VISIBLE) {
             pageOverlayContainer.removeAllViews()
@@ -4278,24 +4470,40 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(12), dp(12), dp(12))
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             UiAnimations.attachSnappyPress(this)
-            setOnClickListener { anchor ->
-                val menu = PopupMenu(this@MainActivity, anchor)
-                menu.menu.add(0, 1, 1, "Import KML / KMZ Folder")
-                menu.menu.add(0, 2, 2, "Join Folder by Share Code")
-                menu.menu.add(0, 3, 3, "Combine Folders into One")
-                menu.menu.add(0, 5, 4, "Daily Report (Visible Folders)")
-                menu.menu.add(0, 4, 5, "Nearest Pending Pin")
-                menu.setOnMenuItemClickListener { item ->
-                    when (item.itemId) {
-                        1 -> { closeFullPage(); kmlPicker.launch(arrayOf("*/*")) }
-                        2 -> showJoinCodeDialog()
-                        3 -> showCombineFoldersDialog()
-                        5 -> showVisibleFoldersDailyReportDialog()
-                        4 -> jumpToNearestPendingPin()
-                    }
-                    true
-                }
-                menu.show()
+            setOnClickListener {
+                DesignSystem.showActionBottomSheet(
+                    ctx = this@MainActivity,
+                    palette = p,
+                    title = "Bookmarks Actions",
+                    subtitle = "${layers.size} folders • ${pins.size} bookmarks",
+                    actions = listOf(
+                        SheetActionItem(
+                            title = "Import KML / KMZ Folder",
+                            subtitle = "Load field map file from this phone",
+                            iconRes = R.drawable.ic_import_file
+                        ) { closeFullPage(); kmlPicker.launch(arrayOf("*/*")) },
+                        SheetActionItem(
+                            title = "Join Folder by Share Code",
+                            subtitle = "Sync a live shared team folder",
+                            iconRes = R.drawable.ic_cloud_sync
+                        ) { showJoinCodeDialog() },
+                        SheetActionItem(
+                            title = "Combine Folders into One",
+                            subtitle = "Merge multiple folders with smart dedup",
+                            iconRes = R.drawable.ic_layers
+                        ) { showCombineFoldersDialog() },
+                        SheetActionItem(
+                            title = "Daily Report (Visible Folders)",
+                            subtitle = "Generate WhatsApp / Telegram field summary",
+                            iconRes = R.drawable.ic_report
+                        ) { showVisibleFoldersDailyReportDialog() },
+                        SheetActionItem(
+                            title = "Nearest Pending Pin",
+                            subtitle = "Jump to closest unvisited location",
+                            iconRes = R.drawable.ic_my_location
+                        ) { jumpToNearestPendingPin() }
+                    )
+                )
             }
         })
         outer.addView(appBar)
@@ -4855,41 +5063,63 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(10), dp(12), dp(10), dp(12))
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                    setOnClickListener { anchor ->
-                        val menu = PopupMenu(this@MainActivity, anchor)
-                        if (isLocal) {
-                            menu.menu.add(0, 10, 1, "Upload to Cloud (Shareable)")
-                        } else {
-                            menu.menu.add(0, 1, 1, "Share Link & Code (${layer.shareCode})")
+                    setOnClickListener {
+                        val folderSubtitle = buildString {
+                            append("${layerPins.size} bookmark${if (layerPins.size == 1) "" else "s"}")
+                            append(" • $doneCnt Done • $pendingCnt Pending • $issueCnt Issue")
                         }
-                        menu.menu.add(0, 2, 2, "Zoom to Folder")
-                        menu.menu.add(0, 12, 3, "Edit History & Hours Audit")
-                        menu.menu.add(0, 3, 4, if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder")
-                        menu.menu.add(0, 4, 5, "Daily Team Report (WhatsApp)")
-                        menu.menu.add(0, 5, 6, "Export as KML...")
-                        menu.menu.add(0, 6, 7, "Export as CSV")
-                        if (isCreator) menu.menu.add(0, 7, 8, "Rename Folder")
-                        if (isLocal) {
-                            menu.menu.add(0, 11, 9, if (isPinned) "🔒 Delete Local Folder (Pinned)" else "Delete Local Folder")
-                        } else {
-                            menu.menu.add(0, 8, 9, if (isPinned) "🔒 Leave Folder (Pinned)" else "Leave Folder (This Phone)")
-                            if (isCreator) menu.menu.add(0, 9, 10, if (isPinned) "🔒 Delete from Cloud (Pinned)" else "Delete from Cloud (All Users)")
-                        }
-                        menu.setOnMenuItemClickListener { item ->
-                            when (item.itemId) {
-                                1 -> shareLayerLink(layer)
-                                12 -> {
-                                    pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
-                                        buildEditHistoryPage(layer)
+                        val folderActions = buildList {
+                            if (isLocal) {
+                                add(
+                                    SheetActionItem(
+                                        title = "Upload to Cloud",
+                                        subtitle = "Make folder shareable with your team",
+                                        iconRes = R.drawable.ic_upload_cloud,
+                                        tintOverride = p.accentPrimary
+                                    ) {
+                                        val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                        val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                        confirmUploadLocalToCloud(layer, freshPins, freshTracks)
                                     }
-                                }
-                                2 -> {
+                                )
+                            } else {
+                                add(
+                                    SheetActionItem(
+                                        title = "Share Link & Code (${layer.shareCode})",
+                                        subtitle = "Invite teammates to sync live",
+                                        iconRes = R.drawable.ic_share,
+                                        tintOverride = p.accentPrimary
+                                    ) { shareLayerLink(layer) }
+                                )
+                            }
+                            add(
+                                SheetActionItem(
+                                    title = "Zoom to Folder",
+                                    iconRes = R.drawable.ic_my_location
+                                ) {
                                     val freshPins = pins.filter { it.layerId == layer.id }
                                     val freshTracks = tracks.filter { it.layerId == layer.id }
                                     closeFullPage()
                                     zoomToKmlBounds(collectLayerLatLngs(freshPins, freshTracks), layer.id)
                                 }
-                                3 -> {
+                            )
+                            add(
+                                SheetActionItem(
+                                    title = "Edit History & Hours Audit",
+                                    iconRes = R.drawable.ic_history
+                                ) {
+                                    pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
+                                        buildEditHistoryPage(layer)
+                                    }
+                                }
+                            )
+                            add(
+                                SheetActionItem(
+                                    title = if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder",
+                                    subtitle = if (isPinned) "Currently protected against accidental deletion" else null,
+                                    iconRes = R.drawable.ic_pin_lock,
+                                    checked = isPinned
+                                ) {
                                     val nowPinned = DevicePrefs.toggleLayerPinned(this@MainActivity, layer.id)
                                     Toast.makeText(
                                         this@MainActivity,
@@ -4898,56 +5128,105 @@ class MainActivity : AppCompatActivity() {
                                     ).show()
                                     renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
                                 }
-                                4 -> {
+                            )
+                            add(
+                                SheetActionItem(
+                                    title = "Daily Team Report",
+                                    subtitle = "WhatsApp / Telegram field summary",
+                                    iconRes = R.drawable.ic_report
+                                ) {
                                     val freshPins = pinsByLayerId[layer.id].orEmpty()
                                     val freshTracks = tracksByLayerId[layer.id].orEmpty()
                                     showDailyWhatsAppReportDialog(layer, freshPins, freshTracks)
                                 }
-                                5 -> {
+                            )
+                            add(
+                                SheetActionItem(
+                                    title = "Export KML",
+                                    iconRes = R.drawable.ic_download
+                                ) {
                                     val freshPins = pinsByLayerId[layer.id].orEmpty()
                                     val freshTracks = tracksByLayerId[layer.id].orEmpty()
                                     showExportKmlDialog(layer, freshPins, freshTracks)
                                 }
-                                6 -> {
+                            )
+                            add(
+                                SheetActionItem(
+                                    title = "Export CSV",
+                                    iconRes = R.drawable.ic_import_file
+                                ) {
                                     val freshPins = pinsByLayerId[layer.id].orEmpty()
                                     KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, freshPins)
                                 }
-                                7 -> showRenameFolderDialog(layer)
-                                8 -> {
-                                    if (isPinned) {
-                                        Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to leave.", Toast.LENGTH_LONG).show()
-                                    } else {
-                                        DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
-                                        refreshJoinedSync()
-                                        Toast.makeText(this@MainActivity, "Left \"${layer.name}\"", Toast.LENGTH_SHORT).show()
+                            )
+                            if (isCreator) {
+                                add(
+                                    SheetActionItem(
+                                        title = "Rename Folder",
+                                        iconRes = R.drawable.ic_edit
+                                    ) { showRenameFolderDialog(layer) }
+                                )
+                            }
+                            if (isLocal) {
+                                add(
+                                    SheetActionItem(
+                                        title = "Delete Local Folder",
+                                        subtitle = if (isPinned) "Unpin folder first to delete" else "Removes folder from this phone",
+                                        iconRes = R.drawable.ic_trash,
+                                        destructive = true
+                                    ) {
+                                        if (isPinned) {
+                                            Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
+                                        } else {
+                                            val freshCount = pinsByLayerId[layer.id]?.size ?: 0
+                                            showDeleteLocalDialog(layer, freshCount)
+                                        }
                                     }
-                                }
-                                9 -> {
-                                    if (isPinned) {
-                                        Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
-                                    } else {
-                                        val freshPins = pinsByLayerId[layer.id].orEmpty()
-                                        val freshTracks = tracksByLayerId[layer.id].orEmpty()
-                                        showDeleteCloudDialog(layer, freshPins, freshTracks)
+                                )
+                            } else {
+                                add(
+                                    SheetActionItem(
+                                        title = "Leave Folder (This Phone)",
+                                        subtitle = if (isPinned) "Unpin folder first to leave" else null,
+                                        iconRes = R.drawable.ic_close,
+                                        destructive = true
+                                    ) {
+                                        if (isPinned) {
+                                            Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to leave.", Toast.LENGTH_LONG).show()
+                                        } else {
+                                            DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
+                                            refreshJoinedSync()
+                                            Toast.makeText(this@MainActivity, "Left \"${layer.name}\"", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
-                                }
-                                10 -> {
-                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
-                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
-                                    confirmUploadLocalToCloud(layer, freshPins, freshTracks)
-                                }
-                                11 -> {
-                                    if (isPinned) {
-                                        Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
-                                    } else {
-                                        val freshCount = pinsByLayerId[layer.id]?.size ?: 0
-                                        showDeleteLocalDialog(layer, freshCount)
-                                    }
+                                )
+                                if (isCreator) {
+                                    add(
+                                        SheetActionItem(
+                                            title = "Delete from Cloud (All Users)",
+                                            subtitle = if (isPinned) "Unpin folder first to delete" else "Permanently deletes for everyone",
+                                            iconRes = R.drawable.ic_trash,
+                                            destructive = true
+                                        ) {
+                                            if (isPinned) {
+                                                Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to delete.", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                                val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                                showDeleteCloudDialog(layer, freshPins, freshTracks)
+                                            }
+                                        }
+                                    )
                                 }
                             }
-                            true
                         }
-                        menu.show()
+                        DesignSystem.showActionBottomSheet(
+                            ctx = this@MainActivity,
+                            palette = p,
+                            title = layer.name,
+                            subtitle = folderSubtitle,
+                            actions = folderActions
+                        )
                     }
                 })
 
@@ -5012,12 +5291,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         val p = currentPalette()
-        val labels = entries.map { it.first }.toTypedArray()
-        val adapter = DesignSystem.createThemedDialogListAdapter(this, labels, p)
-        showThemedDialog(
-            themedDialogBuilder("Export KML: ${layer.name}")
-                .setAdapter(adapter) { _, which ->
-                    val (_, subset, suffix) = entries[which]
+        DesignSystem.showActionBottomSheet(
+            ctx = this,
+            palette = p,
+            title = "Export KML",
+            subtitle = layer.name,
+            actions = entries.map { (label, subset, suffix) ->
+                SheetActionItem(
+                    title = label,
+                    iconRes = R.drawable.ic_download
+                ) {
                     val tracksToExport = if (suffix.isEmpty()) layerTracks else emptyList()
                     if (subset.isEmpty() && tracksToExport.isEmpty()) {
                         Toast.makeText(this, "No matching pins to export", Toast.LENGTH_SHORT).show()
@@ -5025,8 +5308,7 @@ class MainActivity : AppCompatActivity() {
                         KmlCsvExporter.exportAndShareKml(this, layer, subset, tracksToExport, suffix)
                     }
                 }
-                .setNegativeButton("Cancel", null)
-                .create()
+            }
         )
     }
 
@@ -5996,29 +6278,37 @@ class MainActivity : AppCompatActivity() {
         btnSelStatus.setOnClickListener {
             val chosen = currentSourcePins().filter { it.id in selectedPinIds }
             if (chosen.isEmpty()) return@setOnClickListener
-            val items = arrayOf("Mark Pending", "Mark Done", "Mark Issue", "Mark Sent (This Phone)")
-            val adapter = DesignSystem.createThemedDialogListAdapter(this, items, p)
-            showThemedDialog(
-                themedDialogBuilder("Update ${chosen.size} Selected Bookmark${if (chosen.size == 1) "" else "s"}")
-                    .setAdapter(adapter) { _, which ->
-                        val stamp = DevicePrefs.getDeviceStamp(this)
-                        when (which) {
-                            0 -> savePinsStatusBatchUnified(chosen, "pending", stamp)
-                            1 -> savePinsStatusBatchUnified(chosen, "done", stamp)
-                            2 -> savePinsStatusBatchUnified(chosen, "issue", stamp, "Flagged in bulk")
-                            3 -> {
-                                DevicePrefs.addLocalSentPinIds(this, chosen.map { it.id })
-                                updateSentToggleUi()
-                                renderMapData()
-                            }
+            fun applyBulk(action: () -> Unit) {
+                action()
+                selectedPinIds.clear()
+                selectionMode = false
+                renderPinRows()
+                Toast.makeText(this, "Updated ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
+            }
+            val stamp = DevicePrefs.getDeviceStamp(this)
+            DesignSystem.showActionBottomSheet(
+                ctx = this,
+                palette = p,
+                title = "Update ${chosen.size} Selected",
+                subtitle = "Apply status across selected bookmarks",
+                actions = listOf(
+                    SheetActionItem("Mark Pending", R.drawable.ic_location_pin_glyph, tintOverride = p.amber) {
+                        applyBulk { savePinsStatusBatchUnified(chosen, "pending", stamp) }
+                    },
+                    SheetActionItem("Mark Done", R.drawable.ic_check, tintOverride = p.green) {
+                        applyBulk { savePinsStatusBatchUnified(chosen, "done", stamp) }
+                    },
+                    SheetActionItem("Mark Issue", R.drawable.ic_info, tintOverride = p.red) {
+                        applyBulk { savePinsStatusBatchUnified(chosen, "issue", stamp, "Flagged in bulk") }
+                    },
+                    SheetActionItem("Mark Sent (This Phone)", R.drawable.ic_cloud_sync, tintOverride = p.accentPrimary) {
+                        applyBulk {
+                            DevicePrefs.addLocalSentPinIds(this, chosen.map { it.id })
+                            updateSentToggleUi()
+                            renderMapData()
                         }
-                        selectedPinIds.clear()
-                        selectionMode = false
-                        renderPinRows()
-                        Toast.makeText(this, "Updated ${chosen.size} bookmark${if (chosen.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
                     }
-                    .setNegativeButton("Cancel", null)
-                    .create()
+                )
             )
         }
         btnSelDelete.setOnClickListener {
@@ -6839,12 +7129,7 @@ class MainActivity : AppCompatActivity() {
                             UiAnimations.applyRowRipple(this@MainActivity, this, night)
                             setOnClickListener {
                                 closeFullPage()
-                                selectedPinId = null
-                                selectedMarkerLatLng = LatLng(lat, lng)
-                                previewPinLatLng = null
-                                renderSelectedMarker()
-                                centerUpperHalf(LatLng(lat, lng), 16.5)
-                                showTappedPlaceCard("Coordinates", "", lat, lng)
+                                selectCoordinateOnMap(LatLng(lat, lng), explicitTitle = "Coordinates", fallbackSub = "", zoomTo = 16.5)
                             }
                         })
                         resultsBox.addView(coordCard)
@@ -6980,12 +7265,7 @@ class MainActivity : AppCompatActivity() {
                             UiAnimations.applyRowRipple(this@MainActivity, this, night)
                             setOnClickListener {
                                 closeFullPage()
-                                selectedPinId = null
-                                selectedMarkerLatLng = LatLng(place.lat, place.lng)
-                                previewPinLatLng = null
-                                renderSelectedMarker()
-                                centerUpperHalf(LatLng(place.lat, place.lng), 16.0)
-                                showTappedPlaceCard(place.title, place.subtitle, place.lat, place.lng)
+                                selectCoordinateOnMap(LatLng(place.lat, place.lng), explicitTitle = place.title, fallbackSub = place.subtitle, zoomTo = 16.0)
                             }
                         }
                         row.addView(TextView(this).apply {
@@ -7150,6 +7430,7 @@ class MainActivity : AppCompatActivity() {
         val mapSummary = buildList {
             add(mapStyleMode.label)
             add(themeLabel)
+            add(DevicePrefs.getMapPinStyle(this@MainActivity).label)
             if (DevicePrefs.isHillshadeEnabled(this@MainActivity)) add("Hillshade")
             if (DevicePrefs.isContoursEnabled(this@MainActivity)) add("Contours")
         }.joinToString(" • ")
@@ -7423,6 +7704,37 @@ class MainActivity : AppCompatActivity() {
                 ) { enabled ->
                     DevicePrefs.set3dBuildingsEnabled(this, enabled)
                     map?.style?.let { st -> if (st.isFullyLoaded) apply3dBuildingsToggle(st) }
+                }
+
+                mapCard.addView(DesignSystem.createHairlineDivider(this, p))
+                addSegmentedBlock(
+                    mapCard,
+                    title = "Map Pin Style",
+                    subtitle = "Switch instantly between white Concept Droplet rings and Classic Teardrop pins",
+                    options = MapPinStyle.entries.map { it.id to it.label },
+                    selectedId = DevicePrefs.getMapPinStyle(this).id,
+                    activeColor = { p.accentPrimary }
+                ) { id ->
+                    val chosen = MapPinStyle.fromId(id)
+                    if (DevicePrefs.getMapPinStyle(this) != chosen) {
+                        DevicePrefs.setMapPinStyle(this, chosen)
+                        map?.style?.let { st ->
+                            if (st.isFullyLoaded) {
+                                MapCartography.registerPinBitmaps(this, st)
+                                renderMapData()
+                            }
+                        }
+                    }
+                }
+
+                addCardSwitch(
+                    mapCard,
+                    title = "Show Zoom Buttons",
+                    subtitle = "Show slim frosted + / − pill above the right-side map arc (pinch zoom always active)",
+                    checked = DevicePrefs.isShowZoomButtons(this)
+                ) { enabled ->
+                    DevicePrefs.setShowZoomButtons(this, enabled)
+                    applyZoomButtonsVisibility()
                 }
 
                 addCardSwitch(
@@ -8849,6 +9161,12 @@ class MainActivity : AppCompatActivity() {
         if (!show && isLassoMode) toggleLassoMode(false)
     }
 
+    private fun applyZoomButtonsVisibility() {
+        if (!::zoomPillContainer.isInitialized) return
+        val show = DevicePrefs.isShowZoomButtons(this)
+        zoomPillContainer.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
     private fun normalizeLayerNameKey(name: String): String {
         return name.trim().lowercase(java.util.Locale.US).replace(Regex("[_\\s-]+"), " ")
     }
@@ -9150,26 +9468,38 @@ class MainActivity : AppCompatActivity() {
     private fun applyResponsiveChromeSizing() {
         if (!::btnLocate.isInitialized) return
         val compact = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val btnSize = dp(if (compact) 40 else 46)
-        val locSize = dp(if (compact) 48 else 56)
-        val utilPad = dp(if (compact) 10 else 13)
-        val locPad = dp(if (compact) 12 else 16)
-        val gap = dp(if (compact) 6 else 10)
-        val fabGap = dp(if (compact) 8 else 12)
-        fun resize(v: View, size: Int, padPx: Int, bottomMarginPx: Int) {
+        val utilSize = dp(if (compact) 44 else 52)
+        val locSize = dp(if (compact) 56 else 66)
+        val utilPad = dp(if (compact) 11 else 13)
+        val locPad = dp(if (compact) 16 else 19)
+        val arcBox = dp(if (compact) 118 else 138)
+        val arcCardOffset = dp(if (compact) 66 else 78)
+        val arcDiagOffset = dp(if (compact) 50 else 59)
+
+        fun sizeCircle(v: View, size: Int, padPx: Int, marginEndPx: Int? = null, marginBottomPx: Int? = null) {
             val lp = v.layoutParams as? ViewGroup.MarginLayoutParams ?: return
             lp.width = size
             lp.height = size
-            lp.bottomMargin = bottomMarginPx
+            if (marginEndPx != null) lp.marginEnd = marginEndPx
+            if (marginBottomPx != null) lp.bottomMargin = marginBottomPx
             v.layoutParams = lp
             v.setPadding(padPx, padPx, padPx, padPx)
         }
-        resize(btnLasso, btnSize, utilPad, gap)
-        resize(btnRuler, btnSize, utilPad, gap)
-        resize(btnZoomIn, btnSize, utilPad, gap)
-        resize(btnZoomOut, btnSize, utilPad, fabGap)
-        resize(btnImport, btnSize, utilPad, fabGap)
-        resize(btnLocate, locSize, locPad, 0)
+
+        if (::rightArcCluster.isInitialized) {
+            rightArcCluster.layoutParams = rightArcCluster.layoutParams.apply {
+                width = arcBox
+                height = arcBox
+            }
+        }
+        sizeCircle(btnSyncStatus, utilSize, utilPad)
+        if (::btnCompass.isInitialized) sizeCircle(btnCompass, utilSize, dp(if (compact) 9 else 11))
+        sizeCircle(btnStyleToggle, utilSize, utilPad, marginEndPx = 0, marginBottomPx = arcCardOffset)
+        sizeCircle(btnRuler, utilSize, utilPad, marginEndPx = arcDiagOffset, marginBottomPx = arcDiagOffset)
+        sizeCircle(btnStatusFilter, utilSize, utilPad, marginEndPx = arcCardOffset, marginBottomPx = 0)
+        sizeCircle(btnLocate, locSize, locPad, marginEndPx = 0, marginBottomPx = 0)
+        sizeCircle(btnLasso, utilSize, utilPad, marginBottomPx = dp(if (compact) 6 else 10))
+        sizeCircle(btnImport, utilSize, utilPad, marginBottomPx = dp(if (compact) 6 else 10))
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
