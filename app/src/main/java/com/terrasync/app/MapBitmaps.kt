@@ -2,7 +2,6 @@ package com.terrasync.app
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -11,35 +10,29 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.DisplayMetrics
 import kotlin.math.PI
-import kotlin.math.asin
-import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.sin
 
 object MapBitmaps {
 
-    // Exact Organic Maps map-tack bookmark pin dimensions (logical dp at native 1.0x density)
-    const val BOOKMARK_PIN_CANVAS_W_DP = 24.0f
-    const val BOOKMARK_PIN_CANVAS_H_DP = 26.0f
-    const val BOOKMARK_PIN_HEAD_DIAMETER_DP = 16.6f
-    const val BOOKMARK_PIN_INNER_DOT_DIAMETER_DP = 6.1f
-    const val BOOKMARK_PIN_VISIBLE_STEM_DP = 5.5f
-    const val BOOKMARK_PIN_WHITE_STROKE_DP = 1.1f          // 0.55 dp visible white hairline outside fill
-    const val BOOKMARK_PIN_TIP_Y_DP = 24.1f                // headY(10.3) + headR(8.3) + stem(5.5)
+    // Exact Organic Maps pinched-waist + round bottom droplet bookmark pin (32 x 31 grid -> 28 x 27.125 dp)
+    private const val BOOKMARK_PIN_GRID_W = 32.0f
+    private const val BOOKMARK_PIN_GRID_H = 31.0f
+    private const val BOOKMARK_PIN_DROPLET_CENTER_Y = 26.80f
+    const val BOOKMARK_PIN_CANVAS_W_DP = 28.0f
+    const val BOOKMARK_PIN_CANVAS_H_DP = BOOKMARK_PIN_CANVAS_W_DP * (BOOKMARK_PIN_GRID_H / BOOKMARK_PIN_GRID_W) // 27.125 dp
     const val BOOKMARK_PIN_TIP_BOTTOM_PAD_DP =
-        BOOKMARK_PIN_CANVAS_H_DP - BOOKMARK_PIN_TIP_Y_DP   // 1.90 dp -> contact dot lands dead-center on GPS
+        (BOOKMARK_PIN_GRID_H - BOOKMARK_PIN_DROPLET_CENTER_Y) *
+            (BOOKMARK_PIN_CANVAS_W_DP / BOOKMARK_PIN_GRID_W) // 3.675 dp -> droplet center (16.0, 26.80) lands dead-center on GPS
 
     /**
-     * Exact Organic Maps-style map-tack bookmark pin rendered at native device density:
-     * - 24.0 x 26.0 dp logical canvas centered at cx = 12.0 dp
-     * - Circular head at (12.0, 10.3), diameter 16.6 dp (r = 8.3 dp), bottom at y = 18.6 dp
-     * - Inner white dot at (12.0, 10.3), diameter 6.1 dp (r = 3.05 dp, ~36.7% dot-to-head ratio)
-     * - Tapered 5.5 dp stem (y = 18.6 -> 24.1 dp) with smooth concave neck fillet (~2.6 dp below
-     *   fillet tapering to ~1.3 dp above the rounded tip), unioned cleanly via Path.Op.UNION
-     * - Crisp dark grounding contact dot at exact tip (12.0, 24.1) + subtle head drop shadow,
-     *   ultra-thin 1.1 dp white hairline stroke (0.55 dp visible rim), and solid dynamic color fill.
+     * Exact Organic Maps-style pinched-waist + round bottom droplet bookmark pin:
+     * - Normalized 32.0 x 31.0 grid scaled uniformly into 28.0 x 27.125 dp at native device density
+     * - Completely flat & crisp 3-layer stack (zero shadows, zero dark contact dot):
+     *   1. Uniform white outer outline (strokeWidth = 2.6 * unit -> ~1.14 dp visible white border)
+     *   2. Solid dynamic color fill (Pending / Done / Issue / Target)
+     *   3. Centered solid white inner dot at (16.0, 12.0), radius 4.2 * unit (~46.7% of head diameter)
      */
     fun createBookmarkPin(
         ctx: Context,
@@ -50,114 +43,70 @@ object MapBitmaps {
         val baseDpi = ctx.resources.displayMetrics.densityDpi
             .takeIf { it > 0 } ?: DisplayMetrics.DENSITY_DEFAULT
         val d = (baseDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT) * scale
+        val unit = (BOOKMARK_PIN_CANVAS_W_DP / BOOKMARK_PIN_GRID_W) * d
 
-        val w = ceil(BOOKMARK_PIN_CANVAS_W_DP * d).toInt().coerceAtLeast(24)
-        val h = ceil(BOOKMARK_PIN_CANVAS_H_DP * d).toInt().coerceAtLeast(26)
+        val w = ceil(BOOKMARK_PIN_CANVAS_W_DP * d).toInt().coerceAtLeast(28)
+        val h = ceil(BOOKMARK_PIN_CANVAS_H_DP * d).toInt().coerceAtLeast(27)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         bmp.density = baseDpi
         val c = Canvas(bmp)
 
-        val cx = w / 2f
-        val headR = (BOOKMARK_PIN_HEAD_DIAMETER_DP / 2f) * d            // 8.30 dp
-        val innerDotR = (BOOKMARK_PIN_INNER_DOT_DIAMETER_DP / 2f) * d   // 3.05 dp (6.1 dp dia)
-        val visibleStemLen = BOOKMARK_PIN_VISIBLE_STEM_DP * d           // 5.50 dp
+        // Center horizontally and align normalized y = 31.0 flush with bitmap bottom edge h
+        // so droplet center (16.0, 26.80) sits strictly 3.675 dp above bottom edge on every DPI.
+        val ox = (w - BOOKMARK_PIN_GRID_W * unit) / 2f
+        val oy = h - BOOKMARK_PIN_GRID_H * unit
 
-        // Anchor tip strictly 1.90 dp above bitmap bottom edge so iconOffset(+1.90f) is 0.00 dp drift on every DPI
-        val tipY = h - BOOKMARK_PIN_TIP_BOTTOM_PAD_DP * d               // 24.10 dp on 26.0 dp canvas
-        val headY = tipY - visibleStemLen - headR                       // 10.30 dp on 26.0 dp canvas
+        c.save()
+        c.translate(ox, oy)
 
-        // Tapered stem with smooth concave fillets into underside of circular head
-        val stemOverlapTopY = headY + 6.50f * d                         // 16.80 dp (inside circle for clean UNION)
-        val filletTopY = headY + 7.80f * d                              // 18.10 dp (on circle underside)
-        val filletTopHalfW = 2.60f * d                                  // hypot(2.6, 7.8) = 8.22 < 8.30
-        val neckY = headY + 9.50f * d                                   // 19.80 dp (right below concave fillet)
-        val neckHalfW = 1.30f * d                                       // ~2.60 dp wide below fillet
-        val tipR = 0.60f * d                                            // ~1.2-1.3 dp just above rounded tip
-        val tipCapY = tipY - tipR                                       // 23.50 dp -> colored bottom at 24.10 dp
-
-        // Exact external tangent angle from (cx +/- neckHalfW, neckY) to tip cap (cx, tipCapY, tipR)
-        val distNT = hypot(neckHalfW.toDouble(), (tipCapY - neckY).toDouble())
-        val taperRad = atan2(neckHalfW.toDouble(), (tipCapY - neckY).toDouble()) -
-            asin((tipR.toDouble() / distNT).coerceIn(-1.0, 1.0))
-        val taperDeg = Math.toDegrees(taperRad).toFloat()
-        val cosT = cos(taperRad).toFloat()
-        val sinT = sin(taperRad).toFloat()
-        val tanT = sinT / cosT
-
-        // Quadratic fillet control point lies on straight needle flank extended up to y = 18.55 dp (C1 smooth)
-        val filletCtrlY = headY + 8.25f * d
-        val filletCtrlHalfW = neckHalfW + (neckY - filletCtrlY) * tanT
-
-        val tipCapRect = RectF(cx - tipR, tipCapY - tipR, cx + tipR, tipCapY + tipR)
-        val stemPath = Path().apply {
-            moveTo(cx - filletTopHalfW, stemOverlapTopY)
-            lineTo(cx + filletTopHalfW, stemOverlapTopY)
-            lineTo(cx + filletTopHalfW, filletTopY)
-            quadTo(cx + filletCtrlHalfW, filletCtrlY, cx + neckHalfW, neckY)
-            lineTo(cx + tipR * cosT, tipCapY + tipR * sinT)
-            arcTo(tipCapRect, taperDeg, 180f - 2f * taperDeg, false)
-            lineTo(cx - neckHalfW, neckY)
-            quadTo(cx - filletCtrlHalfW, filletCtrlY, cx - filletTopHalfW, filletTopY)
+        val path = Path().apply {
+            // Step A: Upper circular head (center (16.0, 12.0), r = 9.0, 155° clockwise by 230° to 25°)
+            arcTo(RectF(7.0f * unit, 3.0f * unit, 25.0f * unit, 21.0f * unit), 155f, 230f, true)
+            // Step B: Smooth right shoulder curving inward into narrow pinched waist (17.25, 23.40)
+            cubicTo(22.26f * unit, 19.88f * unit, 17.25f * unit, 20.80f * unit, 17.25f * unit, 23.40f * unit)
+            // Step C: Flare smoothly outward into right edge of round bottom droplet (18.45, 26.80)
+            cubicTo(17.25f * unit, 24.70f * unit, 18.45f * unit, 25.40f * unit, 18.45f * unit, 26.80f * unit)
+            // Step D: Round bottom droplet semicircle centered at (16.0, 26.80), r = 2.45 (bottom y = 29.25)
+            arcTo(RectF(13.55f * unit, 24.35f * unit, 18.45f * unit, 29.25f * unit), 0f, 180f, false)
+            // Step E: Narrow smoothly back inward to left waist (14.75, 23.40)
+            cubicTo(13.55f * unit, 25.40f * unit, 14.75f * unit, 24.70f * unit, 14.75f * unit, 23.40f * unit)
+            // Step F: Sweep smoothly back outward to left shoulder (7.843, 15.804) and close
+            cubicTo(14.75f * unit, 20.80f * unit, 9.74f * unit, 19.88f * unit, 7.843f * unit, 15.804f * unit)
             close()
         }
 
-        val pinUnionPath = Path().apply {
-            addCircle(cx, headY, headR, Path.Direction.CW)
-            op(stemPath, Path.Op.UNION)
-        }
-
-        // Layer 1a: Very subtle drop shadow beneath circular head (zero extra bottom padding)
-        val headShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(45, 0, 0, 0)
-            style = Paint.Style.FILL
-            maskFilter = BlurMaskFilter((1.0f * d).coerceAtLeast(0.5f), BlurMaskFilter.Blur.NORMAL)
-        }
-        c.drawCircle(cx, headY + 0.6f * d, headR, headShadowPaint)
-
-        // Layer 1b: Grounding contact point centered directly at exact tip (12.0, 24.1)
-        val contactOuterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(110, 0, 0, 0)
-            style = Paint.Style.FILL
-            maskFilter = BlurMaskFilter((0.6f * d).coerceAtLeast(0.5f), BlurMaskFilter.Blur.NORMAL)
-        }
-        c.drawCircle(cx, tipY, 1.65f * d, contactOuterPaint)
-
-        val contactInnerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(145, 0, 0, 0)
-            style = Paint.Style.FILL
-        }
-        c.drawCircle(cx, tipY, 0.95f * d, contactInnerPaint)
-
-        // Layer 2: Ultra-thin white hairline border (1.1 dp stroke = 0.55 dp visible white rim)
-        val whiteBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        // Layer 1: Crisp uniform white outer outline (~1.14 dp visible white border outside fill)
+        val whiteOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = BOOKMARK_PIN_WHITE_STROKE_DP * d
+            strokeWidth = 2.6f * unit
             strokeJoin = Paint.Join.ROUND
             strokeCap = Paint.Cap.ROUND
         }
-        c.drawPath(pinUnionPath, whiteBorderPaint)
+        c.drawPath(path, whiteOutlinePaint)
 
-        // Layer 3: Solid dynamic color fill (seamless circular head + tapered stem)
+        // Layer 2: Solid dynamic colored fill
         val fillColor = runCatching { Color.parseColor(colorHex) }.getOrDefault(Color.parseColor("#E69500"))
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = fillColor
             style = Paint.Style.FILL
         }
-        c.drawPath(pinUnionPath, fillPaint)
+        c.drawPath(path, fillPaint)
 
-        // Layer 4: Crisp inner white center dot (6.1 dp dia, ~36.7% of 16.6 dp head)
-        // or optional custom white category icon centered at (cx, headY)
+        // Layer 3: Balanced inner white center dot at (16.0, 12.0), r = 4.2 * unit (~46.7% of head dia)
+        val headCx = 16.0f * unit
+        val headCy = 12.0f * unit
         if (drawCenterGlyph != null) {
-            drawCenterGlyph(c, cx, headY, d)
+            drawCenterGlyph(c, headCx, headCy, d)
         } else {
             val innerDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 style = Paint.Style.FILL
             }
-            c.drawCircle(cx, headY, innerDotR, innerDotPaint)
+            c.drawCircle(headCx, headCy, 4.2f * unit, innerDotPaint)
         }
 
+        c.restore()
         return bmp
     }
 
