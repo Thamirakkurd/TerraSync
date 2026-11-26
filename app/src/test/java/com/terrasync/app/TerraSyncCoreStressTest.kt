@@ -1,7 +1,9 @@
 package com.terrasync.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedWriter
@@ -436,5 +438,135 @@ class TerraSyncCoreStressTest {
         assertTrue(Regex("""\d{8}_\d{4}""").matches(TimeFormatters.fileStamp(sampleMs)))
         val reportTs = TimeFormatters.reportTimestamp(sampleMs)
         assertTrue(reportTs.isNotBlank() && reportTs.contains("•"))
+    }
+
+    @Test
+    fun testMapViewModelStateTransitions() {
+        val vm = MapViewModel()
+        vm.selectPin("p2", listOf("p1", "p2", "p3"))
+        assertEquals("p2", vm.selectedPinId)
+        assertEquals(1, vm.selectedStackedIndex)
+        assertEquals("p3", vm.cycleStackedPin(1))
+        assertEquals("p1", vm.cycleStackedPin(1))
+        assertEquals("p3", vm.cycleStackedPin(-1))
+
+        vm.selectTappedLocation(36.85, 42.95, "Tap Place", "Duhok")
+        assertNull(vm.selectedPinId)
+        assertTrue(vm.selectedStackedPinIds.isEmpty())
+        assertEquals(GeoPoint(36.85, 42.95), vm.selectedMarkerGeoPoint)
+        assertEquals("Tap Place", vm.tappedLocation?.title)
+
+        assertFalse(vm.toggleStatusFilter("pending"))
+        assertFalse(vm.visibleStatuses.contains("pending"))
+        vm.hideSentPins = true
+        vm.resetFilters()
+        assertEquals(MapViewModel.ALL_STATUSES, vm.visibleStatuses)
+        assertFalse(vm.hideSentPins)
+
+        vm.setRouteOrigin(36.84, 42.94, "Origin")
+        assertEquals("Origin", vm.routeOrigin?.label)
+        val route = NavRoute(listOf(42.94 to 36.84, 42.95 to 36.85), 1400.0, 110.0, emptyList())
+        vm.previewRoute = route
+        vm.startNavigation(route, 36.85, 42.95, "Dest")
+        assertNull(vm.previewRoute)
+        assertNotNull(vm.activeNavRoute)
+        assertTrue(vm.isFollowingGps)
+        vm.stopNavigation()
+        vm.clearRouteOrigin()
+        assertNull(vm.activeNavRoute)
+        assertNull(vm.routeOrigin)
+
+        vm.setRulerMode(true)
+        vm.addRulerPoint(36.8, 42.9)
+        vm.addRulerPoint(36.81, 42.91)
+        assertTrue(vm.undoRulerPoint())
+        assertEquals(1, vm.rulerPoints.size)
+        vm.setRulerMode(false)
+        assertTrue(vm.rulerPoints.isEmpty())
+
+        vm.setLassoMode(true)
+        vm.lassoPendingPinIds = listOf("p1")
+        vm.setLassoMode(false)
+        assertTrue(vm.lassoPendingPinIds.isEmpty())
+
+        vm.setSearchState("feeder", "pending")
+        assertEquals("feeder", vm.searchQuery)
+        assertEquals("pending", vm.searchQuickFilter)
+        vm.clearSelection()
+        assertNull(vm.selectedMarkerGeoPoint)
+        assertNull(vm.tappedLocation)
+    }
+
+    @Test
+    fun testPinEditHistoryAuditRecomputeHelper() {
+        val empty = PinEditHistoryAudit.recomputeFromHistoryLines(emptyList(), 9999L)
+        assertEquals("pending", empty.status)
+        assertEquals("", empty.issueReason)
+        assertFalse(empty.isEdited)
+        assertEquals("", empty.editedBy)
+        assertEquals(0L, empty.editedAt)
+
+        val issueLines = listOf(
+            "24 Nov 18:42 • Ali (#A1B2) → issue: Need Fuse",
+            "24 Nov 18:40 • Ali (#A1B2) → done: Meter Linked"
+        )
+        val issueState = PinEditHistoryAudit.recomputeFromHistoryLines(issueLines, 9999L)
+        assertEquals("issue", issueState.status)
+        assertEquals("Need Fuse", issueState.issueReason)
+        assertTrue(issueState.isEdited)
+        assertEquals("Ali (#A1B2)", issueState.editedBy)
+        assertTrue(issueState.editedAt > 0L)
+
+        val revertedToDone = PinEditHistoryAudit.recomputeFromHistoryLines(issueLines.drop(1), 9999L)
+        assertEquals("done", revertedToDone.status)
+        assertEquals("Meter Linked", revertedToDone.issueReason)
+        assertTrue(revertedToDone.isEdited)
+
+        val textOnly = PinEditHistoryAudit.recomputeFromHistoryLines(
+            listOf("24 Nov 18:45 • Omar (#C3D4) edited text"),
+            9999L
+        )
+        assertEquals("pending", textOnly.status)
+        assertEquals("", textOnly.issueReason)
+        assertTrue(textOnly.isEdited)
+        assertEquals("Omar (#C3D4)", textOnly.editedBy)
+    }
+
+    @Test
+    fun testStackedBucketKeyAndExactStackedPins() {
+        assertTrue(stackedBucketKey(-12, 34) != stackedBucketKey(12, 34))
+        assertTrue(stackedBucketKey(-1, -1) != stackedBucketKey(0, 0))
+
+        val s1 = PinItem("p1", "l1", "Base", "", 36.850000, 42.950000, "pending")
+        val s2 = PinItem("p2", "l1", "Stacked Issue", "", 36.850005, 42.950005, "issue")
+        val sHidden = PinItem("p3", "l2", "Hidden Layer", "", 36.850002, 42.950002, "pending")
+        val sFiltered = PinItem("p4", "l1", "Filtered Done", "", 36.850003, 42.950003, "done")
+        val sFar = PinItem("p5", "l1", "Far", "", 36.851000, 42.950000, "pending")
+
+        val snap = buildFolderIndexSnapshot(
+            mergedLayers = listOf(LayerItem("l1", "F1"), LayerItem("l2", "F2")),
+            mergedPins = listOf(s1, s2, sHidden, sFiltered, sFar),
+            mergedTracks = emptyList(),
+            version = 7L,
+            isLiveConnected = false
+        )
+
+        val stacked = findExactStackedPinsFromSnapshot(
+            snapshot = snap,
+            pin = s1,
+            hiddenLayerIds = setOf("l2"),
+            visibleStatuses = setOf("pending", "issue"),
+            sentIds = emptySet()
+        )
+        assertEquals(listOf("p1", "p2"), stacked.map { it.id })
+
+        val withoutSent = findExactStackedPinsFromSnapshot(
+            snapshot = snap,
+            pin = s1,
+            hiddenLayerIds = setOf("l2"),
+            visibleStatuses = setOf("pending", "issue", "done"),
+            sentIds = setOf("p2")
+        )
+        assertEquals(listOf("p1", "p4"), withoutSent.map { it.id })
     }
 }

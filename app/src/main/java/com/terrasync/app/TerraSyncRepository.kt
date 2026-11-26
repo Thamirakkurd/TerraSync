@@ -100,9 +100,11 @@ internal fun findExactStackedPinsFromSnapshot(
  */
 class TerraSyncRepository(
     context: Context,
-    val syncRepo: SyncRepo = SyncRepo(context.applicationContext)
+    syncRepoOverride: SyncRepo? = null
 ) {
     private val appContext: Context = context.applicationContext
+    private val syncRepoDelegate = lazy { syncRepoOverride ?: SyncRepo(appContext) }
+    val syncRepo: SyncRepo get() = syncRepoDelegate.value
     private val mergeIndexGeneration = AtomicInteger(0)
     private val pendingCallbacksLock = Any()
     private val pendingIndexedCallbacks = mutableListOf<(FolderIndexSnapshot) -> Unit>()
@@ -453,6 +455,8 @@ class TerraSyncRepository(
 
     fun stop() {
         onSnapshotUpdated = null
-        syncRepo.stopListening()
+        if (syncRepoDelegate.isInitialized()) {
+            syncRepo.stopListening()
+        }
     }
 }

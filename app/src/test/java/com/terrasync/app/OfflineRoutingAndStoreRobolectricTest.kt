@@ -539,4 +539,63 @@ class OfflineRoutingAndStoreRobolectricTest {
             LocalFolderStore.resetForTest(ctx)
         }
     }
+
+    @Test
+    fun testTerraSyncRepositoryMergeAndAsyncIndexCallbackOrdering() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        LocalFolderStore.resetForTest(ctx)
+        try {
+            val localLayerId = "local_repo_idx"
+            val localPins = (1..150).map { i ->
+                PinItem("lp_$i", localLayerId, "Local $i", "", 36.85 + i * 0.0001, 42.95)
+            }
+            LocalFolderStore.saveNewLayer(
+                ctx,
+                localLayerId,
+                "Local 150",
+                "QA",
+                "Q1",
+                ParsedKml(localPins, emptyList(), "Local 150")
+            )
+            LocalFolderStore.flushPendingWritesForTest(ctx)
+            LocalFolderStore.clearCacheForTest()
+
+            val repo = TerraSyncRepository(ctx)
+            val cloudPins = (1..100).map { i ->
+                PinItem("cp_$i", "cloud_repo_idx", "Cloud $i", "", 36.87 + i * 0.0001, 42.96)
+            }
+            repo.setCloudStateForTest(
+                layers = listOf(LayerItem("cloud_repo_idx", "Cloud 100", updatedAt = 2000L)),
+                pins = cloudPins,
+                connected = true
+            )
+
+            val latch = java.util.concurrent.CountDownLatch(2)
+            var cb1Snap: FolderIndexSnapshot? = null
+            var cb2Snap: FolderIndexSnapshot? = null
+            repo.applyMergedFolders { s1 ->
+                cb1Snap = s1
+                latch.countDown()
+            }
+            repo.applyMergedFolders { s2 ->
+                cb2Snap = s2
+                latch.countDown()
+            }
+
+            val deadline = System.currentTimeMillis() + 5_000L
+            while (latch.count > 0 && System.currentTimeMillis() < deadline) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                if (latch.count > 0) Thread.sleep(15)
+            }
+            assertTrue("Expected both coalesced async onIndexed callbacks to execute", latch.count == 0L)
+            assertEquals(250, cb1Snap?.pins?.size)
+            assertEquals(250, cb2Snap?.pins?.size)
+            assertEquals(2, repo.snapshot.layers.size)
+            assertNotNull(repo.snapshot.pinById["lp_150"])
+            assertNotNull(repo.snapshot.pinById["cp_100"])
+            assertTrue(repo.snapshot.stackedPinBuckets.isNotEmpty())
+        } finally {
+            LocalFolderStore.resetForTest(ctx)
+        }
+    }
 }
