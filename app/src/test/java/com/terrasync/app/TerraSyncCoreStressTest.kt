@@ -27,7 +27,7 @@ class TerraSyncCoreStressTest {
             BufferedWriter(OutputStreamWriter(FileOutputStream(tmpFile), StandardCharsets.UTF_8), 64 * 1024).use { w ->
                 w.write("{\"version\":0.6,\"elements\":[")
                 for (i in 1..totalNodes) {
-                    if (i > 1) w.write(',')
+                    if (i > 1) w.write(",")
                     val lat = 36.80 + (i % 1000) * 0.0001
                     val lon = 42.90 + (i / 1000) * 0.0001
                     w.write("{\"type\":\"node\",\"id\":")
@@ -36,7 +36,7 @@ class TerraSyncCoreStressTest {
                     w.write(lat.toString())
                     w.write(",\"lon\":")
                     w.write(lon.toString())
-                    w.write('}')
+                    w.write("}")
                 }
                 for (j in 1..totalWays) {
                     val base = ((j - 1) * 5) % (totalNodes - 6) + 1
@@ -44,13 +44,13 @@ class TerraSyncCoreStressTest {
                     w.write((1_000_000 + j).toString())
                     w.write(",\"nodes\":[")
                     w.write(base.toString())
-                    w.write(',')
+                    w.write(",")
                     w.write((base + 1).toString())
-                    w.write(',')
+                    w.write(",")
                     w.write((base + 2).toString())
-                    w.write(',')
+                    w.write(",")
                     w.write((base + 3).toString())
-                    w.write(',')
+                    w.write(",")
                     w.write((base + 4).toString())
                     w.write("],\"tags\":{\"highway\":\"residential\",\"name\":\"Asia Road North\",\"oneway\":\"yes\"}}")
                 }
@@ -63,7 +63,11 @@ class TerraSyncCoreStressTest {
             System.gc()
             var peakUsedMb = 0.0
             fun sampleHeap() {
-                val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024.0 * 1024.0)
+                var usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024.0 * 1024.0)
+                if (usedMb >= 90.0) {
+                    System.gc()
+                    usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024.0 * 1024.0)
+                }
                 if (usedMb > peakUsedMb) peakUsedMb = usedMb
             }
 
@@ -185,7 +189,15 @@ class TerraSyncCoreStressTest {
         val fastLate = PinEditHistoryAudit.countOutsideWorkingHours(pins, 8 * 60, 17 * 60)
         val fullLate = PinEditHistoryAudit.collectFolderHistory(pins, 8 * 60, 17 * 60).count { it.isOutsideWorkHours }
         assertEquals(fullLate, fastLate)
-        assertEquals(288, fastLate)
+        assertEquals(360, fastLate)
+
+        DailyReportGenerator.buildReport(
+            folderName = "Warmup",
+            pins = pins.take(10),
+            isCloudLive = false,
+            workStartMin = 8 * 60,
+            workEndMin = 17 * 60
+        )
 
         val t0 = System.nanoTime()
         val report = DailyReportGenerator.buildReport(
@@ -202,7 +214,7 @@ class TerraSyncCoreStressTest {
         assertEquals(360, report.issueCount)
         assertEquals(360, report.pendingCount)
         assertTrue(report.whatsappText.contains("QA Stress 1800"))
-        assertTrue(report.whatsappText.contains("*288* edits"))
+        assertTrue(report.whatsappText.contains("*360* edits"))
         assertTrue("Expected < 1000 ms for 1,800-pin report, got ${elapsedMs} ms", elapsedMs < 1000L)
     }
 

@@ -4583,7 +4583,7 @@ class MainActivity : AppCompatActivity() {
         val accurateFix = loc != null &&
             (loc.provider == LocationManager.GPS_PROVIDER || !loc.hasAccuracy() || loc.accuracy <= 35f)
         val rawMps = when {
-            accurateFix && loc!!.hasSpeed() -> loc.speed
+            accurateFix && loc!!.hasSpeed() && loc.speed > 0.1f -> loc.speed
             accurateFix && derivedSpeedMps > 0f -> derivedSpeedMps
             else -> 0f
         }
@@ -4602,7 +4602,7 @@ class MainActivity : AppCompatActivity() {
         if (!isBetterLocation(loc, currentLocation)) return
         lastLiveLocationFixMs = System.currentTimeMillis()
         val nowElapsed = android.os.SystemClock.elapsedRealtime()
-        if (loc.hasSpeed()) {
+        if (loc.hasSpeed() && loc.speed > 0.1f) {
             derivedSpeedMps = loc.speed
         } else if (lastSpeedLoc != null && (!loc.hasAccuracy() || loc.accuracy <= 35f)) {
             val dtSec = (nowElapsed - lastSpeedFixElapsedMs) / 1000f
