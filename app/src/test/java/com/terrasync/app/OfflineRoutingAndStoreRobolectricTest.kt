@@ -85,9 +85,8 @@ class OfflineRoutingAndStoreRobolectricTest {
     @Test
     fun testLocalFolderStoreStreamingRoundTrip() {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val storeFile = File(ctx.filesDir, "local_folders_v1.json")
-        storeFile.delete()
-        LocalFolderStore.clearCacheForTest()
+        val dbFile = ctx.getDatabasePath("terrasync_local_store.db")
+        LocalFolderStore.resetForTest(ctx)
 
         val pins = (1..250).map { i ->
             val st = when (i % 3) {
@@ -131,9 +130,10 @@ class OfflineRoutingAndStoreRobolectricTest {
         )
         LocalFolderStore.flushPendingWritesForTest(ctx)
         LocalFolderStore.clearCacheForTest()
-        assertTrue("Expected persisted local_folders_v1.json on disk", storeFile.exists())
+        assertTrue("Expected persisted SQLite WAL DB on disk", dbFile.exists())
+        assertEquals("wal", LocalFolderStore.queryJournalMode(ctx))
 
-        // Simulate interrupted atomic write leftovers (.tmp & .tmp2) and verify loadAll cleans both
+        // Simulate interrupted legacy atomic write leftovers (.tmp & .tmp2) and verify loadAll cleans both
         val staleTmp = File(ctx.filesDir, "local_folders_v1.json.tmp").apply { writeText("{}") }
         val staleTmp2 = File(ctx.filesDir, "local_folders_v1.json.tmp2").apply { writeText("{}") }
         val reloaded = LocalFolderStore.loadAll(ctx)
@@ -164,8 +164,126 @@ class OfflineRoutingAndStoreRobolectricTest {
         assertEquals(original.isEdited, afterUndo.isEdited)
         assertEquals(original.editHistory, afterUndo.editHistory)
 
-        storeFile.delete()
-        LocalFolderStore.clearCacheForTest()
+        LocalFolderStore.resetForTest(ctx)
+    }
+
+    @Test
+    fun testLegacyJsonToSqliteWalMigrationLossless() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        LocalFolderStore.resetForTest(ctx)
+        try {
+            val legacyFile = File(ctx.filesDir, "local_folders_v1.json")
+            val staleTmp = File(ctx.filesDir, "local_folders_v1.json.tmp").apply { writeText("corrupt") }
+            val staleTmp2 = File(ctx.filesDir, "local_folders_v1.json.tmp2").apply { writeText("corrupt") }
+            legacyFile.writeText(
+                """
+                {
+                  "layers": [
+                    {"id":"local_leg_1","name":"Feeder Duhok","createdBy":"Team 1 (#A1)","creatorDeviceId":"A1","updatedAt":1764100000000},
+                    {"id":"local_leg_2","name":"جيايێ زاویتە","createdBy":"Team 2 (#B2)","creatorDeviceId":"B2","updatedAt":1764200000000}
+                  ],
+                  "pins": [
+                    {"id":"leg_p1","layerId":"local_leg_1","name":"Feeder 104 - گەرەکا سەرهلدان","description":"المحطة الشمالية","lat":36.853238,"lng":42.952074,"status":"issue","issueReason":"Need Electricity","updatedAt":1764200001000,"isEdited":true,"editedBy":"Team 1 (#A1)","editedAt":1764200001000,"editHistory":"26 Nov 18:10 • Team 1 → Issue: Need Electricity","folderPath":"Sector 1 / Line A"},
+                    {"id":"leg_p2","layerId":"local_leg_2","name":"Transformer #2","description":"","lat":36.8601,"lng":42.9602,"status":"done","issueReason":"Meter Linked","updatedAt":1764200002000,"isEdited":true,"editedBy":"Team 2 (#B2)","editedAt":1764200002000,"editHistory":"26 Nov 18:12 • Team 2 → Done: Meter Linked"},
+                    {"id":"leg_p3","layerId":"local_orphan_layer","name":"Orphan Pin","description":"Recovered folder test","lat":36.87,"lng":42.97,"status":"pending","issueReason":"","updatedAt":1764200003000,"isEdited":false,"editedBy":"","editedAt":0,"editHistory":""}
+                  ],
+                  "tracks": [
+                    {"id":"leg_t1","layerId":"local_leg_1","name":"Main Line","coords":"42.95,36.85;42.96,36.86","updatedAt":1764200001000,"folderPath":"Sector 1 / Line A"}
+                  ]
+                }
+                """.trimIndent(),
+                Charsets.UTF_8
+            )
+
+            assertEquals("wal", LocalFolderStore.queryJournalMode(ctx))
+            val migrated = LocalFolderStore.loadAll(ctx)
+            assertFalse("Expected .tmp removed", staleTmp.exists())
+            assertFalse("Expected .tmp2 removed", staleTmp2.exists())
+            assertFalse("Expected legacy JSON archived", legacyFile.exists())
+            assertTrue("Expected .migrated.bak backup created", File(ctx.filesDir, "local_folders_v1.json.migrated.bak").exists())
+
+            // Synthesizes recovery layer for leg_p3 plus the 2 declared folders => 3 layers, 3 pins, 1 track
+            assertEquals(3, migrated.layers.size)
+            assertEquals(3, migrated.pins.size)
+            assertEquals(1, migrated.tracks.size)
+            val p1 = migrated.pins.first { it.id == "leg_p1" }
+            assertEquals("Feeder 104 - گەرەکا سەرهلدان", p1.name)
+            assertEquals("issue", p1.status)
+            assertEquals("Need Electricity", p1.issueReason)
+            assertEquals("Sector 1 / Line A", p1.folderPath)
+            assertEquals("26 Nov 18:10 • Team 1 → Issue: Need Electricity", p1.editHistory)
+            assertEquals("Sector 1 / Line A", migrated.tracks.first().folderPath)
+
+            // Idempotency across cold cache reset / restart
+            LocalFolderStore.clearCacheForTest()
+            val reloaded = LocalFolderStore.loadAll(ctx)
+            assertEquals(3, reloaded.layers.size)
+            assertEquals(3, reloaded.pins.size)
+            assertEquals(1, reloaded.tracks.size)
+        } finally {
+            LocalFolderStore.resetForTest(ctx)
+        }
+    }
+
+    @Test
+    fun testSqliteWal1800PinBatchAndSinglePinUpdateLatency() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        LocalFolderStore.resetForTest(ctx)
+        try {
+            val pins = (1..1800).map { i ->
+                PinItem(
+                    id = "wal_p_$i",
+                    layerId = "local_wal_stress",
+                    name = "Feeder $i - گەرەکا سەرهلدان",
+                    description = "Note $i",
+                    lat = 36.80 + (i % 45) * 0.0005,
+                    lng = 42.90 + (i / 45) * 0.0005,
+                    status = "pending",
+                    updatedAt = 1_764_150_000_000L
+                )
+            }
+            val tBatch0 = System.nanoTime()
+            LocalFolderStore.saveNewLayer(
+                ctx = ctx,
+                layerId = "local_wal_stress",
+                layerName = "WAL Stress 1800",
+                createdBy = "QA",
+                creatorDeviceId = "QA1",
+                parsed = ParsedKml(pins = pins, tracks = emptyList(), documentName = "WAL Stress 1800")
+            )
+            val batchMs = (System.nanoTime() - tBatch0) / 1_000_000.0
+
+            val loaded = LocalFolderStore.loadAll(ctx)
+            assertEquals(1800, loaded.pins.size)
+
+            val editedIds = (0 until 10).map { idx -> "wal_p_${idx * 150 + 1}" }
+            val latencies = mutableListOf<Double>()
+            for (pid in editedIds) {
+                val target = LocalFolderStore.getPinById(ctx, pid)!!
+                val t0 = System.nanoTime()
+                LocalFolderStore.updatePinStatus(ctx, target, "done", "QA (#1)", "Meter Linked")
+                latencies.add((System.nanoTime() - t0) / 1_000_000.0)
+            }
+            val avgSingleMs = latencies.average()
+            println(
+                "[CI-STRESS] SQLite WAL 1800 pins: batchSave=${"%.2f".format(Locale.US, batchMs)} ms, " +
+                    "singlePinAvg=${"%.2f".format(Locale.US, avgSingleMs)} ms, journal=${LocalFolderStore.queryJournalMode(ctx)}"
+            )
+            assertTrue("Expected single-pin WAL update avg < 30 ms, got $avgSingleMs", avgSingleMs < 30.0)
+
+            LocalFolderStore.flushPendingWritesForTest(ctx)
+            LocalFolderStore.clearCacheForTest()
+            val reloaded = LocalFolderStore.loadAll(ctx)
+            assertEquals(1800, reloaded.pins.size)
+            for (pid in editedIds) {
+                val rp = reloaded.pins.first { it.id == pid }
+                assertEquals("done", rp.status)
+                assertEquals("Meter Linked", rp.issueReason)
+                assertTrue(rp.editHistory.contains("Meter Linked"))
+            }
+        } finally {
+            LocalFolderStore.resetForTest(ctx)
+        }
     }
 
     @Test
@@ -355,5 +473,70 @@ class OfflineRoutingAndStoreRobolectricTest {
         assertTrue(localSent.contains("p_keep_1"))
         assertFalse(localSent.contains("p_orphan_1"))
         assertFalse(localSent.contains("p_orphan_2"))
+    }
+
+    @Test
+    fun testManualPinsSurviveSqlRestartWithoutCascadeWipe() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        LocalFolderStore.resetForTest(ctx)
+        try {
+            val p1 = LocalFolderStore.addManualPin(ctx, "Pole A", "First pole", 36.851, 42.951, "Team 1 (#A1B2)", "A1B2")
+            val p2 = LocalFolderStore.addManualPin(ctx, "Pole B", "Second pole", 36.852, 42.952, "Team 1 (#A1B2)", "A1B2")
+            val p3 = LocalFolderStore.addManualPin(ctx, "Pole C", "Third pole", 36.853, 42.953, "Team 1 (#A1B2)", "A1B2")
+            LocalFolderStore.flushPendingWritesForTest(ctx)
+            LocalFolderStore.clearCacheForTest()
+
+            val reloaded = LocalFolderStore.loadAll(ctx)
+            assertEquals("Expected single My Field Pins parent layer", 1, reloaded.layers.size)
+            assertEquals("Expected all 3 manual pins to survive without FK cascade wipe", 3, reloaded.pins.size)
+            val ids = reloaded.pins.map { it.id }.toSet()
+            assertTrue(ids.contains(p1.id))
+            assertTrue(ids.contains(p2.id))
+            assertTrue(ids.contains(p3.id))
+            assertEquals("Pole A", reloaded.pins.first { it.id == p1.id }.name)
+            assertEquals("Pole B", reloaded.pins.first { it.id == p2.id }.name)
+            assertEquals("Pole C", reloaded.pins.first { it.id == p3.id }.name)
+        } finally {
+            LocalFolderStore.resetForTest(ctx)
+        }
+    }
+
+    @Test
+    fun testAsyncWriteOrderingAndRestartDurability() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        LocalFolderStore.resetForTest(ctx)
+        try {
+            val layerId = "local_async_order"
+            val p1 = PinItem("async_1", layerId, "Pin 1", "Orig", 36.85, 42.95)
+            val p2 = PinItem("async_2", layerId, "Pin 2", "Keep", 36.86, 42.96)
+            val p3 = PinItem("async_3", layerId, "Pin 3", "Drop", 36.87, 42.97)
+            LocalFolderStore.saveNewLayer(ctx, layerId, "Initial Layer", "QA", "Q1", ParsedKml(listOf(p1, p2, p3), emptyList(), "Initial Layer"))
+
+            // Enqueue rapid back-to-back mutations without flushing in between
+            val editedP1 = LocalFolderStore.updatePinStatus(ctx, p1, "issue", "QA (#Q1)", "Need Fuse")
+            LocalFolderStore.updatePinText(ctx, editedP1, "Pin 1 Renamed", "Updated Desc", "QA (#Q1)")
+            LocalFolderStore.renameLayer(ctx, layerId, "Renamed Layer")
+            LocalFolderStore.deletePins(ctx, listOf(p3.id))
+
+            // In-memory snapshot reflects every queued mutation immediately
+            val inMem = LocalFolderStore.getCachedOrNull()!!
+            assertEquals("Renamed Layer", inMem.layers.first().name)
+            assertEquals(2, inMem.pins.size)
+
+            LocalFolderStore.flushPendingWritesForTest(ctx)
+            LocalFolderStore.clearCacheForTest()
+            val disk = LocalFolderStore.loadAll(ctx)
+            assertEquals(1, disk.layers.size)
+            assertEquals("Renamed Layer", disk.layers.first().name)
+            assertEquals(2, disk.pins.size)
+            val rp1 = disk.pins.first { it.id == p1.id }
+            assertEquals("Pin 1 Renamed", rp1.name)
+            assertEquals("Updated Desc", rp1.description)
+            assertEquals("issue", rp1.status)
+            assertEquals("Need Fuse", rp1.issueReason)
+            assertTrue(disk.pins.none { it.id == p3.id })
+        } finally {
+            LocalFolderStore.resetForTest(ctx)
+        }
     }
 }

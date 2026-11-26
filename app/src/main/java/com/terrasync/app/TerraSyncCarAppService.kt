@@ -72,10 +72,25 @@ class TerraSyncCarSession : Session() {
 private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carContext) {
     private val repo = SyncRepo(carContext.applicationContext)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var cloudLayers: List<LayerItem> = emptyList()
+    private var cloudPins: List<PinItem> = emptyList()
     private var layers: List<LayerItem> = emptyList()
     private var pins: List<PinItem> = emptyList()
     private var loaded = false
     private var destroyed = false
+
+    private fun refreshMergedState(updatedCloudPinId: String? = null) {
+        if (destroyed) return
+        if (updatedCloudPinId != null) {
+            cloudPins = cloudPins.map { p ->
+                if (p.id == updatedCloudPinId) p.copy(status = "done", issueReason = "") else p
+            }
+        }
+        val local = LocalFolderStore.getCachedOrNull() ?: LocalFolderStore.loadAll(carContext)
+        layers = (cloudLayers + local.layers).sortedByDescending { it.updatedAt }
+        pins = cloudPins + local.pins
+        invalidate()
+    }
 
     init {
         lifecycle.addObserver(object : DefaultLifecycleObserver {
@@ -88,12 +103,22 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
                         if (destroyed) return@preloadAsync
                         mainHandler.post {
                             if (destroyed) return@post
+                            cloudLayers = newLayers
+                            cloudPins = newPins
                             layers = (newLayers + local.layers).sortedByDescending { it.updatedAt }
                             pins = newPins + local.pins
                             loaded = true
                             invalidate()
                         }
                     }
+                }
+            }
+
+            override fun onResume(owner: LifecycleOwner) {
+                if (!loaded || destroyed) return
+                LocalFolderStore.preloadAsync(carContext) {
+                    if (destroyed) return@preloadAsync
+                    mainHandler.post { refreshMergedState() }
                 }
             }
 
@@ -155,9 +180,11 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
                         .addText("$distStr • $folderTitle")
                         .setBrowsable(true)
                         .setOnClickListener {
+                            val markedId = nearestUnfinished.id
+                            val isCloud = !LocalFolderStore.isLocalLayerId(nearestUnfinished.layerId)
                             screenManager.push(
                                 TerraSyncCarPinDetailScreen(carContext, nearestUnfinished, folderTitle, repo) {
-                                    invalidate()
+                                    refreshMergedState(if (isCloud) markedId else null)
                                 }
                             )
                         }
@@ -175,7 +202,9 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
                     .setBrowsable(true)
                     .setOnClickListener {
                         screenManager.push(
-                            TerraSyncCarPinsScreen(carContext, "All Visible Pins", visiblePins, visibleLayers, repo)
+                            TerraSyncCarPinsScreen(carContext, "All Visible Pins", visiblePins, visibleLayers, repo) { cloudPinId ->
+                                refreshMergedState(cloudPinId)
+                            }
                         )
                     }
                     .build()
@@ -198,7 +227,9 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
                     .setBrowsable(true)
                     .setOnClickListener {
                         screenManager.push(
-                            TerraSyncCarPinsScreen(carContext, layer.name, folderPins, visibleLayers, repo)
+                            TerraSyncCarPinsScreen(carContext, layer.name, folderPins, visibleLayers, repo) { cloudPinId ->
+                                refreshMergedState(cloudPinId)
+                            }
                         )
                     }
                     .build()
@@ -218,7 +249,8 @@ private class TerraSyncCarPinsScreen(
     private val title: String,
     private val sourcePins: List<PinItem>,
     private val layers: List<LayerItem>,
-    private val repo: SyncRepo
+    private val repo: SyncRepo,
+    private val onPinMarkedDone: (String?) -> Unit
 ) : Screen(carContext) {
 
     private val workingPins = sourcePins.toMutableList()
@@ -299,6 +331,8 @@ private class TerraSyncCarPinsScreen(
                             TerraSyncCarPinDetailScreen(carContext, pin, folderName, repo) {
                                 val idx = workingPins.indexOfFirst { it.id == pin.id }
                                 if (idx >= 0) workingPins[idx] = workingPins[idx].copy(status = "done", issueReason = "")
+                                val cloudPinId = if (LocalFolderStore.isLocalLayerId(pin.layerId)) null else pin.id
+                                onPinMarkedDone(cloudPinId)
                                 invalidate()
                             }
                         )

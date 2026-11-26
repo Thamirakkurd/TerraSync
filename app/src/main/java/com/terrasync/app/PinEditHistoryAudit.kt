@@ -18,6 +18,15 @@ data class PinEditEntry(
     val isOutsideWorkHours: Boolean
 )
 
+data class RecomputedPinHistory(
+    val status: String,
+    val issueReason: String,
+    val isEdited: Boolean,
+    val editedBy: String,
+    val editedAt: Long,
+    val editHistory: String
+)
+
 /**
  * Parses per-pin edit history logs across a KML/cloud folder into a unified
  * chronological submission timeline with working-hours compliance checks.
@@ -417,5 +426,51 @@ object PinEditHistoryAudit {
                 }
             }
         }.trim()
+    }
+
+    /**
+     * Recomputes authoritative pin status/note/metadata fields from remaining edit-history lines
+     * after removing an audit entry (shared by LocalFolderStore SQLite WAL and SyncRepo Firestore).
+     */
+    fun recomputeFromHistoryLines(lines: List<String>, nowMs: Long): RecomputedPinHistory {
+        val cleaned = lines.map { it.trim() }.filter { it.isNotBlank() }
+        val newHistory = cleaned.joinToString("\n")
+        val latestStatusLine = cleaned.firstOrNull { it.contains("→") }
+        var newStatus = "pending"
+        var newReason = ""
+        var newEditedBy = ""
+        val newIsEdited = cleaned.isNotEmpty()
+        val newEditedAt = if (cleaned.isNotEmpty()) {
+            parseLineTimestampMs(cleaned.first()).takeIf { it > 0L } ?: nowMs
+        } else 0L
+
+        if (latestStatusLine != null) {
+            val left = latestStatusLine.substringBefore("→").trim()
+            val right = latestStatusLine.substringAfter("→").trim()
+            newEditedBy = left.substringAfter("•", left).trim()
+            val statusToken = right.substringBefore(":").trim().lowercase(Locale.US)
+            val reasonPart = if (right.contains(":")) right.substringAfter(":").trim() else ""
+            newStatus = when (statusToken) {
+                "done" -> "done"
+                "issue" -> "issue"
+                else -> "pending"
+            }
+            newReason = if (newStatus == "done" || newStatus == "issue") reasonPart else ""
+        } else if (cleaned.isNotEmpty()) {
+            val first = cleaned.first()
+            val afterBullet = first.substringAfter("•", first).trim()
+            newEditedBy = if (afterBullet.endsWith("edited text", ignoreCase = true)) {
+                afterBullet.dropLast("edited text".length).trim()
+            } else afterBullet
+        }
+
+        return RecomputedPinHistory(
+            status = newStatus,
+            issueReason = newReason,
+            isEdited = newIsEdited,
+            editedBy = newEditedBy,
+            editedAt = newEditedAt,
+            editHistory = newHistory
+        )
     }
 }

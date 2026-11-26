@@ -473,38 +473,46 @@ class SyncRepo(context: Context? = null) {
         requireServerCommit: Boolean = false,
         onDone: (Boolean, String, String) -> Unit
     ) {
-        val now = System.currentTimeMillis()
-        val shareCode = generateShareCode()
-        val ops = mutableListOf<BatchWriteOp>()
+        val dispatch: (String?) -> Unit = { resolvedUid ->
+            val creatorUid = resolvedUid?.takeIf { it.isNotBlank() } ?: currentUid() ?: ""
+            val now = System.currentTimeMillis()
+            val shareCode = generateShareCode()
+            val ops = mutableListOf<BatchWriteOp>()
 
-        ops += BatchWriteOp(
-            db.collection("layers").document(layerId),
-            mapOf(
-                "id" to layerId,
-                "name" to layerName,
-                "shareCode" to shareCode,
-                "createdBy" to createdBy,
-                "creatorDeviceId" to creatorDeviceId,
-                "creatorUid" to (currentUid() ?: ""),
-                "updatedAt" to now
+            ops += BatchWriteOp(
+                db.collection("layers").document(layerId),
+                mapOf(
+                    "id" to layerId,
+                    "name" to layerName,
+                    "shareCode" to shareCode,
+                    "createdBy" to createdBy,
+                    "creatorDeviceId" to creatorDeviceId,
+                    "creatorUid" to creatorUid,
+                    "updatedAt" to now
+                )
             )
-        )
 
-        parsed.pins.forEach { p ->
-            ops += BatchWriteOp(db.collection("pins").document(p.id), buildPinPayload(p.id, layerId, p, now))
+            parsed.pins.forEach { p ->
+                ops += BatchWriteOp(db.collection("pins").document(p.id), buildPinPayload(p.id, layerId, p, now))
+            }
+
+            parsed.tracks.forEach { t ->
+                ops += BatchWriteOp(db.collection("tracks").document(t.id), buildTrackPayload(t.id, layerId, t, now))
+            }
+
+            commitOpsInBatches(
+                ops,
+                "Imported ${parsed.pins.size} pins into \"$layerName\" (Code: $shareCode)",
+                shareCode,
+                onDone,
+                requireServerCommit = requireServerCommit
+            )
         }
-
-        parsed.tracks.forEach { t ->
-            ops += BatchWriteOp(db.collection("tracks").document(t.id), buildTrackPayload(t.id, layerId, t, now))
+        if (currentUid() == null && !isOnline()) {
+            dispatch(null)
+        } else {
+            ensureAuthenticated(dispatch)
         }
-
-        commitOpsInBatches(
-            ops,
-            "Imported ${parsed.pins.size} pins into \"$layerName\" (Code: $shareCode)",
-            shareCode,
-            onDone,
-            requireServerCommit = requireServerCommit
-        )
     }
 
     fun appendToCloudLayer(
@@ -545,45 +553,53 @@ class SyncRepo(context: Context? = null) {
         sourceTracks: List<TrackItem>,
         onDone: (Boolean, String, String) -> Unit
     ) {
-        val now = System.currentTimeMillis()
-        val shareCode = generateShareCode()
-        val ops = mutableListOf<BatchWriteOp>()
+        val dispatch: (String?) -> Unit = { resolvedUid ->
+            val creatorUid = resolvedUid?.takeIf { it.isNotBlank() } ?: currentUid() ?: ""
+            val now = System.currentTimeMillis()
+            val shareCode = generateShareCode()
+            val ops = mutableListOf<BatchWriteOp>()
 
-        ops += BatchWriteOp(
-            db.collection("layers").document(newLayerId),
-            mapOf(
-                "id" to newLayerId,
-                "name" to layerName,
-                "shareCode" to shareCode,
-                "createdBy" to createdBy,
-                "creatorDeviceId" to creatorDeviceId,
-                "creatorUid" to (currentUid() ?: ""),
-                "updatedAt" to now
-            )
-        )
-
-        sourcePins.forEach { p ->
-            val newId = UUID.randomUUID().toString()
             ops += BatchWriteOp(
-                db.collection("pins").document(newId),
-                buildPinPayload(newId, newLayerId, p, p.updatedAt.takeIf { it > 0L } ?: now)
+                db.collection("layers").document(newLayerId),
+                mapOf(
+                    "id" to newLayerId,
+                    "name" to layerName,
+                    "shareCode" to shareCode,
+                    "createdBy" to createdBy,
+                    "creatorDeviceId" to creatorDeviceId,
+                    "creatorUid" to creatorUid,
+                    "updatedAt" to now
+                )
+            )
+
+            sourcePins.forEach { p ->
+                val newId = UUID.randomUUID().toString()
+                ops += BatchWriteOp(
+                    db.collection("pins").document(newId),
+                    buildPinPayload(newId, newLayerId, p, p.updatedAt.takeIf { it > 0L } ?: now)
+                )
+            }
+
+            sourceTracks.forEach { t ->
+                val newId = UUID.randomUUID().toString()
+                ops += BatchWriteOp(
+                    db.collection("tracks").document(newId),
+                    buildTrackPayload(newId, newLayerId, t, now)
+                )
+            }
+
+            commitOpsInBatches(
+                ops,
+                "Combined ${sourcePins.size} pins into \"$layerName\" (Code: $shareCode)",
+                shareCode,
+                onDone
             )
         }
-
-        sourceTracks.forEach { t ->
-            val newId = UUID.randomUUID().toString()
-            ops += BatchWriteOp(
-                db.collection("tracks").document(newId),
-                buildTrackPayload(newId, newLayerId, t, now)
-            )
+        if (currentUid() == null && !isOnline()) {
+            dispatch(null)
+        } else {
+            ensureAuthenticated(dispatch)
         }
-
-        commitOpsInBatches(
-            ops,
-            "Combined ${sourcePins.size} pins into \"$layerName\" (Code: $shareCode)",
-            shareCode,
-            onDone
-        )
     }
 
     fun joinLayerByCode(rawCode: String, onDone: (Boolean, String, String?) -> Unit) {
@@ -903,44 +919,15 @@ class SyncRepo(context: Context? = null) {
     }
 
     private fun recomputeHistoryFields(lines: List<String>, now: Long): Map<String, Any> {
-        val newHistory = lines.joinToString("\n")
-        val latestStatusLine = lines.firstOrNull { it.contains("→") }
-        var newStatus = "pending"
-        var newReason = ""
-        var newEditedBy = ""
-        val newIsEdited = lines.isNotEmpty()
-        val newEditedAt = if (lines.isNotEmpty()) {
-            PinEditHistoryAudit.parseLineTimestampMs(lines.first()).takeIf { it > 0L } ?: now
-        } else 0L
-
-        if (latestStatusLine != null) {
-            val left = latestStatusLine.substringBefore("→").trim()
-            val right = latestStatusLine.substringAfter("→").trim()
-            newEditedBy = left.substringAfter("•", left).trim()
-            val statusToken = right.substringBefore(":").trim().lowercase()
-            val reasonPart = if (right.contains(":")) right.substringAfter(":").trim() else ""
-            newStatus = when (statusToken) {
-                "done" -> "done"
-                "issue" -> "issue"
-                else -> "pending"
-            }
-            newReason = if (newStatus == "done" || newStatus == "issue") reasonPart else ""
-        } else if (lines.isNotEmpty()) {
-            val first = lines.first()
-            val afterBullet = first.substringAfter("•", first).trim()
-            newEditedBy = if (afterBullet.endsWith("edited text", ignoreCase = true)) {
-                afterBullet.dropLast("edited text".length).trim()
-            } else afterBullet
-        }
-
+        val recomputed = PinEditHistoryAudit.recomputeFromHistoryLines(lines, now)
         return mapOf(
-            "status" to newStatus,
-            "issueReason" to newReason,
+            "status" to recomputed.status,
+            "issueReason" to recomputed.issueReason,
             "updatedAt" to now,
-            "isEdited" to newIsEdited,
-            "editedBy" to newEditedBy,
-            "editedAt" to newEditedAt,
-            "editHistory" to newHistory
+            "isEdited" to recomputed.isEdited,
+            "editedBy" to recomputed.editedBy,
+            "editedAt" to recomputed.editedAt,
+            "editHistory" to recomputed.editHistory
         )
     }
 
