@@ -171,8 +171,8 @@ class OfflineRoutingAndStoreRobolectricTest {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val chunkFile = File.createTempFile("qa_robo_multimb_", ".json", ctx.cacheDir)
         val packId = "qa_robo_multimb"
-        val rows = 120
-        val cols = 125 // 15,000 nodes, 245 ways -> ~2.0+ MB JSON, ~59,510 directed edges
+        val rows = 180
+        val cols = 180 // 32,400 nodes, 360 ways -> ~2.27 MB JSON, ~128,880 directed edges
         try {
             BufferedWriter(OutputStreamWriter(FileOutputStream(chunkFile), StandardCharsets.UTF_8), 64 * 1024).use { w ->
                 w.write("{\"version\":0.6,\"elements\":[")
