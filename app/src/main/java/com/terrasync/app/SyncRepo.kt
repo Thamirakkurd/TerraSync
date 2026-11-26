@@ -19,6 +19,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -44,6 +45,7 @@ class SyncRepo(context: Context? = null) {
     private val pinsByLayer = mutableMapOf<String, List<PinItem>>()
     private val tracksByLayer = mutableMapOf<String, List<TrackItem>>()
     private val liveListenerStates = mutableMapOf<String, Boolean>()
+    private val pendingWritesByLayer = ConcurrentHashMap<String, Int>()
     private var connected: Boolean = false
     private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -208,6 +210,7 @@ class SyncRepo(context: Context? = null) {
             layerMap.remove(layerId)
             pinsByLayer.remove(layerId)
             tracksByLayer.remove(layerId)
+            pendingWritesByLayer.remove(layerId)
             liveListenerStates.remove("layer:$layerId")
             liveListenerStates.remove("pins:$layerId")
             liveListenerStates.remove("tracks:$layerId")
@@ -220,6 +223,7 @@ class SyncRepo(context: Context? = null) {
 
         if (joinedLayerIds.isEmpty()) {
             liveListenerStates.clear()
+            pendingWritesByLayer.clear()
             connected = isOnline()
             emitNow()
             return
@@ -262,6 +266,7 @@ class SyncRepo(context: Context? = null) {
                         return@addSnapshotListener
                     }
                     updateConnectedFlag("pins:$layerId", snap?.metadata?.isFromCache != true)
+                    pendingWritesByLayer[layerId] = snap?.documents?.count { it.metadata.hasPendingWrites() } ?: 0
                     pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
                         val lat = d.getDouble("lat") ?: return@mapNotNull null
                         val lng = d.getDouble("lng") ?: return@mapNotNull null
@@ -341,6 +346,7 @@ class SyncRepo(context: Context? = null) {
         pinsByLayer.clear()
         tracksByLayer.clear()
         liveListenerStates.clear()
+        pendingWritesByLayer.clear()
         listenerCallback = null
         mainHandler.removeCallbacksAndMessages(null)
         val cb = networkCallback
@@ -933,6 +939,26 @@ class SyncRepo(context: Context? = null) {
             editedAt = 0L,
             editHistory = ""
         )
+    }
+
+    fun pendingUploadCount(): Int = pendingWritesByLayer.values.sum()
+
+    fun restorePinStatusSnapshot(previousPin: PinItem, onError: ((String) -> Unit)? = null): PinItem {
+        val now = System.currentTimeMillis()
+        db.collection("pins").document(previousPin.id).update(
+            mapOf(
+                "status" to previousPin.status,
+                "issueReason" to previousPin.issueReason,
+                "updatedAt" to now,
+                "isEdited" to previousPin.isEdited,
+                "editedBy" to previousPin.editedBy,
+                "editedAt" to previousPin.editedAt,
+                "editHistory" to previousPin.editHistory
+            )
+        ).addOnFailureListener { e ->
+            onError?.invoke(e.message ?: "Failed to restore pin status")
+        }
+        return previousPin.copy(updatedAt = now)
     }
 
     fun deletePin(pinId: String, onError: ((String) -> Unit)? = null) {

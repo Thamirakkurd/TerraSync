@@ -17,7 +17,8 @@ enum class HillshadeIntensity(val id: String, val label: String, val exaggeratio
 
 enum class AppLanguage(val id: String, val label: String, val isRtl: Boolean) {
     ENGLISH("en", "English", false),
-    KURDISH("ku", "کوردی", true),
+    KURDISH_SORANI("ku", "کوردی (سۆرانی)", true),
+    KURDISH_BADINI("ku_badini", "کوردی (بادینی)", true),
     ARABIC("ar", "العربية", true);
 
     companion object {

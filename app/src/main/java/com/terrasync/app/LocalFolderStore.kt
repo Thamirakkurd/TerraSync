@@ -593,6 +593,14 @@ object LocalFolderStore {
         updated
     }
 
+    fun restorePinStatusSnapshot(ctx: Context, previousPin: PinItem): PinItem = synchronized(lock) {
+        val cur = loadAll(ctx)
+        val now = System.currentTimeMillis()
+        val restored = previousPin.copy(updatedAt = now)
+        writeAll(ctx, cur.copy(pins = cur.pins.map { if (it.id == previousPin.id) restored else it }))
+        restored
+    }
+
     fun renameLayer(ctx: Context, layerId: String, newName: String) = synchronized(lock) {
         val clean = newName.trim()
         if (clean.isBlank()) return

@@ -9,6 +9,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 object KmlCsvExporter {
 
@@ -41,15 +43,98 @@ object KmlCsvExporter {
         return sb.toString()
     }
 
-    private fun csvEscape(s: String): String {
-        val clean = s.replace("\"", "\"\"").replace("\r", " ").replace("\n", " | ")
-        return "\"$clean\""
+    internal fun csvEscape(s: String): String {
+        val normalized = s.replace("\r", " ").replace("\n", " | ")
+        val guarded = if (normalized.isNotEmpty() && normalized[0] in charArrayOf('=', '+', '-', '@', '\t')) {
+            "'$normalized"
+        } else {
+            normalized
+        }
+        return "\"${guarded.replace("\"", "\"\"")}\""
     }
 
     private fun styleUrlForStatus(status: String): String = when (PinStatus.fromRaw(status)) {
         PinStatus.DONE -> "#placemark-green"
         PinStatus.ISSUE -> "#placemark-red"
         PinStatus.PENDING -> "#placemark-orange"
+    }
+
+    private fun buildKmlXml(
+        exportTitle: String,
+        pinsCopy: List<PinItem>,
+        tracksCopy: List<TrackItem>
+    ): String {
+        val sb = StringBuilder((pinsCopy.size * 420 + tracksCopy.size * 256 + 1024).coerceAtMost(8 * 1024 * 1024))
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document>\n")
+        sb.append("  <name>${xmlEscape(exportTitle)}</name>\n")
+        sb.append("  <Style id=\"placemark-green\">\n")
+        sb.append("    <IconStyle><color>ff5ec522</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/grn-circle.png</href></Icon></IconStyle>\n")
+        sb.append("  </Style>\n")
+        sb.append("  <Style id=\"placemark-red\">\n")
+        sb.append("    <IconStyle><color>ff4444ef</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-circle.png</href></Icon></IconStyle>\n")
+        sb.append("  </Style>\n")
+        sb.append("  <Style id=\"placemark-orange\">\n")
+        sb.append("    <IconStyle><color>ff0b9ef5</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon></IconStyle>\n")
+        sb.append("  </Style>\n")
+
+        pinsCopy.forEach { p ->
+            val normStatus = PinStatus.fromRaw(p.status).key
+            val hasMeaningfulEdit = normStatus != "pending" ||
+                p.issueReason.isNotBlank() ||
+                p.isEdited ||
+                p.editedBy.isNotBlank() ||
+                p.editHistory.isNotBlank()
+
+            val descParts = mutableListOf<String>()
+            descParts += "Status: ${statusLabel(normStatus)}"
+            if (p.issueReason.isNotBlank()) {
+                val noteLabel = if (normStatus == "done") "Done Note" else "Issue"
+                descParts += "$noteLabel: ${p.issueReason}"
+            }
+            if (p.description.isNotBlank()) descParts += p.description
+            if (p.isEdited && p.editedBy.isNotBlank()) descParts += "Edited by: ${p.editedBy}"
+
+            sb.append("  <Placemark>\n")
+            sb.append("    <name>${xmlEscape(p.name)}</name>\n")
+            sb.append("    <styleUrl>${styleUrlForStatus(normStatus)}</styleUrl>\n")
+            sb.append("    <description>${xmlEscape(descParts.joinToString("\n"))}</description>\n")
+            sb.append("    <ExtendedData>\n")
+            sb.append("      <Data name=\"ts_status\"><value>${xmlEscape(normStatus)}</value></Data>\n")
+            if (p.issueReason.isNotBlank()) {
+                sb.append("      <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
+            }
+            sb.append("      <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
+            if (hasMeaningfulEdit) {
+                sb.append("      <Data name=\"ts_is_edited\"><value>true</value></Data>\n")
+            }
+            if (p.editedBy.isNotBlank()) {
+                sb.append("      <Data name=\"ts_edited_by\"><value>${xmlEscape(p.editedBy)}</value></Data>\n")
+            }
+            if (p.editedAt > 0L) {
+                sb.append("      <Data name=\"ts_edited_at\"><value>${p.editedAt}</value></Data>\n")
+            }
+            if (p.editHistory.isNotBlank()) {
+                sb.append("      <Data name=\"ts_edit_history\"><value>${xmlEscape(p.editHistory)}</value></Data>\n")
+            }
+            sb.append("    </ExtendedData>\n")
+            sb.append("    <Point><coordinates>${p.lng},${p.lat},0</coordinates></Point>\n")
+            sb.append("  </Placemark>\n")
+        }
+
+        tracksCopy.forEach { t ->
+            val validPts = t.coords.split(";").map { it.trim() }.filter { it.contains(",") }
+            if (validPts.size >= 2) {
+                val coordText = validPts.joinToString(" ") { "$it,0" }
+                sb.append("  <Placemark>\n")
+                sb.append("    <name>${xmlEscape(t.name)}</name>\n")
+                sb.append("    <LineString><coordinates>$coordText</coordinates></LineString>\n")
+                sb.append("  </Placemark>\n")
+            }
+        }
+
+        sb.append("</Document>\n</kml>\n")
+        return sb.toString()
     }
 
     fun exportAndShareKml(
@@ -78,77 +163,7 @@ object KmlCsvExporter {
                     safeFileName(layer.name)
                 }
                 val file = File(dir, "$baseName.kml")
-                val sb = StringBuilder((pinsCopy.size * 420 + tracksCopy.size * 256 + 1024).coerceAtMost(8 * 1024 * 1024))
-                sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-                sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document>\n")
-                sb.append("  <name>${xmlEscape(exportTitle)}</name>\n")
-                sb.append("  <Style id=\"placemark-green\">\n")
-                sb.append("    <IconStyle><color>ff5ec522</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/grn-circle.png</href></Icon></IconStyle>\n")
-                sb.append("  </Style>\n")
-                sb.append("  <Style id=\"placemark-red\">\n")
-                sb.append("    <IconStyle><color>ff4444ef</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-circle.png</href></Icon></IconStyle>\n")
-                sb.append("  </Style>\n")
-                sb.append("  <Style id=\"placemark-orange\">\n")
-                sb.append("    <IconStyle><color>ff0b9ef5</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon></IconStyle>\n")
-                sb.append("  </Style>\n")
-
-                pinsCopy.forEach { p ->
-                    val normStatus = PinStatus.fromRaw(p.status).key
-                    val hasMeaningfulEdit = normStatus != "pending" ||
-                        p.issueReason.isNotBlank() ||
-                        p.isEdited ||
-                        p.editedBy.isNotBlank() ||
-                        p.editHistory.isNotBlank()
-
-                    val descParts = mutableListOf<String>()
-                    descParts += "Status: ${statusLabel(normStatus)}"
-                    if (p.issueReason.isNotBlank()) {
-                        val noteLabel = if (normStatus == "done") "Done Note" else "Issue"
-                        descParts += "$noteLabel: ${p.issueReason}"
-                    }
-                    if (p.description.isNotBlank()) descParts += p.description
-                    if (p.isEdited && p.editedBy.isNotBlank()) descParts += "Edited by: ${p.editedBy}"
-
-                    sb.append("  <Placemark>\n")
-                    sb.append("    <name>${xmlEscape(p.name)}</name>\n")
-                    sb.append("    <styleUrl>${styleUrlForStatus(normStatus)}</styleUrl>\n")
-                    sb.append("    <description>${xmlEscape(descParts.joinToString("\n"))}</description>\n")
-                    sb.append("    <ExtendedData>\n")
-                    sb.append("      <Data name=\"ts_status\"><value>${xmlEscape(normStatus)}</value></Data>\n")
-                    if (p.issueReason.isNotBlank()) {
-                        sb.append("      <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
-                    }
-                    sb.append("      <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
-                    if (hasMeaningfulEdit) {
-                        sb.append("      <Data name=\"ts_is_edited\"><value>true</value></Data>\n")
-                    }
-                    if (p.editedBy.isNotBlank()) {
-                        sb.append("      <Data name=\"ts_edited_by\"><value>${xmlEscape(p.editedBy)}</value></Data>\n")
-                    }
-                    if (p.editedAt > 0L) {
-                        sb.append("      <Data name=\"ts_edited_at\"><value>${p.editedAt}</value></Data>\n")
-                    }
-                    if (p.editHistory.isNotBlank()) {
-                        sb.append("      <Data name=\"ts_edit_history\"><value>${xmlEscape(p.editHistory)}</value></Data>\n")
-                    }
-                    sb.append("    </ExtendedData>\n")
-                    sb.append("    <Point><coordinates>${p.lng},${p.lat},0</coordinates></Point>\n")
-                    sb.append("  </Placemark>\n")
-                }
-
-                tracksCopy.forEach { t ->
-                    val validPts = t.coords.split(";").map { it.trim() }.filter { it.contains(",") }
-                    if (validPts.size >= 2) {
-                        val coordText = validPts.joinToString(" ") { "$it,0" }
-                        sb.append("  <Placemark>\n")
-                        sb.append("    <name>${xmlEscape(t.name)}</name>\n")
-                        sb.append("    <LineString><coordinates>$coordText</coordinates></LineString>\n")
-                        sb.append("  </Placemark>\n")
-                    }
-                }
-
-                sb.append("</Document>\n</kml>\n")
-                file.writeText(sb.toString(), Charsets.UTF_8)
+                file.writeText(buildKmlXml(exportTitle, pinsCopy, tracksCopy), Charsets.UTF_8)
                 file to "Export KML: $exportTitle"
             }
             mainHandler.post {
@@ -200,6 +215,61 @@ object KmlCsvExporter {
                     shareFile(ctx, file, "text/csv", "Export CSV: ${layer.name}", null)
                 }.onFailure {
                     android.widget.Toast.makeText(appCtx, "Failed to export CSV file", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    fun exportBackupAllLocalFoldersZip(
+        ctx: Context,
+        localLayers: List<LayerItem>,
+        allPins: List<PinItem>,
+        allTracks: List<TrackItem>
+    ) {
+        if (localLayers.isEmpty()) {
+            android.widget.Toast.makeText(ctx, AppStrings.noLocalFoldersBackup(ctx), android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val appCtx = ctx.applicationContext
+        val layersSnap = localLayers.toList()
+        val pinsByLayer = allPins.groupBy { it.layerId }
+        val tracksByLayer = allTracks.groupBy { it.layerId }
+        android.widget.Toast.makeText(ctx, AppStrings.preparingBackup(ctx), android.widget.Toast.LENGTH_SHORT).show()
+
+        RoutingEngine.ioExecutor.execute {
+            val result = runCatching {
+                val dir = File(appCtx.cacheDir, "exports").apply { mkdirs() }
+                cleanupOldExports(dir)
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                val zipFile = File(dir, "TerraSync_Local_Backup_$stamp.zip")
+                ZipOutputStream(zipFile.outputStream().buffered()).use { zos ->
+                    layersSnap.forEachIndexed { idx, layer ->
+                        val entryName = "%02d_%s.kml".format(Locale.US, idx + 1, safeFileName(layer.name))
+                        val kmlXml = buildKmlXml(
+                            exportTitle = layer.name,
+                            pinsCopy = pinsByLayer[layer.id].orEmpty(),
+                            tracksCopy = tracksByLayer[layer.id].orEmpty()
+                        )
+                        zos.putNextEntry(ZipEntry(entryName))
+                        zos.write(kmlXml.toByteArray(Charsets.UTF_8))
+                        zos.closeEntry()
+                    }
+                }
+                zipFile
+            }
+            mainHandler.post {
+                val act = ctx as? android.app.Activity
+                if (act != null && (act.isFinishing || act.isDestroyed)) return@post
+                result.onSuccess { file ->
+                    shareFile(
+                        ctx,
+                        file,
+                        "application/zip",
+                        "TerraSync Local Backup (${layersSnap.size} folders)",
+                        null
+                    )
+                }.onFailure {
+                    android.widget.Toast.makeText(appCtx, "Failed to create local backup", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         }

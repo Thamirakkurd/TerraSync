@@ -109,6 +109,17 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
         })
     }
 
+    @SuppressLint("MissingPermission")
+    private fun getLastKnownLocation(): Location? {
+        val hasPerm = ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasPerm) return null
+        val lm = carContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        return providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+            .maxByOrNull { it.time }
+    }
+
     override fun onGetTemplate(): Template {
         if (!loaded) {
             return ListTemplate.Builder()
@@ -122,9 +133,50 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
             .setNoItemsMessage("No bookmark folders synced yet. Import a KML on your phone.")
 
         val hidden = DevicePrefs.getHiddenLayerIds(carContext)
+        val pinnedIds = DevicePrefs.getPinnedLayerIds(carContext)
+        val visibleLayers = layers
+            .filter { it.id !in hidden }
+            .sortedWith(compareByDescending<LayerItem> { it.id in pinnedIds }.thenByDescending { it.updatedAt })
         val visiblePins = pins.filter { it.layerId !in hidden }
+        var headerCount = 0
 
         if (visiblePins.isNotEmpty()) {
+            val myLoc = getLastKnownLocation()
+            val nearestUnfinished = if (myLoc != null) {
+                visiblePins
+                    .filter { PinStatus.fromRaw(it.status) != PinStatus.DONE }
+                    .minByOrNull { RoutingEngine.haversineMeters(myLoc.latitude, myLoc.longitude, it.lat, it.lng) }
+            } else {
+                visiblePins.firstOrNull { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+                    ?: visiblePins.firstOrNull { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
+            }
+            if (nearestUnfinished != null) {
+                val folderTitle = visibleLayers.find { it.id == nearestUnfinished.layerId }?.name
+                    ?: layers.find { it.id == nearestUnfinished.layerId }?.name
+                    ?: "Pin"
+                val distStr = if (myLoc != null) {
+                    val m = RoutingEngine.haversineMeters(myLoc.latitude, myLoc.longitude, nearestUnfinished.lat, nearestUnfinished.lng)
+                    if (m < 1000.0) "${m.toInt()} m" else "${"%.1f".format(java.util.Locale.US, m / 1000.0)} km"
+                } else {
+                    PinStatus.fromRaw(nearestUnfinished.status).label
+                }
+                listBuilder.addItem(
+                    Row.Builder()
+                        .setTitle("${AppStrings.nearestPending(carContext)}: ${nearestUnfinished.name.ifBlank { "Pin" }}")
+                        .addText("$distStr • $folderTitle")
+                        .setBrowsable(true)
+                        .setOnClickListener {
+                            screenManager.push(
+                                TerraSyncCarPinDetailScreen(carContext, nearestUnfinished, folderTitle, repo) {
+                                    invalidate()
+                                }
+                            )
+                        }
+                        .build()
+                )
+                headerCount++
+            }
+
             val pendingCount = visiblePins.count { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
             val issueCount = visiblePins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
             listBuilder.addItem(
@@ -134,25 +186,30 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
                     .setBrowsable(true)
                     .setOnClickListener {
                         screenManager.push(
-                            TerraSyncCarPinsScreen(carContext, "All Visible Pins", visiblePins, layers, repo)
+                            TerraSyncCarPinsScreen(carContext, "All Visible Pins", visiblePins, visibleLayers, repo)
                         )
                     }
                     .build()
             )
+            headerCount++
         }
 
-        layers.take(5).forEach { layer ->
+        val folderSlots = (6 - headerCount).coerceAtLeast(0)
+        visibleLayers.take(folderSlots).forEach { layer ->
             val folderPins = pins.filter { it.layerId == layer.id }
             val pending = folderPins.count { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
             val issues = folderPins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+            val isPinned = layer.id in pinnedIds
+            val prefix = if (isPinned) "★ " else ""
+            val subPrefix = if (isPinned) "Pinned • " else ""
             listBuilder.addItem(
                 Row.Builder()
-                    .setTitle(layer.name.ifBlank { "Folder" })
-                    .addText("${folderPins.size} pins  •  Pending: $pending  •  Issue: $issues")
+                    .setTitle("$prefix${layer.name.ifBlank { "Folder" }}")
+                    .addText("${subPrefix}${folderPins.size} pins  •  Pending: $pending  •  Issue: $issues")
                     .setBrowsable(true)
                     .setOnClickListener {
                         screenManager.push(
-                            TerraSyncCarPinsScreen(carContext, layer.name, folderPins, layers, repo)
+                            TerraSyncCarPinsScreen(carContext, layer.name, folderPins, visibleLayers, repo)
                         )
                     }
                     .build()

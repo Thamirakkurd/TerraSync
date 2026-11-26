@@ -8,7 +8,7 @@ import android.widget.FrameLayout
 import kotlin.math.abs
 
 /**
- * Floating bottom navigation dock container that cleanly detects downward swipes
+ * Floating bottom navigation dock container that interactively follows downward swipes
  * to enter Full-Screen Clean Map Mode while leaving single taps on the 4 inner
  * navigation pills completely untouched.
  */
@@ -19,6 +19,8 @@ class SwipeDockFrameLayout @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
     var onSwipeDown: (() -> Unit)? = null
+    var onSwipeProgress: ((Float) -> Unit)? = null
+    var onSwipeCancel: (() -> Unit)? = null
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val triggerDistancePx = 28f * resources.displayMetrics.density
@@ -57,14 +59,22 @@ class SwipeDockFrameLayout @JvmOverloads constructor(
                 downY = event.rawY
                 trackingSwipe = true
                 triggered = false
+                animate().cancel()
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (trackingSwipe && !triggered) {
-                    val dy = event.rawY - downY
-                    if (dy >= triggerDistancePx) {
+                    val dy = (event.rawY - downY).coerceAtLeast(0f)
+                    val progress = (dy / triggerDistancePx).coerceIn(0f, 1f)
+                    if (!UiAnimations.isReducedMotion(context)) {
+                        translationY = dy * 0.55f
+                        alpha = 1f - 0.35f * progress
+                    }
+                    onSwipeProgress?.invoke(progress)
+                    if (dy >= triggerDistancePx * 1.15f) {
                         triggered = true
                         trackingSwipe = false
+                        UiAnimations.hapticTick(this)
                         onSwipeDown?.invoke()
                         return true
                     }
@@ -72,10 +82,25 @@ class SwipeDockFrameLayout @JvmOverloads constructor(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (trackingSwipe && !triggered) {
-                    val dy = event.rawY - downY
-                    if (dy >= triggerDistancePx * 0.85f) {
+                    val dy = (event.rawY - downY).coerceAtLeast(0f)
+                    if (dy >= triggerDistancePx * 0.75f && event.actionMasked == MotionEvent.ACTION_UP) {
                         triggered = true
+                        UiAnimations.hapticTick(this)
                         onSwipeDown?.invoke()
+                    } else {
+                        if (!UiAnimations.isReducedMotion(context)) {
+                            animate().cancel()
+                            animate()
+                                .translationY(0f)
+                                .alpha(1f)
+                                .setDuration(150L)
+                                .setInterpolator(UiAnimations.EMPHASIZED_DECELERATE)
+                                .start()
+                        } else {
+                            translationY = 0f
+                            alpha = 1f
+                        }
+                        onSwipeCancel?.invoke()
                     }
                 }
                 trackingSwipe = false

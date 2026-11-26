@@ -137,6 +137,21 @@ class OfflineRoutingAndStoreRobolectricTest {
         assertEquals("Feeder #250 - گەرەکا سەرهلدان", reloaded.pins[249].name)
         assertEquals("42.94,36.85;42.95,36.86", reloaded.tracks[0].coords)
 
+        // Verify 5-second undo snapshot restore reverts status, note, and editHistory cleanly
+        val original = reloaded.pins[1]
+        val dirty = LocalFolderStore.updatePinStatus(ctx, original, "issue", "QA (#A1B2)", "No Bill")
+        assertEquals("issue", dirty.status)
+        assertTrue(dirty.editHistory.isNotBlank())
+        val undone = LocalFolderStore.restorePinStatusSnapshot(ctx, original)
+        LocalFolderStore.flushPendingWritesForTest(ctx)
+        LocalFolderStore.clearCacheForTest()
+        val afterUndo = LocalFolderStore.loadAll(ctx).pins.first { it.id == original.id }
+        assertEquals(original.status, undone.status)
+        assertEquals(original.status, afterUndo.status)
+        assertEquals(original.issueReason, afterUndo.issueReason)
+        assertEquals(original.isEdited, afterUndo.isEdited)
+        assertEquals(original.editHistory, afterUndo.editHistory)
+
         storeFile.delete()
         LocalFolderStore.clearCacheForTest()
     }

@@ -300,4 +300,18 @@ class TerraSyncCoreStressTest {
         val parsed = DevicePrefs.parseWorkHourPresets(serialized)
         assertEquals(listOf(22 * 60 to 6 * 60, 6 * 60 to 14 * 60), parsed)
     }
+
+    @Test
+    fun testCsvFormulaEscapingAndBadiniDialectCompatibility() {
+        assertEquals("\"'=SUM(A1:A2)\"", KmlCsvExporter.csvEscape("=SUM(A1:A2)"))
+        assertEquals("\"'+12V fault\"", KmlCsvExporter.csvEscape("+12V fault"))
+        assertEquals("\"'-3 phase\"", KmlCsvExporter.csvEscape("-3 phase"))
+        assertEquals("\"'@pole\"", KmlCsvExporter.csvEscape("@pole"))
+        assertEquals("\"Feeder \"\"A\"\" | Note\"", KmlCsvExporter.csvEscape("Feeder \"A\"\nNote"))
+
+        assertEquals(AppLanguage.KURDISH_SORANI, AppLanguage.fromId("ku"))
+        assertEquals(AppLanguage.KURDISH_BADINI, AppLanguage.fromId("ku_badini"))
+        assertTrue(AppLanguage.KURDISH_SORANI.isRtl)
+        assertTrue(AppLanguage.KURDISH_BADINI.isRtl)
+    }
 }

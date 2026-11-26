@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -49,7 +50,29 @@ object UiAnimations {
         return scale == 0f
     }
 
-    /** Crisp, subtle utilitarian tap feedback (no bouncy overshoot). */
+    /** Crisp tactile haptic confirmation on high-value field actions (respects OS touch feedback settings). */
+    fun hapticConfirm(view: View?) {
+        if (view == null) return
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            HapticFeedbackConstants.CONFIRM
+        } else {
+            HapticFeedbackConstants.VIRTUAL_KEY
+        }
+        runCatching { view.performHapticFeedback(code) }
+    }
+
+    /** Subtle light tick for ruler points, compass snap, or dock threshold. */
+    fun hapticTick(view: View?) {
+        if (view == null) return
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            HapticFeedbackConstants.TEXT_HANDLE_MOVE
+        } else {
+            HapticFeedbackConstants.CLOCK_TICK
+        }
+        runCatching { view.performHapticFeedback(code) }
+    }
+
+    /** Crisp, GPU-lean utilitarian tap feedback (avoids extra layer allocations on micro-scales). */
     @SuppressLint("ClickableViewAccessibility")
     fun attachSnappyPress(view: View, pressScale: Float = 0.96f) {
         if (!pressAttached.add(view)) return
@@ -63,7 +86,6 @@ object UiAnimations {
                         .scaleY(pressScale)
                         .setDuration(60L)
                         .setInterpolator(FAST_OUT_SLOW_IN)
-                        .withLayer()
                         .start()
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_OUTSIDE -> {
@@ -73,7 +95,6 @@ object UiAnimations {
                         .scaleY(1f)
                         .setDuration(110L)
                         .setInterpolator(FAST_OUT_SLOW_IN)
-                        .withLayer()
                         .start()
                 }
             }
@@ -116,7 +137,8 @@ object UiAnimations {
         hide: Boolean,
         shiftX: Float = 0f,
         shiftY: Float = 0f,
-        durationMs: Long = 220L
+        durationMs: Long = 220L,
+        startDelayMs: Long = 0L
     ) {
         view.animate().cancel()
         if (hide) {
@@ -131,8 +153,9 @@ object UiAnimations {
                 .translationX(shiftX)
                 .translationY(shiftY)
                 .alpha(0f)
+                .setStartDelay(if (durationMs > 0L) startDelayMs else 0L)
                 .setDuration(durationMs)
-                .setInterpolator(EMPHASIZED_DECELERATE)
+                .setInterpolator(FAST_EXIT)
                 .withLayer()
                 .withEndAction { view.visibility = View.INVISIBLE }
                 .start()
@@ -153,6 +176,7 @@ object UiAnimations {
                 .translationX(0f)
                 .translationY(0f)
                 .alpha(1f)
+                .setStartDelay(if (durationMs > 0L) startDelayMs else 0L)
                 .setDuration(durationMs)
                 .setInterpolator(EMPHASIZED_DECELERATE)
                 .withLayer()
@@ -693,26 +717,44 @@ object UiAnimations {
             .start()
     }
 
-    /** Crisp 120ms in-place alpha crossfade for stacked pin swaps without sheet dismissal or layout jank. */
-    @Suppress("UNUSED_PARAMETER")
+    /** Crisp 160ms directional horizontal glide + alpha crossfade for stacked pin & sheet swaps. */
     fun animateContentSwap(view: View, forward: Boolean = true) {
         view.animate().cancel()
-        view.translationX = 0f
         if (isReducedMotion(view.context)) {
+            view.translationX = 0f
             view.alpha = 1f
             return
         }
-        view.alpha = 0.35f
+        val d = view.resources.displayMetrics.density
+        val isRtl = view.layoutDirection == View.LAYOUT_DIRECTION_RTL
+        val dir = if (forward) (if (isRtl) -1f else 1f) else (if (isRtl) 1f else -1f)
+        view.translationX = dir * 14f * d
+        view.alpha = 0.25f
         view.animate()
+            .translationX(0f)
             .alpha(1f)
-            .setDuration(120L)
-            .setInterpolator(FAST_OUT_SLOW_IN)
+            .setDuration(160L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
             .start()
     }
 
-    /** Subtle optional content reveal (no double-fade when container already animates). */
-    @Suppress("UNUSED_PARAMETER")
-    fun staggerRevealChildren(parent: ViewGroup, maxAnimated: Int = 6) {
-        // Container-level push/pop/enter handles page transitions cleanly without double-fading.
+    /** Fast 18ms staggered vertical reveal for dynamic tab/filter switches inside an already open page. */
+    fun staggerRevealChildren(parent: ViewGroup, maxAnimated: Int = 5) {
+        if (isReducedMotion(parent.context) || parent.childCount == 0) return
+        val d = parent.resources.displayMetrics.density
+        val count = minOf(parent.childCount, maxAnimated)
+        for (idx in 0 until count) {
+            val child = parent.getChildAt(idx)
+            child.animate().cancel()
+            child.alpha = 0f
+            child.translationY = 8f * d
+            child.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setStartDelay(idx * 18L)
+                .setDuration(155L)
+                .setInterpolator(EMPHASIZED_DECELERATE)
+                .start()
+        }
     }
 }
