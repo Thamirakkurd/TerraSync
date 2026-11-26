@@ -249,9 +249,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnRulerClose: ImageButton
     private lateinit var navBanner: LinearLayout
     private lateinit var tvNavArrow: TextView
+    private lateinit var tvNavStepDist: TextView
     private lateinit var tvNavInstruction: TextView
+    private lateinit var navBottomBar: LinearLayout
+    private lateinit var tvNavEta: TextView
     private lateinit var tvNavMeta: TextView
     private lateinit var btnNavVoice: ImageButton
+    private lateinit var btnNavStop: ImageButton
     private lateinit var tvScaleLabel: TextView
     private lateinit var scaleBarLine: ScaleBarView
     private lateinit var scaleBarContainer: LinearLayout
@@ -906,16 +910,22 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(TextView(this).apply {
             text = "تیما خو بنڤیسە"
-            textSize = 18.5f
+            textSize = 15f
             textDirection = View.TEXT_DIRECTION_RTL
-            gravity = Gravity.RIGHT
             setTypeface(null, Typeface.BOLD)
-            setTextColor(p.textPrimary)
-            setPadding(0, 0, 0, dp(6))
+            setTextColor(p.accentPrimary)
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            background = GradientDrawable().apply {
+                setColor(p.accentPrimarySoft)
+                cornerRadius = dp(10).toFloat()
+            }
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            ).apply {
+                gravity = Gravity.START
+                bottomMargin = dp(10)
+            }
         })
         box.addView(TextView(this).apply {
             text = "Enter your operator or team name (e.g. Team 212, Ali, Supervisor) so every pin edit and cloud submission is stamped accurately."
@@ -932,11 +942,15 @@ class MainActivity : AppCompatActivity() {
         box.addView(etName)
 
         val baseDeviceStamp = DevicePrefs.getDeviceStamp(this)
+        val devIdShort = DevicePrefs.getDeviceId(this).take(6)
         val tvPreview = TextView(this).apply {
-            text = "Stamp preview: $baseDeviceStamp"
-            textSize = 12f
-            setTextColor(p.accent)
+            text = "Preview: $baseDeviceStamp"
+            textSize = 11.5f
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+            setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
+            DesignSystem.applyTabularNumerals(this)
             setPadding(dp(4), dp(10), dp(4), dp(4))
         }
         box.addView(tvPreview)
@@ -946,9 +960,9 @@ class MainActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 val typed = s?.toString()?.trim().orEmpty()
                 tvPreview.text = if (typed.isNotBlank()) {
-                    "Stamp preview: $typed ($baseDeviceStamp)"
+                    "Preview: $typed • #$devIdShort"
                 } else {
-                    "Stamp preview: $baseDeviceStamp"
+                    "Preview: $baseDeviceStamp"
                 }
             }
             override fun afterTextChanged(s: Editable?) {}
@@ -989,7 +1003,16 @@ class MainActivity : AppCompatActivity() {
 
         dlg.setOnShowListener {
             DesignSystem.styleAlertDialog(this, dlg, p)
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { trySave() }
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
+                background = GradientDrawable().apply {
+                    setColor(p.accentPrimary)
+                    cornerRadius = dp(20).toFloat()
+                }
+                setTextColor(Color.WHITE)
+                setPadding(dp(18), dp(8), dp(18), dp(8))
+                minHeight = dp(40)
+                setOnClickListener { trySave() }
+            }
             etName.requestFocus()
         }
         dlg.show()
@@ -1062,15 +1085,21 @@ class MainActivity : AppCompatActivity() {
         btnRulerClose = findViewById(R.id.btnRulerClose)
         navBanner = findViewById(R.id.navBanner)
         tvNavArrow = findViewById(R.id.tvNavArrow)
+        tvNavStepDist = findViewById(R.id.tvNavStepDist)
         tvNavInstruction = findViewById(R.id.tvNavInstruction)
+        navBottomBar = findViewById(R.id.navBottomBar)
+        tvNavEta = findViewById(R.id.tvNavEta)
         tvNavMeta = findViewById(R.id.tvNavMeta)
         btnNavVoice = findViewById(R.id.btnNavVoice)
+        btnNavStop = findViewById(R.id.btnNavStop)
         tvScaleLabel = findViewById(R.id.tvScaleLabel)
         scaleBarLine = findViewById(R.id.scaleBarLine)
         scaleBarContainer = findViewById(R.id.scaleBarContainer)
         DesignSystem.applyTabularNumerals(tvSpeedValue)
         DesignSystem.applyTabularNumerals(tvScaleLabel)
         DesignSystem.applyTabularNumerals(tvRulerDistance)
+        DesignSystem.applyTabularNumerals(tvNavStepDist)
+        DesignSystem.applyTabularNumerals(tvNavEta)
         DesignSystem.applyTabularNumerals(tvNavMeta)
         inScreenSheet = findViewById(R.id.inScreenSheet)
         sheetDragHandle = findViewById(R.id.sheetDragHandle)
@@ -1441,8 +1470,17 @@ class MainActivity : AppCompatActivity() {
             setColor(Color.parseColor("#29FFFFFF"))
             cornerRadius = dp(12).toFloat()
         }
-        tvNavMeta.setTextColor(p.navBannerSub)
+        tvNavStepDist.setTextColor(Color.WHITE)
+        tvNavInstruction.setTextColor(Color.parseColor("#EBF9F0"))
+        DesignSystem.applyFloatingSurface(this, navBottomBar, p, radiusDp = 24f, elevationDp = 8f)
+        tvNavEta.setTextColor(p.accentPrimary)
+        tvNavMeta.setTextColor(p.textSecondary)
+        UiAnimations.applyRoundedRipple(this, btnNavVoice, p.surfaceTonal, 22f, night)
+        btnNavVoice.setColorFilter(iconTint)
         UiAnimations.attachSnappyPress(btnNavVoice)
+        UiAnimations.applyRoundedRipple(this, btnNavStop, p.redSoft, 22f, night)
+        btnNavStop.setColorFilter(p.red)
+        UiAnimations.attachSnappyPress(btnNavStop)
         UiAnimations.attachSnappyPress(btnClearRouteFrom)
         if (isLassoMode) updateLassoUi()
     }
@@ -1619,10 +1657,7 @@ class MainActivity : AppCompatActivity() {
         }
         btnNavVoice.alpha = if (DevicePrefs.isVoiceNav(this)) 1.0f else 0.4f
 
-        findViewById<ImageButton>(R.id.btnNavStop).apply {
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener { stopNavigation() }
-        }
+        btnNavStop.setOnClickListener { stopNavigation() }
 
         btnTabSearch.setOnClickListener {
             if (activeOpenNavTab == 0 && pageOverlayContainer.visibility == View.VISIBLE && pageBackStack.isEmpty()) return@setOnClickListener
@@ -2374,7 +2409,7 @@ class MainActivity : AppCompatActivity() {
             PropertyFactory.textAllowOverlap(false),
             PropertyFactory.textIgnorePlacement(false),
             PropertyFactory.textOptional(true)
-        )
+        ).apply { minZoom = 13.5f }
 
         fun makePinIconLayer(layerId: String, srcId: String) = SymbolLayer(layerId, srcId).withProperties(
             PropertyFactory.iconImage(Expression.get("icon")),
@@ -3173,13 +3208,18 @@ class MainActivity : AppCompatActivity() {
         selectedPinId = pin.id
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
         renderSelectedMarker()
+        val stackedCount = findExactStackedPins(pin).size
         // Only re-sort PINS_SOURCE when stacked pins share this coordinate; avoids single-pin tile flicker behind the blue halo
-        if (findExactStackedPins(pin).size > 1) {
+        if (stackedCount > 1) {
             map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
         }
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
         val targetZoom = if (zoomIfFar) currentZoom.coerceAtLeast(15.8) else currentZoom
-        centerUpperHalf(LatLng(pin.lat, pin.lng), targetZoom)
+        centerUpperHalf(
+            LatLng(pin.lat, pin.lng),
+            targetZoom,
+            bottomPadDp = if (stackedCount > 1) 340 else 285
+        )
         showPinCard(pin, animateSwap = false)
     }
 
@@ -3195,12 +3235,12 @@ class MainActivity : AppCompatActivity() {
         if (hadSelection) renderSelectedMarker()
     }
 
-    private fun centerUpperHalf(target: LatLng, zoom: Double) {
+    private fun centerUpperHalf(target: LatLng, zoom: Double, bottomPadDp: Int = 270) {
         val m = map ?: return
         val cam = CameraPosition.Builder()
             .target(target)
             .zoom(zoom)
-            .padding(0.0, 0.0, 0.0, dp(235).toDouble())
+            .padding(0.0, 0.0, 0.0, dp(bottomPadDp).toDouble())
             .build()
         m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 420)
     }
@@ -3672,17 +3712,10 @@ class MainActivity : AppCompatActivity() {
         }
         sheetContent.addView(statusRow)
 
-        // 5. Route To (Primary Dark Pill CTA) & Route From (Secondary Tonal Pill) Row
-        val routeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(10) }
-        }
-        routeRow.addView(MaterialButton(this).apply {
+        // 5. Full-width Route To Primary Pill CTA
+        sheetContent.addView(MaterialButton(this).apply {
             text = AppStrings.routeTo(this@MainActivity)
-            textSize = 14f
+            textSize = 14.5f
             isAllCaps = false
             insetTop = 0
             insetBottom = 0
@@ -3692,106 +3725,112 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), 0, dp(12), 0)
             cornerRadius = dp(23)
             DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(46)
+            ).apply { bottomMargin = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener { openRoutePreview(pin.lat, pin.lng, pin.name) }
         })
-        routeRow.addView(MaterialButton(this).apply {
-            text = AppStrings.routeFrom(this@MainActivity)
-            textSize = 14f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            maxLines = 1
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(23)
-            DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener { setRouteOrigin(pin.lat, pin.lng, pin.name) }
-        })
-        sheetContent.addView(routeRow)
 
-        // 6. Secondary Row: Edit + External + Mark Sent (full capsule pills)
+        // 6. Compact 4-Tile Secondary Action Strip: From | Edit | External | Mark Sent
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(14) }
+            ).apply { bottomMargin = dp(12) }
         }
-        actionRow.addView(MaterialButton(this).apply {
-            text = "Edit"
-            textSize = 13.5f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            maxLines = 1
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(20)
-            DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
-            UiAnimations.attachSpringTouch(this)
-            setOnClickListener { showEditPinDialog(pin) }
-        })
-        actionRow.addView(MaterialButton(this).apply {
-            text = "External"
-            textSize = 13.5f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            maxLines = 1
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(10), 0, dp(10), 0)
-            cornerRadius = dp(20)
-            DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(8) }
-            UiAnimations.attachSpringTouch(this)
-            setOnClickListener {
-                val label = Uri.encode(pin.name)
-                val geoUri = Uri.parse("geo:${pin.lat},${pin.lng}?q=${pin.lat},${pin.lng}($label)")
-                safeStartActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, geoUri), "Open in"), "No external map app installed")
+        fun applyTileVisual(tile: LinearLayout, iconIv: ImageView, labelTv: TextView, active: Boolean) {
+            val fill = DesignSystem.buildOpaqueDrawable(
+                ctx = this,
+                fillColor = if (active) p.accentPrimary else p.surfaceTonal,
+                radiusDp = 14f,
+                strokeColor = if (active) Color.TRANSPARENT else p.borderSubtle,
+                strokeDp = if (active) 0f else 1f
+            )
+            val rippleColor = Color.parseColor(if (night) "#2AFFFFFF" else "#1A1C1E1B")
+            val mask = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(14).toFloat()
             }
-        })
+            tile.background = android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(rippleColor),
+                fill,
+                mask
+            )
+            val fg = if (active) Color.WHITE else txtPrimary
+            iconIv.setColorFilter(fg)
+            labelTv.setTextColor(fg)
+        }
+        fun addCompactActionTile(
+            label: String,
+            iconRes: Int,
+            active: Boolean = false,
+            addEndGap: Boolean = true,
+            onClick: (tile: LinearLayout, iconIv: ImageView, labelTv: TextView) -> Unit
+        ) {
+            val tile = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                isClickable = true
+                isFocusable = true
+                setPadding(dp(4), dp(6), dp(4), dp(6))
+                layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply {
+                    if (addEndGap) marginEnd = dp(6)
+                }
+            }
+            val iconIv = ImageView(this).apply {
+                setImageResource(iconRes)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { bottomMargin = dp(3) }
+            }
+            val labelTv = TextView(this).apply {
+                text = label
+                textSize = 11f
+                setTypeface(null, Typeface.BOLD)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER
+            }
+            tile.addView(iconIv)
+            tile.addView(labelTv)
+            applyTileVisual(tile, iconIv, labelTv, active)
+            UiAnimations.attachSnappyPress(tile)
+            tile.setOnClickListener { onClick(tile, iconIv, labelTv) }
+            actionRow.addView(tile)
+        }
+        addCompactActionTile("From", R.drawable.ic_my_location) { _, _, _ ->
+            setRouteOrigin(pin.lat, pin.lng, pin.name)
+        }
+        addCompactActionTile("Edit", R.drawable.ic_edit) { _, _, _ ->
+            showEditPinDialog(pin)
+        }
+        addCompactActionTile("External", R.drawable.ic_map) { _, _, _ ->
+            val label = Uri.encode(pin.name)
+            val geoUri = Uri.parse("geo:${pin.lat},${pin.lng}?q=${pin.lat},${pin.lng}($label)")
+            safeStartActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, geoUri), "Open in"), "No external map app installed")
+        }
         var localSent = DevicePrefs.isPinLocalSent(this, pin.id)
-        actionRow.addView(MaterialButton(this).apply {
-            text = if (localSent) "Sent ✓" else "Mark Sent"
-            textSize = 13f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            maxLines = 1
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            cornerRadius = dp(20)
-            elevation = 0f
-            stateListAnimator = null
-            setTextColor(if (localSent) Color.WHITE else txtPrimary)
-            setBackgroundColor(if (localSent) p.accentPrimary else chipBg)
-            layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                localSent = DevicePrefs.toggleLocalSentPin(this@MainActivity, pin.id)
-                text = if (localSent) "Sent ✓" else "Mark Sent"
-                setTextColor(if (localSent) Color.WHITE else txtPrimary)
-                setBackgroundColor(if (localSent) p.accentPrimary else chipBg)
-                UiAnimations.animateScalePop(this, 0.92f, 160L)
-                updateSentToggleUi()
-                renderMapData()
-                Toast.makeText(
-                    this@MainActivity,
-                    if (localSent) "Marked sent (local only)" else "Removed sent mark",
-                    Toast.LENGTH_SHORT
-                ).show()
-                if (localSent && hideSentPins) hideInScreenSheet()
-            }
-        })
+        addCompactActionTile(
+            label = if (localSent) "Sent ✓" else "Mark Sent",
+            iconRes = R.drawable.ic_check,
+            active = localSent,
+            addEndGap = false
+        ) { tile, iconIv, labelTv ->
+            localSent = DevicePrefs.toggleLocalSentPin(this@MainActivity, pin.id)
+            labelTv.text = if (localSent) "Sent ✓" else "Mark Sent"
+            applyTileVisual(tile, iconIv, labelTv, localSent)
+            UiAnimations.animateScalePop(tile, 0.94f, 160L)
+            updateSentToggleUi()
+            renderMapData()
+            Toast.makeText(
+                this@MainActivity,
+                if (localSent) "Marked sent (local only)" else "Removed sent mark",
+                Toast.LENGTH_SHORT
+            ).show()
+            if (localSent && hideSentPins) hideInScreenSheet()
+        }
         sheetContent.addView(actionRow)
 
         // 7. Expanded Details Section (separated by generous whitespace, zero divider lines)
@@ -4045,7 +4084,7 @@ class MainActivity : AppCompatActivity() {
             UiAnimations.animateSheetContentReveal(sheetContent)
         }
 
-        val peekHeight = if (stackedPins.size > 1) 405 else 355
+        val peekHeight = if (stackedPins.size > 1) 390 else 340
         showInScreenSheet(peekDp = peekHeight, inPlace = animateSwap)
     }
 
@@ -4487,18 +4526,11 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
             DesignSystem.applyTabularNumerals(this)
         })
-        val engTextColor = when {
-            route.engineLabel.contains("Offline", true) -> p.accentPrimary
-            route.engineLabel.contains("Valhalla", true) -> p.accentPrimary
-            else -> p.textSecondary
-        }
-        val engBgColor = when {
-            route.engineLabel.contains("Offline", true) -> p.accentPrimarySoft
-            route.engineLabel.contains("Valhalla", true) -> p.accentPrimarySoft
-            else -> p.surfaceTonal
-        }
+        val isOfflineRoute = route.engineLabel.contains("Offline", true)
+        val engTextColor = if (isOfflineRoute) p.amber else p.accentPrimary
+        val engBgColor = if (isOfflineRoute) p.amberSoft else p.accentPrimarySoft
         metaRow.addView(TextView(this).apply {
-            text = route.engineLabel
+            text = if (isOfflineRoute) "● Offline Roads" else "● Online"
             textSize = 11f
             setTextColor(engTextColor)
             setTypeface(null, Typeface.BOLD)
@@ -4573,6 +4605,8 @@ class MainActivity : AppCompatActivity() {
                 iconTint = android.content.res.ColorStateList.valueOf(fgColor)
                 setTextColor(fgColor)
                 backgroundTintList = android.content.res.ColorStateList.valueOf(bgColor)
+                strokeWidth = if (active) 0 else dp(1)
+                strokeColor = android.content.res.ColorStateList.valueOf(if (active) Color.TRANSPARENT else p.borderSubtle)
                 cornerRadius = dp(22)
                 layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
                     if (idx < TravelMode.entries.lastIndex) marginEnd = dp(8)
@@ -4672,9 +4706,23 @@ class MainActivity : AppCompatActivity() {
             .zoom(targetZoom)
             .tilt(45.0)
             .bearing(camBearing)
-            .padding(0.0, dp(200).toDouble(), 0.0, 0.0)
+            .padding(0.0, dp(165).toDouble(), 0.0, dp(75).toDouble())
             .build()
         m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), durationMs)
+    }
+
+    private fun formatNavInstructionBidi(raw: String): String {
+        val markers = arrayOf(" onto ", " towards ", " toward ", " on ", " at ")
+        for (marker in markers) {
+            val idx = raw.indexOf(marker, ignoreCase = true)
+            if (idx >= 0) {
+                val splitPos = idx + marker.length
+                val head = raw.substring(0, splitPos)
+                val tail = raw.substring(splitPos).trim()
+                if (tail.isNotEmpty()) return "$head\u2068$tail\u2069"
+            }
+        }
+        return raw
     }
 
     private fun confirmStartNavigation(route: NavRoute, destLat: Double, destLng: Double, destTitle: String) {
@@ -4747,10 +4795,12 @@ class MainActivity : AppCompatActivity() {
 
         val unit = cachedSpeedUnit
         val nextInstr = if (isRerouting) "Recalculating route..." else step.instruction
-        UiAnimations.animateCrossfadeText(tvNavArrow, step.arrow, slideDp = 5f)
-        UiAnimations.animateCrossfadeText(tvNavInstruction, nextInstr, slideDp = 5f)
-        val engineSuffix = if (route.engineLabel.contains("Offline", ignoreCase = true)) " • Offline" else ""
-        tvNavMeta.text = "${formatDistanceShort(distToStep, unit)} • ${formatDistanceShort(remainingRoadMeters, unit)} (${etaMin}m)$engineSuffix"
+        UiAnimations.animateCrossfadeText(tvNavArrow, step.arrow, slideDp = 4f)
+        tvNavStepDist.text = if (isRerouting) "Rerouting" else formatDistanceShort(distToStep, unit)
+        UiAnimations.animateCrossfadeText(tvNavInstruction, formatNavInstructionBidi(nextInstr), slideDp = 4f)
+        tvNavEta.text = "$etaMin min"
+        val modeTag = if (route.engineLabel.contains("Offline", ignoreCase = true)) "Offline" else "Online"
+        tvNavMeta.text = "${formatDistanceShort(remainingRoadMeters, unit)} • $modeTag"
 
         val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
         if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
@@ -4769,6 +4819,7 @@ class MainActivity : AppCompatActivity() {
         if (prog.offRouteMeters > rerouteThreshold && !isRerouting && now - lastRerouteTime > 7000L) {
             isRerouting = true
             lastRerouteTime = now
+            tvNavStepDist.text = "Rerouting"
             tvNavInstruction.text = "Recalculating route..."
             speakPrompt("Recalculating route")
             val heading = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
@@ -4783,7 +4834,7 @@ class MainActivity : AppCompatActivity() {
                     val active = activeNavRoute ?: return@runOnUiThread
                     if (newRoute == null) {
                         val fallbackStep = active.steps.getOrNull(navCurrentStepIdx)
-                        tvNavInstruction.text = fallbackStep?.instruction ?: "Continue to destination"
+                        tvNavInstruction.text = formatNavInstructionBidi(fallbackStep?.instruction ?: "Continue to destination")
                         return@runOnUiThread
                     }
                     activeNavRoute = newRoute
@@ -4810,9 +4861,11 @@ class MainActivity : AppCompatActivity() {
             bottomNavDock.visibility = View.GONE
             btnRuler.visibility = View.GONE
             btnLasso.visibility = View.GONE
+            UiAnimations.showSlideBottom(navBottomBar)
             UiAnimations.fadeShow(bottomDock, 180L)
         } else {
             UiAnimations.hideSlideTop(navBanner)
+            navBottomBar.visibility = View.GONE
             UiAnimations.showSlideTop(topCluster)
             btnRuler.visibility = View.VISIBLE
             applyExtraMapToolsVisibility()
@@ -5110,6 +5163,16 @@ class MainActivity : AppCompatActivity() {
         if (isFollowingGps) {
             DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 10f, activeFillColor = p.accentPrimary)
             btnLocate.setColorFilter(Color.WHITE)
+        } else if (p.isDark) {
+            DesignSystem.applyFloatingControl(
+                this,
+                btnLocate,
+                p,
+                33f,
+                10f,
+                activeFillColor = Color.parseColor("#242926")
+            )
+            btnLocate.setColorFilter(p.accentPrimary)
         } else {
             DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 10f, activeFillColor = p.actionDark)
             btnLocate.setColorFilter(p.onActionDark)
@@ -5844,7 +5907,19 @@ class MainActivity : AppCompatActivity() {
                 infoCol.addView(titleRow)
                 infoCol.addView(TextView(this).apply {
                     val trackStr = if (layerTracks.isNotEmpty()) " • ${layerTracks.size} tracks" else ""
-                    text = "${layerPins.size} bookmarks$trackStr   ✓$doneCnt  •$pendingCnt  !$issueCnt"
+                    val sb = android.text.SpannableStringBuilder("${layerPins.size} bookmarks$trackStr   ")
+                    fun appendColoredStat(token: String, color: Int) {
+                        val start = sb.length
+                        sb.append(token)
+                        sb.setSpan(android.text.style.ForegroundColorSpan(color), start, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        sb.setSpan(android.text.style.StyleSpan(Typeface.BOLD), start, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+                    appendColoredStat("✓$doneCnt", p.green)
+                    sb.append("  ")
+                    appendColoredStat("•$pendingCnt", p.amber)
+                    sb.append("  ")
+                    appendColoredStat("!$issueCnt", p.red)
+                    text = sb
                     textSize = 12.5f
                     setTextColor(txtSub)
                     DesignSystem.applyTabularNumerals(this)
@@ -5890,50 +5965,6 @@ class MainActivity : AppCompatActivity() {
                             append(" • $doneCnt Done • $pendingCnt Pending • $issueCnt Issue")
                         }
                         val folderActions = buildList {
-                            if (isLocal) {
-                                add(
-                                    SheetActionItem(
-                                        title = "Upload to Cloud",
-                                        subtitle = "Make folder shareable with your team",
-                                        iconRes = R.drawable.ic_upload_cloud,
-                                        tintOverride = p.accentPrimary
-                                    ) {
-                                        val freshPins = pinsByLayerId[layer.id].orEmpty()
-                                        val freshTracks = tracksByLayerId[layer.id].orEmpty()
-                                        confirmUploadLocalToCloud(layer, freshPins, freshTracks)
-                                    }
-                                )
-                            } else {
-                                add(
-                                    SheetActionItem(
-                                        title = "Share Link & Code (${layer.shareCode})",
-                                        subtitle = "Invite teammates to sync live",
-                                        iconRes = R.drawable.ic_share,
-                                        tintOverride = p.accentPrimary
-                                    ) { shareLayerLink(layer) }
-                                )
-                            }
-                            add(
-                                SheetActionItem(
-                                    title = "Zoom to Folder",
-                                    iconRes = R.drawable.ic_my_location
-                                ) {
-                                    val freshPins = pins.filter { it.layerId == layer.id }
-                                    val freshTracks = tracks.filter { it.layerId == layer.id }
-                                    closeFullPage()
-                                    zoomToKmlBounds(collectLayerLatLngs(freshPins, freshTracks), layer.id)
-                                }
-                            )
-                            add(
-                                SheetActionItem(
-                                    title = "Edit History & Hours Audit",
-                                    iconRes = R.drawable.ic_history
-                                ) {
-                                    pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
-                                        buildEditHistoryPage(layer)
-                                    }
-                                }
-                            )
                             add(
                                 SheetActionItem(
                                     title = if (isPinned) "Unpin Folder (Unlock)" else "Pin & Protect Folder",
@@ -5948,36 +5979,6 @@ class MainActivity : AppCompatActivity() {
                                         Toast.LENGTH_SHORT
                                     ).show()
                                     renderFoldersOrSearch(etFolderSearch.text?.toString() ?: "")
-                                }
-                            )
-                            add(
-                                SheetActionItem(
-                                    title = "Daily Team Report",
-                                    subtitle = "WhatsApp / Telegram field summary",
-                                    iconRes = R.drawable.ic_report
-                                ) {
-                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
-                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
-                                    showDailyWhatsAppReportDialog(layer, freshPins, freshTracks)
-                                }
-                            )
-                            add(
-                                SheetActionItem(
-                                    title = "Export KML",
-                                    iconRes = R.drawable.ic_download
-                                ) {
-                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
-                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
-                                    showExportKmlDialog(layer, freshPins, freshTracks)
-                                }
-                            )
-                            add(
-                                SheetActionItem(
-                                    title = "Export CSV",
-                                    iconRes = R.drawable.ic_import_file
-                                ) {
-                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
-                                    KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, freshPins)
                                 }
                             )
                             if (isCreator) {
@@ -6046,7 +6047,167 @@ class MainActivity : AppCompatActivity() {
                             palette = p,
                             title = layer.name,
                             subtitle = folderSubtitle,
-                            actions = folderActions
+                            actions = folderActions,
+                            headerContent = { listCol, dismissSheet ->
+                                fun tileRippleBg(fill: Int, stroke: Int, radiusDp: Float): android.graphics.drawable.RippleDrawable {
+                                    val content = DesignSystem.buildOpaqueDrawable(
+                                        ctx = this@MainActivity,
+                                        fillColor = fill,
+                                        radiusDp = radiusDp,
+                                        strokeColor = stroke,
+                                        strokeDp = if (stroke == Color.TRANSPARENT) 0f else 1f
+                                    )
+                                    val ripple = Color.parseColor(if (night) "#2AFFFFFF" else "#1A1C1E1B")
+                                    val mask = GradientDrawable().apply {
+                                        setColor(Color.WHITE)
+                                        cornerRadius = dp(radiusDp.toInt()).toFloat()
+                                    }
+                                    return android.graphics.drawable.RippleDrawable(
+                                        android.content.res.ColorStateList.valueOf(ripple),
+                                        content,
+                                        mask
+                                    )
+                                }
+                                fun buildGridTile(
+                                    label: String,
+                                    iconRes: Int,
+                                    highlight: Boolean = false,
+                                    addEndGap: Boolean = true,
+                                    onTap: () -> Unit
+                                ): LinearLayout = LinearLayout(this@MainActivity).apply {
+                                    orientation = LinearLayout.VERTICAL
+                                    gravity = Gravity.CENTER
+                                    isClickable = true
+                                    isFocusable = true
+                                    setPadding(dp(8), dp(6), dp(8), dp(6))
+                                    background = tileRippleBg(
+                                        fill = if (highlight) p.accentPrimarySoft else p.surfaceTonal,
+                                        stroke = if (highlight) Color.TRANSPARENT else p.borderSubtle,
+                                        radiusDp = 16f
+                                    )
+                                    layoutParams = LinearLayout.LayoutParams(0, dp(58), 1f).apply {
+                                        if (addEndGap) marginEnd = dp(8)
+                                    }
+                                    val fg = if (highlight) p.accentPrimary else txtPrimary
+                                    addView(ImageView(this@MainActivity).apply {
+                                        setImageResource(iconRes)
+                                        setColorFilter(fg)
+                                        scaleType = ImageView.ScaleType.FIT_CENTER
+                                        layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply { bottomMargin = dp(4) }
+                                    })
+                                    addView(TextView(this@MainActivity).apply {
+                                        text = label
+                                        textSize = 12.5f
+                                        setTypeface(null, Typeface.BOLD)
+                                        setTextColor(fg)
+                                        maxLines = 1
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        gravity = Gravity.CENTER
+                                    })
+                                    UiAnimations.attachSnappyPress(this, 0.97f)
+                                    setOnClickListener {
+                                        dismissSheet()
+                                        onTap()
+                                    }
+                                }
+                                fun buildExportPill(
+                                    label: String,
+                                    iconRes: Int,
+                                    addEndGap: Boolean = true,
+                                    onTap: () -> Unit
+                                ): LinearLayout = LinearLayout(this@MainActivity).apply {
+                                    orientation = LinearLayout.HORIZONTAL
+                                    gravity = Gravity.CENTER
+                                    isClickable = true
+                                    isFocusable = true
+                                    setPadding(dp(10), 0, dp(10), 0)
+                                    background = tileRippleBg(p.surfaceTonal, p.borderSubtle, 14f)
+                                    layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                                        if (addEndGap) marginEnd = dp(8)
+                                    }
+                                    addView(ImageView(this@MainActivity).apply {
+                                        setImageResource(iconRes)
+                                        setColorFilter(txtPrimary)
+                                        scaleType = ImageView.ScaleType.FIT_CENTER
+                                        layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(7) }
+                                    })
+                                    addView(TextView(this@MainActivity).apply {
+                                        text = label
+                                        textSize = 13f
+                                        setTypeface(null, Typeface.BOLD)
+                                        setTextColor(txtPrimary)
+                                        maxLines = 1
+                                        ellipsize = TextUtils.TruncateAt.END
+                                    })
+                                    UiAnimations.attachSnappyPress(this, 0.97f)
+                                    setOnClickListener {
+                                        dismissSheet()
+                                        onTap()
+                                    }
+                                }
+
+                                val row1 = LinearLayout(this@MainActivity).apply {
+                                    orientation = LinearLayout.HORIZONTAL
+                                    layoutParams = LinearLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.WRAP_CONTENT
+                                    ).apply { bottomMargin = dp(8) }
+                                }
+                                if (isLocal) {
+                                    row1.addView(buildGridTile("Upload Cloud", R.drawable.ic_upload_cloud, highlight = true) {
+                                        val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                        val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                        confirmUploadLocalToCloud(layer, freshPins, freshTracks)
+                                    })
+                                } else {
+                                    row1.addView(buildGridTile("Share (${layer.shareCode})", R.drawable.ic_share, highlight = true) {
+                                        shareLayerLink(layer)
+                                    })
+                                }
+                                row1.addView(buildGridTile("Zoom Map", R.drawable.ic_my_location, addEndGap = false) {
+                                    val freshPins = pins.filter { it.layerId == layer.id }
+                                    val freshTracks = tracks.filter { it.layerId == layer.id }
+                                    closeFullPage()
+                                    zoomToKmlBounds(collectLayerLatLngs(freshPins, freshTracks), layer.id)
+                                })
+                                listCol.addView(row1)
+
+                                val row2 = LinearLayout(this@MainActivity).apply {
+                                    orientation = LinearLayout.HORIZONTAL
+                                }
+                                row2.addView(buildGridTile("Team Report", R.drawable.ic_report) {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                    showDailyWhatsAppReportDialog(layer, freshPins, freshTracks)
+                                })
+                                row2.addView(buildGridTile("Edit History", R.drawable.ic_history, addEndGap = false) {
+                                    pushSubPage({ popSubPage(::buildBookmarksAndTracksPage) }) {
+                                        buildEditHistoryPage(layer)
+                                    }
+                                })
+                                listCol.addView(row2)
+
+                                val exportRow = LinearLayout(this@MainActivity).apply {
+                                    orientation = LinearLayout.HORIZONTAL
+                                    layoutParams = LinearLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.WRAP_CONTENT
+                                    ).apply {
+                                        topMargin = dp(8)
+                                        bottomMargin = dp(10)
+                                    }
+                                }
+                                exportRow.addView(buildExportPill("Export KML", R.drawable.ic_download) {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    val freshTracks = tracksByLayerId[layer.id].orEmpty()
+                                    showExportKmlDialog(layer, freshPins, freshTracks)
+                                })
+                                exportRow.addView(buildExportPill("Export CSV", R.drawable.ic_import_file, addEndGap = false) {
+                                    val freshPins = pinsByLayerId[layer.id].orEmpty()
+                                    KmlCsvExporter.exportAndShareCsv(this@MainActivity, layer, freshPins)
+                                })
+                                listCol.addView(exportRow)
+                            }
                         )
                     }
                 })

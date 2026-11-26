@@ -664,6 +664,7 @@ object DesignSystem {
         subtitle: String? = null,
         actions: List<SheetActionItem>,
         dimAmount: Float? = null,
+        headerContent: ((LinearLayout, () -> Unit) -> Unit)? = null,
         extraContent: ((LinearLayout) -> Unit)? = null
     ): BottomSheetDialog {
         val now = SystemClock.elapsedRealtime()
@@ -763,6 +764,8 @@ object DesignSystem {
         val listCol = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
         }
+
+        headerContent?.invoke(listCol) { dialog.dismiss() }
 
         val normalItems = actions.filterNot { it.destructive }
         val destructiveItems = actions.filter { it.destructive }
