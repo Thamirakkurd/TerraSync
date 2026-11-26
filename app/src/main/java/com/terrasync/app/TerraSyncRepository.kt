@@ -104,6 +104,9 @@ class TerraSyncRepository(
 ) {
     private val appContext: Context = context.applicationContext
     private val mergeIndexGeneration = AtomicInteger(0)
+    private val pendingCallbacksLock = Any()
+    private val pendingIndexedCallbacks = mutableListOf<(FolderIndexSnapshot) -> Unit>()
+    private var isPreloadingLocal = false
 
     @Volatile private var cloudLayers: List<LayerItem> = emptyList()
     @Volatile private var cloudPins: List<PinItem> = emptyList()
@@ -115,21 +118,43 @@ class TerraSyncRepository(
     var onSnapshotUpdated: ((FolderIndexSnapshot) -> Unit)? = null
 
     fun applyMergedFolders(onIndexed: ((FolderIndexSnapshot) -> Unit)? = null) {
-        val gen = mergeIndexGeneration.incrementAndGet()
+        if (onIndexed != null) {
+            synchronized(pendingCallbacksLock) {
+                pendingIndexedCallbacks.add(onIndexed)
+            }
+        }
         val cachedLocal = LocalFolderStore.getCachedOrNull()
         val local = if (cachedLocal != null) {
             cachedLocal
         } else {
-            LocalFolderStore.preloadAsync(appContext) {
-                AppExecutors.postMain {
-                    if (gen == mergeIndexGeneration.get()) {
-                        applyMergedFolders(onIndexed)
-                    }
+            val shouldTriggerPreload = synchronized(pendingCallbacksLock) {
+                if (LocalFolderStore.getCachedOrNull() != null) {
+                    false
+                } else if (!isPreloadingLocal) {
+                    isPreloadingLocal = true
+                    true
+                } else {
+                    false
                 }
             }
-            return
+            if (LocalFolderStore.getCachedOrNull() != null) {
+                LocalFolderStore.getCachedOrNull()!!
+            } else {
+                if (shouldTriggerPreload) {
+                    LocalFolderStore.preloadAsync(appContext) {
+                        AppExecutors.postMain {
+                            synchronized(pendingCallbacksLock) {
+                                isPreloadingLocal = false
+                            }
+                            applyMergedFolders()
+                        }
+                    }
+                }
+                return
+            }
         }
 
+        val gen = mergeIndexGeneration.incrementAndGet()
         val mergedLayersRaw = cloudLayers + local.layers
         val mergedPins = cloudPins + local.pins
         val mergedTracks = cloudTracks + local.tracks
@@ -145,8 +170,15 @@ class TerraSyncRepository(
                     DevicePrefs.prunePinReferencesKeeping(appContext, built.pinById.keys)
                 }
             }
+            val callbacksToNotify = synchronized(pendingCallbacksLock) {
+                if (pendingIndexedCallbacks.isEmpty()) {
+                    emptyList()
+                } else {
+                    pendingIndexedCallbacks.toList().also { pendingIndexedCallbacks.clear() }
+                }
+            }
             onSnapshotUpdated?.invoke(built)
-            onIndexed?.invoke(built)
+            callbacksToNotify.forEach { it.invoke(built) }
         }
 
         if (mergedPins.size < 200) {
