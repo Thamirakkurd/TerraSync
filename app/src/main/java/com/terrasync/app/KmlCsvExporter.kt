@@ -6,8 +6,6 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.content.FileProvider
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -59,7 +57,7 @@ object KmlCsvExporter {
         PinStatus.PENDING -> "#placemark-orange"
     }
 
-    private fun buildKmlXml(
+    internal fun buildKmlXml(
         exportTitle: String,
         pinsCopy: List<PinItem>,
         tracksCopy: List<TrackItem>
@@ -78,7 +76,7 @@ object KmlCsvExporter {
         sb.append("    <IconStyle><color>ff0b9ef5</color><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon></IconStyle>\n")
         sb.append("  </Style>\n")
 
-        pinsCopy.forEach { p ->
+        fun appendPin(p: PinItem, indent: String) {
             val normStatus = PinStatus.fromRaw(p.status).key
             val hasMeaningfulEdit = normStatus != "pending" ||
                 p.issueReason.isNotBlank() ||
@@ -95,41 +93,69 @@ object KmlCsvExporter {
             if (p.description.isNotBlank()) descParts += p.description
             if (p.isEdited && p.editedBy.isNotBlank()) descParts += "Edited by: ${p.editedBy}"
 
-            sb.append("  <Placemark>\n")
-            sb.append("    <name>${xmlEscape(p.name)}</name>\n")
-            sb.append("    <styleUrl>${styleUrlForStatus(normStatus)}</styleUrl>\n")
-            sb.append("    <description>${xmlEscape(descParts.joinToString("\n"))}</description>\n")
-            sb.append("    <ExtendedData>\n")
-            sb.append("      <Data name=\"ts_status\"><value>${xmlEscape(normStatus)}</value></Data>\n")
+            sb.append("$indent<Placemark>\n")
+            sb.append("$indent  <name>${xmlEscape(p.name)}</name>\n")
+            sb.append("$indent  <styleUrl>${styleUrlForStatus(normStatus)}</styleUrl>\n")
+            sb.append("$indent  <description>${xmlEscape(descParts.joinToString("\n"))}</description>\n")
+            sb.append("$indent  <ExtendedData>\n")
+            sb.append("$indent    <Data name=\"ts_status\"><value>${xmlEscape(normStatus)}</value></Data>\n")
             if (p.issueReason.isNotBlank()) {
-                sb.append("      <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
+                sb.append("$indent    <Data name=\"ts_issue_reason\"><value>${xmlEscape(p.issueReason)}</value></Data>\n")
             }
-            sb.append("      <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
+            sb.append("$indent    <Data name=\"ts_raw_description\"><value>${xmlEscape(p.description)}</value></Data>\n")
             if (hasMeaningfulEdit) {
-                sb.append("      <Data name=\"ts_is_edited\"><value>true</value></Data>\n")
+                sb.append("$indent    <Data name=\"ts_is_edited\"><value>true</value></Data>\n")
             }
             if (p.editedBy.isNotBlank()) {
-                sb.append("      <Data name=\"ts_edited_by\"><value>${xmlEscape(p.editedBy)}</value></Data>\n")
+                sb.append("$indent    <Data name=\"ts_edited_by\"><value>${xmlEscape(p.editedBy)}</value></Data>\n")
             }
             if (p.editedAt > 0L) {
-                sb.append("      <Data name=\"ts_edited_at\"><value>${p.editedAt}</value></Data>\n")
+                sb.append("$indent    <Data name=\"ts_edited_at\"><value>${p.editedAt}</value></Data>\n")
             }
             if (p.editHistory.isNotBlank()) {
-                sb.append("      <Data name=\"ts_edit_history\"><value>${xmlEscape(p.editHistory)}</value></Data>\n")
+                sb.append("$indent    <Data name=\"ts_edit_history\"><value>${xmlEscape(p.editHistory)}</value></Data>\n")
             }
-            sb.append("    </ExtendedData>\n")
-            sb.append("    <Point><coordinates>${p.lng},${p.lat},0</coordinates></Point>\n")
-            sb.append("  </Placemark>\n")
+            if (p.folderPath.isNotBlank()) {
+                sb.append("$indent    <Data name=\"ts_folder_path\"><value>${xmlEscape(p.folderPath)}</value></Data>\n")
+            }
+            sb.append("$indent  </ExtendedData>\n")
+            sb.append("$indent  <Point><coordinates>${p.lng},${p.lat},0</coordinates></Point>\n")
+            sb.append("$indent</Placemark>\n")
         }
 
-        tracksCopy.forEach { t ->
+        fun appendTrack(t: TrackItem, indent: String) {
             val validPts = t.coords.split(";").map { it.trim() }.filter { it.contains(",") }
             if (validPts.size >= 2) {
                 val coordText = validPts.joinToString(" ") { "$it,0" }
-                sb.append("  <Placemark>\n")
-                sb.append("    <name>${xmlEscape(t.name)}</name>\n")
-                sb.append("    <LineString><coordinates>$coordText</coordinates></LineString>\n")
-                sb.append("  </Placemark>\n")
+                sb.append("$indent<Placemark>\n")
+                sb.append("$indent  <name>${xmlEscape(t.name)}</name>\n")
+                if (t.folderPath.isNotBlank()) {
+                    sb.append("$indent  <ExtendedData><Data name=\"ts_folder_path\"><value>${xmlEscape(t.folderPath)}</value></Data></ExtendedData>\n")
+                }
+                sb.append("$indent  <LineString><coordinates>$coordText</coordinates></LineString>\n")
+                sb.append("$indent</Placemark>\n")
+            }
+        }
+
+        val hasFolderGroups = pinsCopy.any { it.folderPath.isNotBlank() } || tracksCopy.any { it.folderPath.isNotBlank() }
+        if (!hasFolderGroups) {
+            pinsCopy.forEach { appendPin(it, "  ") }
+            tracksCopy.forEach { appendTrack(it, "  ") }
+        } else {
+            val pinsByPath = pinsCopy.groupBy { it.folderPath }
+            val tracksByPath = tracksCopy.groupBy { it.folderPath }
+            val allPaths = linkedSetOf<String>().apply {
+                addAll(pinsByPath.keys)
+                addAll(tracksByPath.keys)
+            }
+            pinsByPath[""]?.forEach { appendPin(it, "  ") }
+            tracksByPath[""]?.forEach { appendTrack(it, "  ") }
+            allPaths.filter { it.isNotBlank() }.forEach { fp ->
+                sb.append("  <Folder>\n")
+                sb.append("    <name>${xmlEscape(fp)}</name>\n")
+                pinsByPath[fp]?.forEach { appendPin(it, "    ") }
+                tracksByPath[fp]?.forEach { appendTrack(it, "    ") }
+                sb.append("  </Folder>\n")
             }
         }
 
@@ -184,18 +210,17 @@ object KmlCsvExporter {
         if (pinsCopy.size >= 500) {
             android.widget.Toast.makeText(ctx, "Preparing CSV export...", android.widget.Toast.LENGTH_SHORT).show()
         }
-        RoutingEngine.ioExecutor.execute {
+        RoutingEngine.batchIoExecutor.execute {
             val result = runCatching {
                 val dir = File(appCtx.cacheDir, "exports").apply { mkdirs() }
                 cleanupOldExports(dir)
                 val file = File(dir, "${safeFileName(layer.name)}.csv")
-                val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
                 val sb = StringBuilder((pinsCopy.size * 140 + 256).coerceAtMost(4 * 1024 * 1024))
                 // UTF-8 BOM ensures Excel opens Kurdish / Arabic pin names cleanly
                 sb.append('\uFEFF')
                 sb.append("Name,Status,StatusNote,Description,Latitude,Longitude,EditedBy,EditedAt\n")
                 pinsCopy.forEach { p ->
-                    val timeStr = if (p.editedAt > 0L) fmt.format(Date(p.editedAt)) else ""
+                    val timeStr = if (p.editedAt > 0L) TimeFormatters.csvTimestamp(p.editedAt) else ""
                     sb.append(csvEscape(p.name)).append(',')
                         .append(csvEscape(statusLabel(p.status))).append(',')
                         .append(csvEscape(p.issueReason)).append(',')
@@ -236,13 +261,13 @@ object KmlCsvExporter {
         val tracksSnap = allTracks.toList()
         android.widget.Toast.makeText(ctx, AppStrings.preparingBackup(ctx), android.widget.Toast.LENGTH_SHORT).show()
 
-        RoutingEngine.ioExecutor.execute {
+        RoutingEngine.batchIoExecutor.execute {
             val pinsByLayer = pinsSnap.groupBy { it.layerId }
             val tracksByLayer = tracksSnap.groupBy { it.layerId }
             val result = runCatching {
                 val dir = File(appCtx.cacheDir, "exports").apply { mkdirs() }
                 cleanupOldExports(dir)
-                val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                val stamp = TimeFormatters.fileStamp(System.currentTimeMillis())
                 val zipFile = File(dir, "TerraSync_Local_Backup_$stamp.zip")
                 ZipOutputStream(zipFile.outputStream().buffered()).use { zos ->
                     layersSnap.forEachIndexed { idx, layer ->

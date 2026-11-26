@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -45,6 +47,7 @@ class OfflineDownloadService : Service() {
     }
 
     private lateinit var offlineMaps: OfflineMapManager
+    private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var lastNotifyMs = 0L
     @Volatile private var isStopping = false
     @Volatile private var isInForeground = false
@@ -118,20 +121,22 @@ class OfflineDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun handleManagerUpdate() {
-        if (isStopping) return
-        if (!offlineMaps.hasAnyActiveDownload()) {
-            isStopping = true
-            isInForeground = false
-            stopForegroundCompat()
-            stopSelf()
-            return
+        mainHandler.post {
+            if (isStopping) return@post
+            if (!offlineMaps.hasAnyActiveDownload()) {
+                isStopping = true
+                isInForeground = false
+                stopForegroundCompat()
+                stopSelf()
+                return@post
+            }
+            if (!isInForeground) return@post
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastNotifyMs < 450L) return@post
+            lastNotifyMs = now
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return@post
+            nm.notify(NOTIF_ID, buildNotification(forceProgress = false))
         }
-        if (!isInForeground) return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastNotifyMs < 450L) return
-        lastNotifyMs = now
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        nm.notify(NOTIF_ID, buildNotification(forceProgress = false))
     }
 
     private fun stopForegroundCompat() {
@@ -195,7 +200,7 @@ class OfflineDownloadService : Service() {
             .setSilent(true)
             .setContentIntent(openIntent)
             .setProgress(100, pct, indeterminate)
-            .addAction(0, "Pause", pauseIntent)
+            .addAction(0, AppStrings.pause(this), pauseIntent)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }

@@ -1,8 +1,6 @@
 package com.terrasync.app
 
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 data class PinEditEntry(
@@ -186,8 +184,6 @@ object PinEditHistoryAudit {
         val scratchCal = Calendar.getInstance()
         val currentYear = scratchCal.get(Calendar.YEAR)
         val nowMs = scratchCal.timeInMillis
-        val dateFmt = SimpleDateFormat("dd MMM", Locale.US)
-        val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
 
         for (pin in layerPins) {
             val lines = pin.editHistory.lines().map { it.trim() }.filter { it.isNotBlank() }
@@ -203,8 +199,6 @@ object PinEditHistoryAudit {
                             currentYear = currentYear,
                             nowMs = nowMs,
                             scratchCal = scratchCal,
-                            dateFmt = dateFmt,
-                            timeFmt = timeFmt,
                             deviceToTeam = deviceToTeam
                         )
                     )
@@ -221,9 +215,8 @@ object PinEditHistoryAudit {
                 val minOfDay: Int?
                 if (ts > 0L) {
                     scratchCal.timeInMillis = ts
-                    val dt = Date(ts)
-                    dateGroup = dateFmt.format(dt)
-                    clockTime = timeFmt.format(dt)
+                    dateGroup = TimeFormatters.dayMonth(ts)
+                    clockTime = TimeFormatters.hourMinute(ts)
                     fullTime = "$dateGroup $clockTime"
                     minOfDay = scratchCal.get(Calendar.HOUR_OF_DAY) * 60 + scratchCal.get(Calendar.MINUTE)
                 } else {
@@ -273,8 +266,6 @@ object PinEditHistoryAudit {
         currentYear: Int,
         nowMs: Long,
         scratchCal: Calendar,
-        dateFmt: SimpleDateFormat,
-        timeFmt: SimpleDateFormat,
         deviceToTeam: Map<String, String>
     ): PinEditEntry {
         val bulletIdx = rawLine.indexOf('•')
@@ -330,9 +321,8 @@ object PinEditHistoryAudit {
             }
         } else if (lineIdx == 0 && pin.editedAt > 0L) {
             scratchCal.timeInMillis = pin.editedAt
-            val dt = Date(pin.editedAt)
-            dateGroup = dateFmt.format(dt)
-            clockTime = timeFmt.format(dt)
+            dateGroup = TimeFormatters.dayMonth(pin.editedAt)
+            clockTime = TimeFormatters.hourMinute(pin.editedAt)
             minOfDay = scratchCal.get(Calendar.HOUR_OF_DAY) * 60 + scratchCal.get(Calendar.MINUTE)
             sortMs = pin.editedAt
         }

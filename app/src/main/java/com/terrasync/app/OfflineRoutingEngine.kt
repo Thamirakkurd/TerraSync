@@ -16,18 +16,20 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.PriorityQueue
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
+import okhttp3.Call
+import okhttp3.FormBody
+import okhttp3.Request
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -61,6 +63,17 @@ object OfflineRoutingEngine {
     private const val FLAG_BIKE = 2
     private const val FLAG_WALK = 4
 
+    private class SpatialNodeGrid(
+        val minLat: Double,
+        val minLng: Double,
+        val cellLat: Double,
+        val cellLng: Double,
+        val rows: Int,
+        val cols: Int,
+        val head: IntArray,
+        val next: IntArray
+    )
+
     private class RoadGraph(
         val meta: OfflineRoadRegion,
         val lats: FloatArray,
@@ -74,8 +87,74 @@ object OfflineRoutingEngine {
         val edgeNameIdx: IntArray,
         val nodeOutFlags: ByteArray,
         val nodeInFlags: ByteArray,
-        val names: Array<String>
+        val names: Array<String>,
+        val spatialGrid: SpatialNodeGrid
     )
+
+    private class AStarScratch {
+        var epoch: Int = 1
+        var seenEpoch = IntArray(0)
+        var closedEpoch = IntArray(0)
+        var gScore = DoubleArray(0)
+        var prevNode = IntArray(0)
+        var prevEdge = IntArray(0)
+
+        fun prepare(n: Int): Int {
+            if (seenEpoch.size < n) {
+                val cap = maxOf(n, 256)
+                seenEpoch = IntArray(cap)
+                closedEpoch = IntArray(cap)
+                gScore = DoubleArray(cap)
+                prevNode = IntArray(cap)
+                prevEdge = IntArray(cap)
+                epoch = 1
+            } else if (epoch >= Int.MAX_VALUE - 4) {
+                seenEpoch.fill(0)
+                closedEpoch.fill(0)
+                epoch = 1
+            } else {
+                epoch++
+            }
+            return epoch
+        }
+    }
+
+    private val aStarScratch = ThreadLocal.withInitial { AStarScratch() }
+
+    private fun buildSpatialGrid(lats: FloatArray, lngs: FloatArray): SpatialNodeGrid {
+        val n = lats.size
+        if (n == 0) {
+            return SpatialNodeGrid(0.0, 0.0, 0.01, 0.01, 1, 1, intArrayOf(-1), IntArray(0))
+        }
+        var minLat = Double.POSITIVE_INFINITY
+        var maxLat = Double.NEGATIVE_INFINITY
+        var minLng = Double.POSITIVE_INFINITY
+        var maxLng = Double.NEGATIVE_INFINITY
+        for (i in 0 until n) {
+            val la = lats[i].toDouble()
+            val lo = lngs[i].toDouble()
+            if (la < minLat) minLat = la
+            if (la > maxLat) maxLat = la
+            if (lo < minLng) minLng = lo
+            if (lo > maxLng) maxLng = lo
+        }
+        val latSpan = (maxLat - minLat).coerceAtLeast(1e-4)
+        val lngSpan = (maxLng - minLng).coerceAtLeast(1e-4)
+        val rows = ceil(latSpan / 0.01).toInt().coerceIn(1, 512)
+        val cols = ceil(lngSpan / 0.01).toInt().coerceIn(1, 512)
+        val cellLat = latSpan / rows
+        val cellLng = lngSpan / cols
+        val head = IntArray(rows * cols) { -1 }
+        val next = IntArray(n) { -1 }
+        for (i in 0 until n) {
+            val r = ((lats[i].toDouble() - minLat) / cellLat).toInt().coerceIn(0, rows - 1)
+            val c = ((lngs[i].toDouble() - minLng) / cellLng).toInt().coerceIn(0, cols - 1)
+            val cellIdx = r * cols + c
+            next[i] = head[cellIdx]
+            head[cellIdx] = i
+        }
+        return SpatialNodeGrid(minLat, minLng, cellLat, cellLng, rows, cols, head, next)
+    }
 
     private val graphCacheLock = Any()
     @Volatile private var cachedGraph: RoadGraph? = null
@@ -84,8 +163,16 @@ object OfflineRoutingEngine {
 
     private class DownloadJob {
         val cancelled = AtomicBoolean(false)
-        @Volatile var activeConn: HttpURLConnection? = null
+        @Volatile var activeCall: Call? = null
         @Volatile var workerThread: Thread? = null
+    }
+
+    private val overpassClient by lazy {
+        RoutingEngine.sharedOkHttpClient.newBuilder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(70, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
+            .build()
     }
 
     private val activeDownloads = ConcurrentHashMap<String, DownloadJob>()
@@ -168,15 +255,9 @@ object OfflineRoutingEngine {
     fun cancelDownload(packId: String) {
         val job = activeDownloads[packId] ?: return
         job.cancelled.set(true)
-        val conn = job.activeConn
-        job.activeConn = null
-        if (conn != null) {
-            Thread { runCatching { conn.disconnect() } }.apply {
-                name = "terrasync-road-cancel"
-                isDaemon = true
-                start()
-            }
-        }
+        val call = job.activeCall
+        job.activeCall = null
+        call?.cancel()
         job.workerThread?.interrupt()
     }
 
@@ -469,7 +550,8 @@ object OfflineRoutingEngine {
                 )
                 RoadGraph(
                     meta, lats, lngs, adjHead, edgeTo, edgeNext, edgeDist, edgeSpeed,
-                    edgeFlags, edgeNameIdx, nodeOutFlags, nodeInFlags, names
+                    edgeFlags, edgeNameIdx, nodeOutFlags, nodeInFlags, names,
+                    buildSpatialGrid(lats, lngs)
                 ).also {
                     cachedGraph = it
                 }
@@ -1094,59 +1176,55 @@ object OfflineRoutingEngine {
                             checkCancelled()
                             emitProgress("Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label})...", basePct, force = true)
                             partFile.delete()
-                            var conn: HttpURLConnection? = null
+                            var call: Call? = null
                             try {
-                                conn = (URL(ep).openConnection() as HttpURLConnection).apply {
-                                    requestMethod = "POST"
-                                    doOutput = true
-                                    connectTimeout = 20000
-                                    readTimeout = 70000
-                                    setRequestProperty("Accept-Encoding", "gzip")
-                                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                                    setRequestProperty("User-Agent", RoutingEngine.userAgent)
-                                }
-                                job.activeConn = conn
+                                val form = FormBody.Builder()
+                                    .add("data", chunk.query)
+                                    .build()
+                                val req = Request.Builder()
+                                    .url(ep)
+                                    .post(form)
+                                    .build()
+                                call = overpassClient.newCall(req)
+                                job.activeCall = call
                                 checkCancelled()
-                                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
-                                    w.write("data=" + URLEncoder.encode(chunk.query, "UTF-8"))
-                                }
-                                val code = conn.responseCode
-                                if (code == 200) {
-                                    val rawStream = BufferedInputStream(conn.inputStream, 32 * 1024)
-                                    val isGzip = conn.contentEncoding?.contains("gzip", ignoreCase = true) == true
-                                    val netStream = if (isGzip) GZIPInputStream(rawStream, 32 * 1024) else rawStream
-                                    var bytesWritten = 0L
-                                    val buf = ByteArray(32 * 1024)
-                                    netStream.use { input ->
-                                        BufferedOutputStream(FileOutputStream(partFile), 32 * 1024).use { output ->
-                                            while (true) {
-                                                checkCancelled()
-                                                val n = input.read(buf)
-                                                if (n <= 0) break
-                                                output.write(buf, 0, n)
-                                                bytesWritten += n
-                                                emitProgress(
-                                                    "Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label} • ${formatTransferSize(bytesWritten)})",
-                                                    basePct + (40 / chunks.size)
-                                                )
+                                call.execute().use { resp ->
+                                    val code = resp.code
+                                    val bodyStream = resp.body?.byteStream()
+                                    if (code == 200 && bodyStream != null) {
+                                        var bytesWritten = 0L
+                                        val buf = ByteArray(32 * 1024)
+                                        BufferedInputStream(bodyStream, 32 * 1024).use { input ->
+                                            BufferedOutputStream(FileOutputStream(partFile), 32 * 1024).use { output ->
+                                                while (true) {
+                                                    checkCancelled()
+                                                    val n = input.read(buf)
+                                                    if (n <= 0) break
+                                                    output.write(buf, 0, n)
+                                                    bytesWritten += n
+                                                    emitProgress(
+                                                        "Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label} • ${formatTransferSize(bytesWritten)})",
+                                                        basePct + (40 / chunks.size)
+                                                    )
+                                                }
+                                                output.flush()
                                             }
-                                            output.flush()
                                         }
-                                    }
-                                    checkCancelled()
-                                    if (bytesWritten > 64L) {
-                                        outFile.delete()
-                                        if (!partFile.renameTo(outFile)) {
-                                            partFile.copyTo(outFile, overwrite = true)
+                                        checkCancelled()
+                                        if (bytesWritten > 64L) {
+                                            outFile.delete()
+                                            if (!partFile.renameTo(outFile)) {
+                                                partFile.copyTo(outFile, overwrite = true)
+                                                partFile.delete()
+                                            }
+                                            return null
+                                        } else {
+                                            lastErr = "Overpass returned empty response"
                                             partFile.delete()
                                         }
-                                        return null
                                     } else {
-                                        lastErr = "Overpass returned empty response"
-                                        partFile.delete()
+                                        lastErr = "Overpass server HTTP $code"
                                     }
-                                } else {
-                                    lastErr = "Overpass server HTTP $code"
                                 }
                             } catch (cs: CancelledSignal) {
                                 partFile.delete()
@@ -1156,11 +1234,10 @@ object OfflineRoutingEngine {
                                 throw e
                             } catch (e: Exception) {
                                 partFile.delete()
-                                if (job.cancelled.get()) throw CancelledSignal()
+                                if (job.cancelled.get() || call?.isCanceled() == true) throw CancelledSignal()
                                 lastErr = e.message ?: "Network error"
                             } finally {
-                                if (job.activeConn === conn) job.activeConn = null
-                                conn?.disconnect()
+                                if (job.activeCall === call) job.activeCall = null
                             }
                             if (epIdx < endpoints.lastIndex) {
                                 sleepWithCancel(1500L * (epIdx + 1))
@@ -1258,7 +1335,7 @@ object OfflineRoutingEngine {
                 if (packId != null) {
                     File(dir(ctx), "${packFileName(packId)}.part").takeIf { it.exists() }?.delete()
                 }
-                job.activeConn = null
+                job.activeCall = null
                 activeDownloads.remove(jobKey, job)
             }
             onDone(resultRegion, resultError)
@@ -1362,10 +1439,13 @@ object OfflineRoutingEngine {
         }
 
         val n = g.lats.size
-        val gScore = DoubleArray(n) { Double.POSITIVE_INFINITY }
-        val prevNode = IntArray(n) { -1 }
-        val prevEdge = IntArray(n) { -1 }
-        val closed = BooleanArray(n)
+        val scratch = aStarScratch.get()!!
+        val ep = scratch.prepare(n)
+        val seenEpoch = scratch.seenEpoch
+        val closedEpoch = scratch.closedEpoch
+        val gScore = scratch.gScore
+        val prevNode = scratch.prevNode
+        val prevEdge = scratch.prevEdge
 
         val maxSpeedMps = when (mode) {
             TravelMode.CAR -> 100.0 / 3.6
@@ -1389,15 +1469,18 @@ object OfflineRoutingEngine {
         }
 
         val pq = PriorityQueue<QNode>(256)
+        seenEpoch[startNode] = ep
         gScore[startNode] = 0.0
+        prevNode[startNode] = -1
+        prevEdge[startNode] = -1
         pq.add(QNode(startNode, fastHeuristicSec(g.lats[startNode], g.lngs[startNode])))
 
         var found = false
         while (pq.isNotEmpty()) {
             val cur = pq.poll() ?: break
             val u = cur.u
-            if (closed[u]) continue
-            closed[u] = true
+            if (closedEpoch[u] == ep) continue
+            closedEpoch[u] = ep
             if (u == endNode) {
                 found = true
                 break
@@ -1406,7 +1489,7 @@ object OfflineRoutingEngine {
             while (e != -1) {
                 if ((g.edgeFlags[e].toInt() and modeFlag) != 0) {
                     val v = g.edgeTo[e]
-                    if (!closed[v]) {
+                    if (closedEpoch[v] != ep) {
                         val spdKmh = when (mode) {
                             TravelMode.CAR -> g.edgeSpeed[e].toDouble().coerceAtLeast(10.0)
                             TravelMode.BICYCLE -> 16.0
@@ -1414,7 +1497,9 @@ object OfflineRoutingEngine {
                         }
                         val costSec = g.edgeDist[e].toDouble() / (spdKmh / 3.6)
                         val tentative = gScore[u] + costSec
-                        if (tentative < gScore[v]) {
+                        val vG = if (seenEpoch[v] == ep) gScore[v] else Double.POSITIVE_INFINITY
+                        if (tentative < vG) {
+                            seenEpoch[v] = ep
                             gScore[v] = tentative
                             prevNode[v] = u
                             prevEdge[v] = e
@@ -1500,20 +1585,21 @@ object OfflineRoutingEngine {
         val flagsArr = if (needIncoming) g.nodeInFlags else g.nodeOutFlags
         val bestIdx = IntArray(maxCount) { -1 }
         val bestDistSq = DoubleArray(maxCount) { maxDistSq }
+        var foundCount = 0
         var worstPos = 0
 
-        for (i in g.lats.indices) {
-            if ((flagsArr[i].toInt() and modeFlag) == 0) continue
+        fun considerNode(i: Int) {
+            if ((flagsArr[i].toInt() and modeFlag) == 0) return
             val dLat = (g.lats[i] - lat) * 111132.0
             val dLatSq = dLat * dLat
             val limit = bestDistSq[worstPos]
-            if (dLatSq >= limit) continue
+            if (dLatSq >= limit) return
             val dLng = (g.lngs[i] - lng) * mPerDegLng
             val dSq = dLatSq + dLng * dLng
             if (dSq < limit) {
+                if (bestIdx[worstPos] < 0) foundCount++
                 bestIdx[worstPos] = i
                 bestDistSq[worstPos] = dSq
-                // Recompute worst slot among the small top-K array
                 var maxD = bestDistSq[0]
                 var maxP = 0
                 for (k in 1 until maxCount) {
@@ -1525,6 +1611,50 @@ object OfflineRoutingEngine {
                 worstPos = maxP
             }
         }
+
+        val grid = g.spatialGrid
+        val tR = ((lat - grid.minLat) / grid.cellLat).toInt().coerceIn(0, grid.rows - 1)
+        val tC = ((lng - grid.minLng) / grid.cellLng).toInt().coerceIn(0, grid.cols - 1)
+        val maxRing = maxOf(tR, grid.rows - 1 - tR, tC, grid.cols - 1 - tC)
+
+        for (ring in 0..maxRing) {
+            val rMin = (tR - ring).coerceAtLeast(0)
+            val rMax = (tR + ring).coerceAtMost(grid.rows - 1)
+            val cMin = (tC - ring).coerceAtLeast(0)
+            val cMax = (tC + ring).coerceAtMost(grid.cols - 1)
+
+            for (r in rMin..rMax) {
+                if (ring == 0 || r == rMin || r == rMax) {
+                    for (c in cMin..cMax) {
+                        var idx = grid.head[r * grid.cols + c]
+                        while (idx != -1) {
+                            considerNode(idx)
+                            idx = grid.next[idx]
+                        }
+                    }
+                } else {
+                    for (c in intArrayOf(cMin, cMax)) {
+                        if (c < cMin || c > cMax) continue
+                        var idx = grid.head[r * grid.cols + c]
+                        while (idx != -1) {
+                            considerNode(idx)
+                            idx = grid.next[idx]
+                        }
+                    }
+                }
+            }
+
+            val dS = if (tR - ring > 0) ((lat - (grid.minLat + (tR - ring) * grid.cellLat)).coerceAtLeast(0.0) * 111132.0) else Double.POSITIVE_INFINITY
+            val dN = if (tR + ring < grid.rows - 1) (((grid.minLat + (tR + ring + 1) * grid.cellLat) - lat).coerceAtLeast(0.0) * 111132.0) else Double.POSITIVE_INFINITY
+            val dW = if (tC - ring > 0) ((lng - (grid.minLng + (tC - ring) * grid.cellLng)).coerceAtLeast(0.0) * mPerDegLng) else Double.POSITIVE_INFINITY
+            val dE = if (tC + ring < grid.cols - 1) (((grid.minLng + (tC + ring + 1) * grid.cellLng) - lng).coerceAtLeast(0.0) * mPerDegLng) else Double.POSITIVE_INFINITY
+            val minOut = minOf(dS, dN, dW, dE)
+            if (minOut.isInfinite()) break
+            val minOutSq = minOut * minOut
+            if (minOutSq >= maxDistSq) break
+            if (foundCount >= maxCount && minOutSq >= bestDistSq[worstPos]) break
+        }
+
         return (0 until maxCount)
             .filter { bestIdx[it] >= 0 }
             .sortedBy { bestDistSq[it] }

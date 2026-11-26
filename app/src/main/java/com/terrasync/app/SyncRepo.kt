@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -15,11 +16,9 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.PersistentCacheSettings
 import com.google.firebase.firestore.SetOptions
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -40,15 +39,20 @@ class SyncRepo(context: Context? = null) {
 
     private val auth: FirebaseAuth? = runCatching { FirebaseAuth.getInstance() }.getOrNull()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val syncExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "terrasync-sync").apply { isDaemon = true }
+    }
+    private val stateLock = Any()
     private val layerRegs = mutableMapOf<String, List<ListenerRegistration>>()
     private val layerMap = mutableMapOf<String, LayerItem>()
-    private val pinsByLayer = mutableMapOf<String, List<PinItem>>()
-    private val tracksByLayer = mutableMapOf<String, List<TrackItem>>()
-    private val liveListenerStates = mutableMapOf<String, Boolean>()
+    private val pinDocsByLayer = mutableMapOf<String, LinkedHashMap<String, PinItem>>()
+    private val pendingPinIdsByLayer = mutableMapOf<String, MutableSet<String>>()
+    private val trackDocsByLayer = mutableMapOf<String, LinkedHashMap<String, TrackItem>>()
+    private val liveListenerStates = ConcurrentHashMap<String, Boolean>()
     private val pendingWritesByLayer = ConcurrentHashMap<String, Int>()
-    private var connected: Boolean = false
-    private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var connected: Boolean = false
+    @Volatile private var listenerCallback: ((List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit)? = null
+    @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var pendingEmitRunnable: Runnable? = null
 
     fun isLayerLive(layerId: String): Boolean {
@@ -69,10 +73,11 @@ class SyncRepo(context: Context? = null) {
 
     init {
         ensureAuthenticated()
-        registerNetworkMonitor()
+        ensureNetworkMonitorRegistered()
     }
 
-    private fun registerNetworkMonitor() {
+    private fun ensureNetworkMonitorRegistered() {
+        if (networkCallback != null) return
         val ctx = appCtx ?: return
         runCatching {
             val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -134,8 +139,14 @@ class SyncRepo(context: Context? = null) {
         }.getOrDefault(true)
     }
 
+    private data class BatchWriteOp(
+        val ref: DocumentReference,
+        val data: Map<String, Any>,
+        val merge: Boolean = false
+    )
+
     private fun commitOpsInBatches(
-        ops: List<Pair<DocumentReference, Map<String, Any>>>,
+        ops: List<BatchWriteOp>,
         successMsg: String,
         shareCode: String,
         onDone: (Boolean, String, String) -> Unit,
@@ -175,7 +186,9 @@ class SyncRepo(context: Context? = null) {
 
         chunks.forEach { chunk ->
             val batch = db.batch()
-            chunk.forEach { (ref, data) -> batch.set(ref, data) }
+            chunk.forEach { op ->
+                if (op.merge) batch.set(op.ref, op.data, SetOptions.merge()) else batch.set(op.ref, op.data)
+            }
             batch.commit()
                 .addOnFailureListener { e ->
                     firstError.compareAndSet(null, e.message ?: "Batch write failed")
@@ -202,18 +215,23 @@ class SyncRepo(context: Context? = null) {
         joinedLayerIds: Set<String>,
         onUpdate: (List<LayerItem>, List<PinItem>, List<TrackItem>, Boolean) -> Unit
     ) {
+        ensureNetworkMonitorRegistered()
         listenerCallback = onUpdate
 
-        val removed = layerRegs.keys - joinedLayerIds
-        removed.forEach { layerId ->
-            layerRegs.remove(layerId)?.forEach { it.remove() }
-            layerMap.remove(layerId)
-            pinsByLayer.remove(layerId)
-            tracksByLayer.remove(layerId)
-            pendingWritesByLayer.remove(layerId)
-            liveListenerStates.remove("layer:$layerId")
-            liveListenerStates.remove("pins:$layerId")
-            liveListenerStates.remove("tracks:$layerId")
+        val removed = synchronized(stateLock) {
+            val drop = layerRegs.keys - joinedLayerIds
+            drop.forEach { layerId ->
+                layerRegs.remove(layerId)?.forEach { it.remove() }
+                layerMap.remove(layerId)
+                pinDocsByLayer.remove(layerId)
+                pendingPinIdsByLayer.remove(layerId)
+                trackDocsByLayer.remove(layerId)
+                pendingWritesByLayer.remove(layerId)
+                liveListenerStates.remove("layer:$layerId")
+                liveListenerStates.remove("pins:$layerId")
+                liveListenerStates.remove("tracks:$layerId")
+            }
+            drop
         }
 
         fun updateConnectedFlag(key: String, isLive: Boolean) {
@@ -229,87 +247,126 @@ class SyncRepo(context: Context? = null) {
             return
         }
 
-        val added = joinedLayerIds - layerRegs.keys
+        val added = synchronized(stateLock) { joinedLayerIds - layerRegs.keys }
         added.forEach { layerId ->
             val regsForLayer = mutableListOf<ListenerRegistration>()
             regsForLayer += db.collection("layers").document(layerId)
-                .addSnapshotListener(MetadataChanges.INCLUDE) { doc, err ->
+                .addSnapshotListener(syncExecutor, MetadataChanges.INCLUDE) { doc, err ->
                     if (err != null) {
                         updateConnectedFlag("layer:$layerId", false)
                         emit()
                         return@addSnapshotListener
                     }
                     updateConnectedFlag("layer:$layerId", doc?.metadata?.isFromCache != true)
-                    if (doc != null && doc.exists()) {
-                        layerMap[layerId] = LayerItem(
-                            id = doc.id,
-                            name = doc.getString("name") ?: "Layer",
-                            shareCode = doc.getString("shareCode") ?: "",
-                            createdBy = doc.getString("createdBy") ?: "",
-                            creatorDeviceId = doc.getString("creatorDeviceId") ?: "",
-                            creatorUid = doc.getString("creatorUid") ?: "",
-                            updatedAt = doc.getLong("updatedAt") ?: 0L
-                        )
-                    } else {
-                        layerMap.remove(layerId)
-                        pinsByLayer.remove(layerId)
-                        tracksByLayer.remove(layerId)
+                    synchronized(stateLock) {
+                        if (doc != null && doc.exists()) {
+                            layerMap[layerId] = LayerItem(
+                                id = doc.id,
+                                name = doc.getString("name") ?: "Layer",
+                                shareCode = doc.getString("shareCode") ?: "",
+                                createdBy = doc.getString("createdBy") ?: "",
+                                creatorDeviceId = doc.getString("creatorDeviceId") ?: "",
+                                creatorUid = doc.getString("creatorUid") ?: "",
+                                updatedAt = doc.getLong("updatedAt") ?: 0L
+                            )
+                        } else {
+                            layerMap.remove(layerId)
+                            pinDocsByLayer.remove(layerId)
+                            pendingPinIdsByLayer.remove(layerId)
+                            trackDocsByLayer.remove(layerId)
+                        }
                     }
                     emit()
                 }
 
             regsForLayer += db.collection("pins").whereEqualTo("layerId", layerId)
-                .addSnapshotListener(MetadataChanges.INCLUDE) { snap, err ->
+                .addSnapshotListener(syncExecutor, MetadataChanges.INCLUDE) { snap, err ->
                     if (err != null) {
                         updateConnectedFlag("pins:$layerId", false)
                         emit()
                         return@addSnapshotListener
                     }
                     updateConnectedFlag("pins:$layerId", snap?.metadata?.isFromCache != true)
-                    pendingWritesByLayer[layerId] = snap?.documents?.count { it.metadata.hasPendingWrites() } ?: 0
-                    pinsByLayer[layerId] = snap?.documents?.mapNotNull { d ->
-                        val lat = d.getDouble("lat") ?: return@mapNotNull null
-                        val lng = d.getDouble("lng") ?: return@mapNotNull null
-                        PinItem(
-                            id = d.id,
-                            layerId = d.getString("layerId") ?: layerId,
-                            name = d.getString("name") ?: "Pin",
-                            description = d.getString("description") ?: "",
-                            lat = lat,
-                            lng = lng,
-                            status = PinStatus.fromRaw(d.getString("status")).key,
-                            issueReason = d.getString("issueReason") ?: "",
-                            updatedAt = d.getLong("updatedAt") ?: 0L,
-                            isEdited = d.getBoolean("isEdited") ?: false,
-                            editedBy = d.getString("editedBy") ?: "",
-                            editedAt = d.getLong("editedAt") ?: 0L,
-                            editHistory = d.getString("editHistory") ?: ""
-                        )
-                    } ?: emptyList()
+                    if (snap != null) {
+                        synchronized(stateLock) {
+                            val pinMap = pinDocsByLayer.getOrPut(layerId) { LinkedHashMap() }
+                            val pendingSet = pendingPinIdsByLayer.getOrPut(layerId) { HashSet() }
+                            for (change in snap.documentChanges) {
+                                val d = change.document
+                                if (change.type == DocumentChange.Type.REMOVED) {
+                                    pinMap.remove(d.id)
+                                    pendingSet.remove(d.id)
+                                } else {
+                                    val lat = d.getDouble("lat")
+                                    val lng = d.getDouble("lng")
+                                    if (lat != null && lng != null) {
+                                        pinMap[d.id] = PinItem(
+                                            id = d.id,
+                                            layerId = d.getString("layerId") ?: layerId,
+                                            name = d.getString("name") ?: "Pin",
+                                            description = d.getString("description") ?: "",
+                                            lat = lat,
+                                            lng = lng,
+                                            status = PinStatus.fromRaw(d.getString("status")).key,
+                                            issueReason = d.getString("issueReason") ?: "",
+                                            updatedAt = d.getLong("updatedAt") ?: 0L,
+                                            isEdited = d.getBoolean("isEdited") ?: false,
+                                            editedBy = d.getString("editedBy") ?: "",
+                                            editedAt = d.getLong("editedAt") ?: 0L,
+                                            editHistory = d.getString("editHistory") ?: "",
+                                            folderPath = d.getString("folderPath") ?: ""
+                                        )
+                                        if (d.metadata.hasPendingWrites()) pendingSet.add(d.id) else pendingSet.remove(d.id)
+                                    } else {
+                                        pinMap.remove(d.id)
+                                        pendingSet.remove(d.id)
+                                    }
+                                }
+                            }
+                            pendingWritesByLayer[layerId] = pendingSet.size
+                        }
+                    }
                     emit()
                 }
 
             regsForLayer += db.collection("tracks").whereEqualTo("layerId", layerId)
-                .addSnapshotListener(MetadataChanges.INCLUDE) { snap, err ->
+                .addSnapshotListener(syncExecutor, MetadataChanges.INCLUDE) { snap, err ->
                     if (err != null) {
                         updateConnectedFlag("tracks:$layerId", false)
                         emit()
                         return@addSnapshotListener
                     }
                     updateConnectedFlag("tracks:$layerId", snap?.metadata?.isFromCache != true)
-                    tracksByLayer[layerId] = snap?.documents?.mapNotNull { d ->
-                        val coords = d.getString("coords") ?: return@mapNotNull null
-                        TrackItem(
-                            id = d.id,
-                            layerId = d.getString("layerId") ?: layerId,
-                            name = d.getString("name") ?: "Track",
-                            coords = coords,
-                            updatedAt = d.getLong("updatedAt") ?: 0L
-                        )
-                    } ?: emptyList()
+                    if (snap != null) {
+                        synchronized(stateLock) {
+                            val trackMap = trackDocsByLayer.getOrPut(layerId) { LinkedHashMap() }
+                            for (change in snap.documentChanges) {
+                                val d = change.document
+                                if (change.type == DocumentChange.Type.REMOVED) {
+                                    trackMap.remove(d.id)
+                                } else {
+                                    val coords = d.getString("coords")
+                                    if (coords != null) {
+                                        trackMap[d.id] = TrackItem(
+                                            id = d.id,
+                                            layerId = d.getString("layerId") ?: layerId,
+                                            name = d.getString("name") ?: "Track",
+                                            coords = coords,
+                                            updatedAt = d.getLong("updatedAt") ?: 0L,
+                                            folderPath = d.getString("folderPath") ?: ""
+                                        )
+                                    } else {
+                                        trackMap.remove(d.id)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     emit()
                 }
-            layerRegs[layerId] = regsForLayer
+            synchronized(stateLock) {
+                layerRegs[layerId] = regsForLayer
+            }
         }
 
         if (removed.isNotEmpty() || added.isEmpty()) {
@@ -319,32 +376,42 @@ class SyncRepo(context: Context? = null) {
     }
 
     private fun emit() {
-        pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
-        val r = Runnable {
-            pendingEmitRunnable = null
-            emitNow()
+        mainHandler.post {
+            pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
+            val r = Runnable {
+                pendingEmitRunnable = null
+                emitNow()
+            }
+            pendingEmitRunnable = r
+            mainHandler.postDelayed(r, 40L)
         }
-        pendingEmitRunnable = r
-        mainHandler.postDelayed(r, 40L)
     }
 
     private fun emitNow() {
+        val cb = listenerCallback ?: return
         pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
         pendingEmitRunnable = null
-        val sortedLayers = layerMap.values.sortedByDescending { it.updatedAt }
-        val allPins = pinsByLayer.values.flatten()
-        val allTracks = tracksByLayer.values.flatten()
-        listenerCallback?.invoke(sortedLayers, allPins, allTracks, connected)
+        val (sortedLayers, allPins, allTracks) = synchronized(stateLock) {
+            val l = layerMap.values.sortedByDescending { it.updatedAt }
+            val p = pinDocsByLayer.values.flatMap { it.values }
+            val t = trackDocsByLayer.values.flatMap { it.values }
+            Triple(l, p, t)
+        }
+        cb.invoke(sortedLayers, allPins, allTracks, connected)
     }
 
     fun stopListening() {
-        pendingEmitRunnable?.let { mainHandler.removeCallbacks(it) }
+        val regsToRemove = synchronized(stateLock) {
+            val copy = layerRegs.values.flatten()
+            layerRegs.clear()
+            layerMap.clear()
+            pinDocsByLayer.clear()
+            pendingPinIdsByLayer.clear()
+            trackDocsByLayer.clear()
+            copy
+        }
+        regsToRemove.forEach { it.remove() }
         pendingEmitRunnable = null
-        layerRegs.values.flatten().forEach { it.remove() }
-        layerRegs.clear()
-        layerMap.clear()
-        pinsByLayer.clear()
-        tracksByLayer.clear()
         liveListenerStates.clear()
         pendingWritesByLayer.clear()
         listenerCallback = null
@@ -367,6 +434,36 @@ class SyncRepo(context: Context? = null) {
         return (1..6).map { chars.random() }.joinToString("")
     }
 
+    private fun buildPinPayload(pinId: String, layerId: String, p: PinItem, updatedAt: Long): Map<String, Any> {
+        val m = HashMap<String, Any>(16)
+        m["id"] = pinId
+        m["layerId"] = layerId
+        m["name"] = p.name
+        m["description"] = p.description
+        m["lat"] = p.lat
+        m["lng"] = p.lng
+        m["status"] = p.status
+        m["issueReason"] = p.issueReason
+        m["updatedAt"] = updatedAt
+        m["isEdited"] = p.isEdited
+        m["editedBy"] = p.editedBy
+        m["editedAt"] = p.editedAt
+        m["editHistory"] = p.editHistory
+        if (p.folderPath.isNotBlank()) m["folderPath"] = p.folderPath
+        return m
+    }
+
+    private fun buildTrackPayload(trackId: String, layerId: String, t: TrackItem, updatedAt: Long): Map<String, Any> {
+        val m = HashMap<String, Any>(8)
+        m["id"] = trackId
+        m["layerId"] = layerId
+        m["name"] = t.name
+        m["coords"] = t.coords
+        m["updatedAt"] = updatedAt
+        if (t.folderPath.isNotBlank()) m["folderPath"] = t.folderPath
+        return m
+    }
+
     fun importLayer(
         layerId: String,
         layerName: String,
@@ -378,44 +475,27 @@ class SyncRepo(context: Context? = null) {
     ) {
         val now = System.currentTimeMillis()
         val shareCode = generateShareCode()
-        val ops = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
+        val ops = mutableListOf<BatchWriteOp>()
 
-        ops += db.collection("layers").document(layerId) to mapOf(
-            "id" to layerId,
-            "name" to layerName,
-            "shareCode" to shareCode,
-            "createdBy" to createdBy,
-            "creatorDeviceId" to creatorDeviceId,
-            "creatorUid" to (currentUid() ?: ""),
-            "updatedAt" to now
+        ops += BatchWriteOp(
+            db.collection("layers").document(layerId),
+            mapOf(
+                "id" to layerId,
+                "name" to layerName,
+                "shareCode" to shareCode,
+                "createdBy" to createdBy,
+                "creatorDeviceId" to creatorDeviceId,
+                "creatorUid" to (currentUid() ?: ""),
+                "updatedAt" to now
+            )
         )
 
         parsed.pins.forEach { p ->
-            ops += db.collection("pins").document(p.id) to mapOf(
-                "id" to p.id,
-                "layerId" to layerId,
-                "name" to p.name,
-                "description" to p.description,
-                "lat" to p.lat,
-                "lng" to p.lng,
-                "status" to p.status,
-                "issueReason" to p.issueReason,
-                "updatedAt" to now,
-                "isEdited" to p.isEdited,
-                "editedBy" to p.editedBy,
-                "editedAt" to p.editedAt,
-                "editHistory" to p.editHistory
-            )
+            ops += BatchWriteOp(db.collection("pins").document(p.id), buildPinPayload(p.id, layerId, p, now))
         }
 
         parsed.tracks.forEach { t ->
-            ops += db.collection("tracks").document(t.id) to mapOf(
-                "id" to t.id,
-                "layerId" to layerId,
-                "name" to t.name,
-                "coords" to t.coords,
-                "updatedAt" to now
-            )
+            ops += BatchWriteOp(db.collection("tracks").document(t.id), buildTrackPayload(t.id, layerId, t, now))
         }
 
         commitOpsInBatches(
@@ -435,40 +515,19 @@ class SyncRepo(context: Context? = null) {
         onDone: (Boolean, String, String) -> Unit
     ) {
         val now = System.currentTimeMillis()
-        val ops = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
+        val ops = mutableListOf<BatchWriteOp>()
 
         newPins.forEach { p ->
             val newId = UUID.randomUUID().toString()
-            ops += db.collection("pins").document(newId) to mapOf(
-                "id" to newId,
-                "layerId" to layerId,
-                "name" to p.name,
-                "description" to p.description,
-                "lat" to p.lat,
-                "lng" to p.lng,
-                "status" to p.status,
-                "issueReason" to p.issueReason,
-                "updatedAt" to now,
-                "isEdited" to p.isEdited,
-                "editedBy" to p.editedBy,
-                "editedAt" to p.editedAt,
-                "editHistory" to p.editHistory
-            )
+            ops += BatchWriteOp(db.collection("pins").document(newId), buildPinPayload(newId, layerId, p, now))
         }
 
         newTracks.forEach { t ->
             val newId = UUID.randomUUID().toString()
-            ops += db.collection("tracks").document(newId) to mapOf(
-                "id" to newId,
-                "layerId" to layerId,
-                "name" to t.name,
-                "coords" to t.coords,
-                "updatedAt" to now
-            )
+            ops += BatchWriteOp(db.collection("tracks").document(newId), buildTrackPayload(newId, layerId, t, now))
         }
 
-        db.collection("layers").document(layerId)
-            .set(mapOf("updatedAt" to now), SetOptions.merge())
+        ops += BatchWriteOp(db.collection("layers").document(layerId), mapOf("updatedAt" to now), merge = true)
         commitOpsInBatches(
             ops,
             "Merged ${newPins.size} pins into \"$layerName\"",
@@ -488,45 +547,34 @@ class SyncRepo(context: Context? = null) {
     ) {
         val now = System.currentTimeMillis()
         val shareCode = generateShareCode()
-        val ops = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
+        val ops = mutableListOf<BatchWriteOp>()
 
-        ops += db.collection("layers").document(newLayerId) to mapOf(
-            "id" to newLayerId,
-            "name" to layerName,
-            "shareCode" to shareCode,
-            "createdBy" to createdBy,
-            "creatorDeviceId" to creatorDeviceId,
-            "creatorUid" to (currentUid() ?: ""),
-            "updatedAt" to now
+        ops += BatchWriteOp(
+            db.collection("layers").document(newLayerId),
+            mapOf(
+                "id" to newLayerId,
+                "name" to layerName,
+                "shareCode" to shareCode,
+                "createdBy" to createdBy,
+                "creatorDeviceId" to creatorDeviceId,
+                "creatorUid" to (currentUid() ?: ""),
+                "updatedAt" to now
+            )
         )
 
         sourcePins.forEach { p ->
             val newId = UUID.randomUUID().toString()
-            ops += db.collection("pins").document(newId) to mapOf(
-                "id" to newId,
-                "layerId" to newLayerId,
-                "name" to p.name,
-                "description" to p.description,
-                "lat" to p.lat,
-                "lng" to p.lng,
-                "status" to p.status,
-                "issueReason" to p.issueReason,
-                "updatedAt" to (p.updatedAt.takeIf { it > 0L } ?: now),
-                "isEdited" to p.isEdited,
-                "editedBy" to p.editedBy,
-                "editedAt" to p.editedAt,
-                "editHistory" to p.editHistory
+            ops += BatchWriteOp(
+                db.collection("pins").document(newId),
+                buildPinPayload(newId, newLayerId, p, p.updatedAt.takeIf { it > 0L } ?: now)
             )
         }
 
         sourceTracks.forEach { t ->
             val newId = UUID.randomUUID().toString()
-            ops += db.collection("tracks").document(newId) to mapOf(
-                "id" to newId,
-                "layerId" to newLayerId,
-                "name" to t.name,
-                "coords" to t.coords,
-                "updatedAt" to now
+            ops += BatchWriteOp(
+                db.collection("tracks").document(newId),
+                buildTrackPayload(newId, newLayerId, t, now)
             )
         }
 
@@ -661,38 +709,64 @@ class SyncRepo(context: Context? = null) {
         val line = "${formatTime(now)} • $safeStamp → $detail"
         val updatedPins = ArrayList<PinItem>(targetPins.size)
         val reported = AtomicBoolean(false)
+        val baseFields = mapOf(
+            "status" to status,
+            "issueReason" to cleanReason,
+            "updatedAt" to now,
+            "isEdited" to true,
+            "editedBy" to deviceStamp,
+            "editedAt" to now
+        )
 
-        targetPins.chunked(400).forEach { chunk ->
+        targetPins.forEach { pin ->
+            val mergedHistory = buildHistory(line, pin.editHistory)
+            updatedPins.add(
+                pin.copy(
+                    status = status,
+                    issueReason = cleanReason,
+                    updatedAt = now,
+                    isEdited = true,
+                    editedBy = deviceStamp,
+                    editedAt = now,
+                    editHistory = mergedHistory
+                )
+            )
+        }
+
+        fun commitBatchFallback(chunk: List<PinItem>) {
             val batch = db.batch()
             chunk.forEach { pin ->
-                val mergedHistory = buildHistory(line, pin.editHistory)
                 val ref = db.collection("pins").document(pin.id)
-                batch.update(
-                    ref,
-                    mapOf(
-                        "status" to status,
-                        "issueReason" to cleanReason,
-                        "updatedAt" to now,
-                        "isEdited" to true,
-                        "editedBy" to deviceStamp,
-                        "editedAt" to now,
-                        "editHistory" to mergedHistory
-                    )
-                )
-                updatedPins.add(
-                    pin.copy(
-                        status = status,
-                        issueReason = cleanReason,
-                        updatedAt = now,
-                        isEdited = true,
-                        editedBy = deviceStamp,
-                        editedAt = now,
-                        editHistory = mergedHistory
-                    )
-                )
+                batch.update(ref, baseFields + ("editHistory" to buildHistory(line, pin.editHistory)))
             }
             batch.commit().addOnFailureListener { e ->
                 if (reported.compareAndSet(false, true)) {
+                    onError?.invoke(e.message ?: "Failed to update selected pins")
+                }
+            }
+        }
+
+        if (!isOnline()) {
+            targetPins.chunked(400).forEach(::commitBatchFallback)
+            return updatedPins
+        }
+
+        targetPins.chunked(40).forEach { chunk ->
+            db.runTransaction { tx ->
+                val refsAndSnaps = chunk.map { pin ->
+                    val ref = db.collection("pins").document(pin.id)
+                    Triple(pin, ref, tx.get(ref))
+                }
+                refsAndSnaps.forEach { (pin, ref, snap) ->
+                    val liveHistory = snap.getString("editHistory") ?: pin.editHistory
+                    tx.update(ref, baseFields + ("editHistory" to buildHistory(line, liveHistory)))
+                }
+                null
+            }.addOnFailureListener { e ->
+                val code = (e as? FirebaseFirestoreException)?.code
+                if (code == FirebaseFirestoreException.Code.UNAVAILABLE || code == FirebaseFirestoreException.Code.DEADLINE_EXCEEDED) {
+                    commitBatchFallback(chunk)
+                } else if (reported.compareAndSet(false, true)) {
                     onError?.invoke(e.message ?: "Failed to update selected pins")
                 }
             }
@@ -778,7 +852,8 @@ class SyncRepo(context: Context? = null) {
 
         fun commitOfflineFallback() {
             val batch = db.batch()
-            if (layerMap.containsKey(layerId)) {
+            val hasLayer = synchronized(stateLock) { layerMap.containsKey(layerId) }
+            if (hasLayer) {
                 batch.set(layerRef, mapOf("updatedAt" to now), SetOptions.merge())
             } else {
                 batch.set(layerRef, newLayerData, SetOptions.merge())
@@ -981,22 +1056,57 @@ class SyncRepo(context: Context? = null) {
     }
 
     fun deleteLayer(layerId: String, pinIds: List<String>, trackIds: List<String>, onError: ((String) -> Unit)? = null) {
-        val refs = mutableListOf(db.collection("layers").document(layerId))
-        pinIds.forEach { refs += db.collection("pins").document(it) }
-        trackIds.forEach { refs += db.collection("tracks").document(it) }
-        val reported = AtomicBoolean(false)
-        refs.chunked(400).forEach { chunk ->
-            val batch = db.batch()
-            chunk.forEach { batch.delete(it) }
-            batch.commit().addOnFailureListener { e ->
-                if (reported.compareAndSet(false, true)) {
-                    onError?.invoke(e.message ?: "Failed to delete folder from cloud")
+        val layerRef = db.collection("layers").document(layerId)
+        val childRefs = ArrayList<DocumentReference>(pinIds.size + trackIds.size)
+        pinIds.forEach { childRefs += db.collection("pins").document(it) }
+        trackIds.forEach { childRefs += db.collection("tracks").document(it) }
+
+        if (childRefs.isEmpty()) {
+            layerRef.delete().addOnFailureListener { e ->
+                onError?.invoke(e.message ?: "Failed to delete folder from cloud")
+            }
+            return
+        }
+
+        if (!isOnline()) {
+            val allRefs = ArrayList<DocumentReference>(childRefs.size + 1).apply {
+                addAll(childRefs)
+                add(layerRef)
+            }
+            val reported = AtomicBoolean(false)
+            allRefs.chunked(400).forEach { chunk ->
+                val batch = db.batch()
+                chunk.forEach { batch.delete(it) }
+                batch.commit().addOnFailureListener { e ->
+                    if (reported.compareAndSet(false, true)) {
+                        onError?.invoke(e.message ?: "Failed to delete folder from cloud")
+                    }
                 }
             }
+            return
+        }
+
+        val childChunks = childRefs.chunked(400)
+        val remaining = AtomicInteger(childChunks.size)
+        val hadFailure = AtomicBoolean(false)
+        childChunks.forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { batch.delete(it) }
+            batch.commit()
+                .addOnFailureListener { e ->
+                    if (hadFailure.compareAndSet(false, true)) {
+                        onError?.invoke(e.message ?: "Failed to delete folder contents from cloud")
+                    }
+                }
+                .addOnCompleteListener {
+                    if (remaining.decrementAndGet() == 0 && !hadFailure.get()) {
+                        layerRef.delete().addOnFailureListener { e ->
+                            onError?.invoke(e.message ?: "Failed to delete folder from cloud")
+                        }
+                    }
+                }
         }
     }
 
-    private fun formatTime(ts: Long): String {
-        return SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(ts))
-    }
+    private fun formatTime(ts: Long): String = TimeFormatters.canonicalHistory(ts)
 }

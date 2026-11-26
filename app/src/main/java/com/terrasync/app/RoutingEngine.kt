@@ -4,30 +4,63 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.SystemClock
+import android.util.LruCache
+import okhttp3.Call
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 object RoutingEngine {
 
-    @Volatile var userAgent: String = "TerraSync/2.8.0 (https://github.com/Thamirakkurd/TerraSync)"
+    @Volatile var userAgent: String = "TerraSync/${BuildConfig.VERSION_NAME} (https://github.com/Thamirakkurd/TerraSync)"
     @Volatile var appContext: Context? = null
 
-    val ioExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(4) { r ->
-        Thread(r, "terrasync-io").apply { isDaemon = true }
+    val uiQueryExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(3) { r ->
+        Thread(r, "terrasync-ui-io").apply { isDaemon = true }
+    }
+    val batchIoExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "terrasync-batch-io").apply { isDaemon = true }
+    }
+    val ioExecutor: java.util.concurrent.ExecutorService
+        get() = batchIoExecutor
+
+    private const val NOMINATIM_CACHE_TTL_MS = 10L * 60L * 1000L
+    private data class CachedSearch(val cachedAtMs: Long, val places: List<PlaceResult>)
+    private data class CachedReverse(val cachedAtMs: Long, val place: PlaceResult)
+
+    private val searchCache = LruCache<String, CachedSearch>(32)
+    private val reverseCache = LruCache<String, CachedReverse>(96)
+    private val activeRouteCall = AtomicReference<Call?>(null)
+    private val activeSearchCall = AtomicReference<Call?>(null)
+    private val activeReverseCall = AtomicReference<Call?>(null)
+
+    fun cancelPendingRoute() {
+        activeRouteCall.getAndSet(null)?.cancel()
+    }
+
+    fun cancelPendingSearch() {
+        activeSearchCall.getAndSet(null)?.cancel()
+    }
+
+    fun cancelPendingReverseGeocode() {
+        activeReverseCall.getAndSet(null)?.cancel()
     }
 
     val sharedOkHttpClient: OkHttpClient by lazy {
@@ -71,7 +104,7 @@ object RoutingEngine {
         isCancelled: () -> Boolean = { false },
         onResult: (NavRoute?, String?) -> Unit
     ) {
-        ioExecutor.execute {
+        uiQueryExecutor.execute {
             if (isCancelled()) return@execute
             val ctx = appContext
             val online = isNetworkAvailable(ctx)
@@ -97,7 +130,7 @@ object RoutingEngine {
             var lastError = "Route request failed"
             for (heading in valhallaAttempts) {
                 if (isCancelled()) return@execute
-                val (vRoute, vErr) = fetchValhallaRoute(startLat, startLng, endLat, endLng, mode, heading)
+                val (vRoute, vErr) = fetchValhallaRoute(startLat, startLng, endLat, endLng, mode, heading, isCancelled)
                 if (isCancelled()) return@execute
                 if (vRoute != null) {
                     onResult(vRoute, null)
@@ -108,7 +141,7 @@ object RoutingEngine {
 
             // 3. Secondary Online Fallback: OSRM
             if (isCancelled()) return@execute
-            val (osrmRoute, osrmErr) = fetchOsrmRoute(startLat, startLng, endLat, endLng, mode, startBearing)
+            val (osrmRoute, osrmErr) = fetchOsrmRoute(startLat, startLng, endLat, endLng, mode, startBearing, isCancelled)
             if (isCancelled()) return@execute
             if (osrmRoute != null) {
                 onResult(osrmRoute, null)
@@ -130,15 +163,39 @@ object RoutingEngine {
         }
     }
 
+    private fun executeCancellable(
+        request: Request,
+        slot: AtomicReference<Call?>,
+        cancelPrevious: Boolean,
+        isCancelled: () -> Boolean = { false }
+    ): Pair<Int, String?> {
+        if (isCancelled()) throw IOException("Cancelled")
+        val call = sharedOkHttpClient.newCall(request)
+        val prev = slot.getAndSet(call)
+        if (cancelPrevious) prev?.cancel()
+        try {
+            if (isCancelled()) {
+                call.cancel()
+                throw IOException("Cancelled")
+            }
+            call.execute().use { resp ->
+                val body = resp.body?.string()
+                return resp.code to body
+            }
+        } finally {
+            slot.compareAndSet(call, null)
+        }
+    }
+
     private fun fetchValhallaRoute(
         startLat: Double,
         startLng: Double,
         endLat: Double,
         endLng: Double,
         mode: TravelMode,
-        headingDeg: Int?
+        headingDeg: Int?,
+        isCancelled: () -> Boolean
     ): Pair<NavRoute?, String?> {
-        var conn: HttpURLConnection? = null
         return try {
             val costing = when (mode) {
                 TravelMode.CAR -> "auto"
@@ -169,19 +226,14 @@ object RoutingEngine {
                 })
             }
 
-            conn = (URL("https://valhalla1.openstreetmap.de/route").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                connectTimeout = 9000
-                readTimeout = 12000
-                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                setRequestProperty("User-Agent", userAgent)
+            val req = Request.Builder()
+                .url("https://valhalla1.openstreetmap.de/route")
+                .post(payload.toString().toRequestBody("application/json; charset=UTF-8".toMediaType()))
+                .build()
+            val (code, body) = executeCancellable(req, activeRouteCall, cancelPrevious = true, isCancelled = isCancelled)
+            if (code != 200 || body.isNullOrEmpty()) {
+                return null to "Valhalla HTTP $code"
             }
-            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
-            if (conn.responseCode != 200) {
-                return null to "Valhalla HTTP ${conn.responseCode}"
-            }
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
             val trip = JSONObject(body).optJSONObject("trip") ?: return null to "Invalid Valhalla response"
             val legs = trip.optJSONArray("legs")
             if (legs == null || legs.length() == 0) return null to "No Valhalla route found"
@@ -218,8 +270,6 @@ object RoutingEngine {
             NavRoute(geom, finalDist, totalDur, steps, mode, "Valhalla") to null
         } catch (e: Exception) {
             null to (e.message ?: "Valhalla error")
-        } finally {
-            conn?.disconnect()
         }
     }
 
@@ -276,7 +326,8 @@ object RoutingEngine {
         endLat: Double,
         endLng: Double,
         mode: TravelMode,
-        startBearing: Float?
+        startBearing: Float?,
+        isCancelled: () -> Boolean
     ): Pair<NavRoute?, String?> {
         val profile = when (mode) {
             TravelMode.CAR -> "driving"
@@ -302,18 +353,14 @@ object RoutingEngine {
 
         var lastError = "OSRM route request failed"
         for (urlStr in urls) {
-            var conn: HttpURLConnection? = null
+            if (isCancelled()) return null to "Cancelled"
             try {
-                conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 9000
-                    readTimeout = 11000
-                    setRequestProperty("User-Agent", userAgent)
-                }
-                if (conn.responseCode != 200) {
-                    lastError = "OSRM error (${conn.responseCode})"
+                val req = Request.Builder().url(urlStr).get().build()
+                val (code, body) = executeCancellable(req, activeRouteCall, cancelPrevious = true, isCancelled = isCancelled)
+                if (code != 200 || body.isNullOrEmpty()) {
+                    lastError = "OSRM error ($code)"
                     continue
                 }
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
                 val root = JSONObject(body)
                 val routes = root.optJSONArray("routes")
                 if (routes == null || routes.length() == 0) {
@@ -380,8 +427,6 @@ object RoutingEngine {
                 return NavRoute(geom, totalDist, totalDur, steps, mode, "OSRM") to null
             } catch (e: Exception) {
                 lastError = e.message ?: "OSRM request failed"
-            } finally {
-                conn?.disconnect()
             }
         }
         return null to lastError
@@ -409,13 +454,39 @@ object RoutingEngine {
         }
     }
 
+    private fun activeAcceptLanguage(): String = appContext?.let { ctx ->
+        when (DevicePrefs.getMapLabelLanguage(ctx)) {
+            MapLabelLanguage.KURDISH -> "ku,ckb,en,ar"
+            MapLabelLanguage.ARABIC -> "ar,en,ku"
+            MapLabelLanguage.ENGLISH -> "en,ku,ar"
+            MapLabelLanguage.LOCAL -> "ku,ar,en"
+            MapLabelLanguage.BILINGUAL -> "en,ku,ar"
+        }
+    } ?: "en,ku,ar"
+
     fun searchPlaces(
         query: String,
         biasLat: Double? = null,
         biasLng: Double? = null,
         onResult: (List<PlaceResult>, String?) -> Unit
     ) {
-        ioExecutor.execute {
+        val normQ = query.trim().lowercase(java.util.Locale.ROOT)
+        val acceptLang = activeAcceptLanguage()
+        val biasKey = if (biasLat != null && biasLng != null) {
+            "${(biasLat * 10.0).roundToLong()},${(biasLng * 10.0).roundToLong()}"
+        } else "none"
+        val cacheKey = "$acceptLang|$normQ|$biasKey"
+        val nowMs = SystemClock.elapsedRealtime()
+        synchronized(searchCache) {
+            searchCache.get(cacheKey)?.let { cached ->
+                if (nowMs - cached.cachedAtMs <= NOMINATIM_CACHE_TTL_MS) {
+                    onResult(cached.places, null)
+                    return
+                }
+            }
+        }
+
+        uiQueryExecutor.execute {
             val out = mutableListOf<PlaceResult>()
             var errMsg: String? = null
             if (!isNetworkAvailable(appContext)) {
@@ -432,41 +503,31 @@ object RoutingEngine {
                     "&viewbox=$left,$top,$right,$bottom"
                 } else ""
                 val urlStr = "https://nominatim.openstreetmap.org/search?q=$q&format=json&limit=8$biasPart"
-                val acceptLang = appContext?.let { ctx ->
-                    when (DevicePrefs.getMapLabelLanguage(ctx)) {
-                        MapLabelLanguage.KURDISH -> "ku,ckb,en,ar"
-                        MapLabelLanguage.ARABIC -> "ar,en,ku"
-                        MapLabelLanguage.ENGLISH -> "en,ku,ar"
-                        MapLabelLanguage.LOCAL -> "ku,ar,en"
-                        MapLabelLanguage.BILINGUAL -> "en,ku,ar"
-                    }
-                } ?: "en,ku,ar"
-                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000
-                    readTimeout = 8000
-                    setRequestProperty("User-Agent", userAgent)
-                    setRequestProperty("Accept-Language", acceptLang)
-                }
-                try {
-                    if (conn.responseCode == 200) {
-                        val arr = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
-                        for (i in 0 until arr.length()) {
-                            val obj = arr.getJSONObject(i)
-                            val display = obj.optString("display_name", "Place")
-                            val parts = display.split(",").map { it.trim() }
-                            val title = parts.firstOrNull() ?: display
-                            val sub = parts.drop(1).take(3).joinToString(", ")
-                            val lat = obj.optString("lat").toDoubleOrNull()
-                            val lng = obj.optString("lon").toDoubleOrNull()
-                            if (lat != null && lng != null) {
-                                out.add(PlaceResult(title, sub, lat, lng))
-                            }
+                val req = Request.Builder()
+                    .url(urlStr)
+                    .header("Accept-Language", acceptLang)
+                    .get()
+                    .build()
+                val (code, body) = executeCancellable(req, activeSearchCall, cancelPrevious = true)
+                if (code == 200 && body != null) {
+                    val arr = JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val display = obj.optString("display_name", "Place")
+                        val parts = display.split(",").map { it.trim() }
+                        val title = parts.firstOrNull() ?: display
+                        val sub = parts.drop(1).take(3).joinToString(", ")
+                        val lat = obj.optString("lat").toDoubleOrNull()
+                        val lng = obj.optString("lon").toDoubleOrNull()
+                        if (lat != null && lng != null) {
+                            out.add(PlaceResult(title, sub, lat, lng))
                         }
-                    } else {
-                        errMsg = "Search server error (HTTP ${conn.responseCode})"
                     }
-                } finally {
-                    conn.disconnect()
+                    synchronized(searchCache) {
+                        searchCache.put(cacheKey, CachedSearch(SystemClock.elapsedRealtime(), out.toList()))
+                    }
+                } else {
+                    errMsg = "Search server error (HTTP $code)"
                 }
             } catch (e: Exception) {
                 errMsg = e.message ?: "Search request failed"
@@ -476,41 +537,46 @@ object RoutingEngine {
     }
 
     fun reverseGeocode(lat: Double, lng: Double, onResult: (PlaceResult?) -> Unit) {
-        ioExecutor.execute {
+        val acceptLang = activeAcceptLanguage()
+        val qLat = (lat * 10000.0).roundToLong() // ~11 m cell bucket
+        val qLng = (lng * 10000.0).roundToLong()
+        val cacheKey = "$acceptLang|$qLat|$qLng"
+        val nowMs = SystemClock.elapsedRealtime()
+        synchronized(reverseCache) {
+            reverseCache.get(cacheKey)?.let { cached ->
+                if (nowMs - cached.cachedAtMs <= NOMINATIM_CACHE_TTL_MS) {
+                    onResult(cached.place)
+                    return
+                }
+            }
+        }
+
+        uiQueryExecutor.execute {
             if (!isNetworkAvailable(appContext)) {
                 onResult(null)
                 return@execute
             }
             val result = runCatching {
                 val urlStr = "https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lng&format=json&zoom=18&addressdetails=1"
-                val acceptLang = appContext?.let { ctx ->
-                    when (DevicePrefs.getMapLabelLanguage(ctx)) {
-                        MapLabelLanguage.KURDISH -> "ku,ckb,en,ar"
-                        MapLabelLanguage.ARABIC -> "ar,en,ku"
-                        MapLabelLanguage.ENGLISH -> "en,ku,ar"
-                        MapLabelLanguage.LOCAL -> "ku,ar,en"
-                        MapLabelLanguage.BILINGUAL -> "en,ku,ar"
+                val req = Request.Builder()
+                    .url(urlStr)
+                    .header("Accept-Language", acceptLang)
+                    .get()
+                    .build()
+                val (code, body) = executeCancellable(req, activeReverseCall, cancelPrevious = true)
+                if (code == 200 && body != null) {
+                    val obj = JSONObject(body)
+                    val name = obj.optString("name", "").trim()
+                    val display = obj.optString("display_name", "").trim()
+                    val parts = display.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    val title = name.ifBlank { parts.firstOrNull() ?: "Selected Location" }
+                    val sub = parts.filterNot { it.equals(title, ignoreCase = true) }.take(3).joinToString(", ")
+                    PlaceResult(title, sub, lat, lng).also { res ->
+                        synchronized(reverseCache) {
+                            reverseCache.put(cacheKey, CachedReverse(SystemClock.elapsedRealtime(), res))
+                        }
                     }
-                } ?: "en,ku,ar"
-                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 6000
-                    readTimeout = 6000
-                    setRequestProperty("User-Agent", userAgent)
-                    setRequestProperty("Accept-Language", acceptLang)
-                }
-                try {
-                    if (conn.responseCode == 200) {
-                        val obj = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-                        val name = obj.optString("name", "").trim()
-                        val display = obj.optString("display_name", "").trim()
-                        val parts = display.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                        val title = name.ifBlank { parts.firstOrNull() ?: "Selected Location" }
-                        val sub = parts.filterNot { it.equals(title, ignoreCase = true) }.take(3).joinToString(", ")
-                        PlaceResult(title, sub, lat, lng)
-                    } else null
-                } finally {
-                    conn.disconnect()
-                }
+                } else null
             }.getOrNull()
             onResult(result)
         }

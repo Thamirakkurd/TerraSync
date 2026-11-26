@@ -1,7 +1,5 @@
 package com.terrasync.app
 
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.round
 import kotlin.math.roundToInt
@@ -325,7 +323,7 @@ object DailyReportGenerator {
         configuredDeviceAliases: Map<String, String> = emptyMap(),
         allKnownPinsForDeviceMap: List<PinItem> = uniquePins
     ): String {
-        val now = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US).format(Date())
+        val now = TimeFormatters.reportTimestamp(System.currentTimeMillis())
         val syncBadge = syncBadgeOverride ?: if (isCloudLive) "Live Cloud" else "Local"
         if (uniquePins.isEmpty()) {
             return buildString {
