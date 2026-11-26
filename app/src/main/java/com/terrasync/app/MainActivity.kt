@@ -7249,7 +7249,8 @@ class MainActivity : AppCompatActivity() {
                             if (!selectionMode) {
                                 selectionMode = true
                                 selectedPinIds.add(pin.id)
-                                renderPinRows()
+                                updateSelectionBarState()
+                                rebuildSubmittedRows()
                                 true
                             } else false
                         }
