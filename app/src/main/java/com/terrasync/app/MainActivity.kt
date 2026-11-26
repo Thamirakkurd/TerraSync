@@ -394,6 +394,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val notifPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    private fun ensureNotificationPermissionForDownloads() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     private fun applyTransparentSystemBars() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.clearFlags(
@@ -8884,8 +8896,14 @@ class MainActivity : AppCompatActivity() {
                         pack.id,
                         pack.title,
                         pack.subtitle,
-                        onDownload = { offlineMaps.downloadPack(pack, pixelRatio) },
-                        onDownloadRoadsOnly = { offlineMaps.downloadRoadGraphOnly(pack) }
+                        onDownload = {
+                            ensureNotificationPermissionForDownloads()
+                            offlineMaps.downloadPack(pack, pixelRatio)
+                        },
+                        onDownloadRoadsOnly = {
+                            ensureNotificationPermissionForDownloads()
+                            offlineMaps.downloadRoadGraphOnly(pack)
+                        }
                     )
                 }
 

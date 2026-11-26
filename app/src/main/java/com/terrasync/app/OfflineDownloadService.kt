@@ -14,6 +14,7 @@ import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import org.maplibre.android.storage.FileSource
 
 class OfflineDownloadService : Service() {
 
@@ -45,6 +46,9 @@ class OfflineDownloadService : Service() {
 
     private lateinit var offlineMaps: OfflineMapManager
     @Volatile private var lastNotifyMs = 0L
+    @Volatile private var isStopping = false
+    @Volatile private var isInForeground = false
+    @Volatile private var fileSourceActivated = false
 
     override fun onCreate() {
         super.onCreate()
@@ -53,17 +57,24 @@ class OfflineDownloadService : Service() {
         offlineMaps.setServiceListener {
             handleManagerUpdate()
         }
+        runCatching {
+            FileSource.getInstance(applicationContext).activate()
+            fileSourceActivated = true
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ensureChannel()
         if (intent?.action == ACTION_PAUSE_ALL) {
+            isStopping = true
+            isInForeground = false
             offlineMaps.pauseAllDownloads()
             stopForegroundCompat()
             stopSelf()
             return START_NOT_STICKY
         }
 
+        isStopping = false
         val notif = buildNotification(forceProgress = true)
         val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
@@ -71,9 +82,12 @@ class OfflineDownloadService : Service() {
             0
         }
         ServiceCompat.startForeground(this, NOTIF_ID, notif, serviceType)
+        isInForeground = true
         lastNotifyMs = SystemClock.elapsedRealtime()
 
         if (!offlineMaps.hasAnyActiveDownload()) {
+            isStopping = true
+            isInForeground = false
             stopForegroundCompat()
             stopSelf()
         }
@@ -81,14 +95,22 @@ class OfflineDownloadService : Service() {
     }
 
     override fun onTimeout(startId: Int) {
+        isStopping = true
+        isInForeground = false
         offlineMaps.pauseAllDownloads()
         stopForegroundCompat()
         stopSelf()
     }
 
     override fun onDestroy() {
+        isStopping = true
+        isInForeground = false
         if (::offlineMaps.isInitialized) {
             offlineMaps.setServiceListener(null)
+        }
+        if (fileSourceActivated) {
+            fileSourceActivated = false
+            runCatching { FileSource.getInstance(applicationContext).deactivate() }
         }
         super.onDestroy()
     }
@@ -96,11 +118,15 @@ class OfflineDownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun handleManagerUpdate() {
+        if (isStopping) return
         if (!offlineMaps.hasAnyActiveDownload()) {
+            isStopping = true
+            isInForeground = false
             stopForegroundCompat()
             stopSelf()
             return
         }
+        if (!isInForeground) return
         val now = SystemClock.elapsedRealtime()
         if (now - lastNotifyMs < 450L) return
         lastNotifyMs = now

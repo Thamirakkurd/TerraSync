@@ -2,6 +2,7 @@ package com.terrasync.app
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteStatement
 import android.os.SystemClock
 import android.util.JsonReader
 import android.util.JsonToken
@@ -300,8 +301,12 @@ object OfflineRoutingEngine {
             val stageDir = stagingDir(ctx, jobKey)
             val stageDbFile = File(stageDir, "stage.db")
             var stageDb: SQLiteDatabase? = null
+            val openStmts = ArrayList<SQLiteStatement>(5)
             var finishedCleanly = false
             var wasCancelled = false
+            var resultRegion: OfflineRoadRegion? = null
+            var resultError: String? = null
+            var invokeDone = false
             var lastProgressMs = 0L
 
             fun emitProgress(msg: String, pct: Int, force: Boolean = false) {
@@ -398,13 +403,13 @@ object OfflineRoutingEngine {
                 db.execSQL("CREATE TABLE edges(from_idx INTEGER NOT NULL, to_idx INTEGER NOT NULL, dist REAL NOT NULL, speed REAL NOT NULL, flags INTEGER NOT NULL, name_idx INTEGER NOT NULL)")
                 db.execSQL("INSERT INTO names(idx, name) VALUES (0, '')")
 
-                val stmtChunkNode = db.compileStatement("INSERT OR REPLACE INTO chunk_nodes(osm_id, lat, lon) VALUES (?, ?, ?)")
-                val stmtNodeInsert = db.compileStatement("INSERT INTO nodes(idx, osm_id, lat, lon) VALUES (?, ?, ?, ?)")
-                val stmtWayInsert = db.compileStatement("INSERT OR IGNORE INTO ways(way_id) VALUES (?)")
-                val stmtNameInsert = db.compileStatement("INSERT OR IGNORE INTO names(idx, name) VALUES (?, ?)")
-                val stmtEdgeInsert = db.compileStatement("INSERT INTO edges(from_idx, to_idx, dist, speed, flags, name_idx) VALUES (?, ?, ?, ?, ?, ?)")
+                val stmtChunkNode = db.compileStatement("INSERT OR REPLACE INTO chunk_nodes(osm_id, lat, lon) VALUES (?, ?, ?)").also { openStmts.add(it) }
+                val stmtNodeInsert = db.compileStatement("INSERT INTO nodes(idx, osm_id, lat, lon) VALUES (?, ?, ?, ?)").also { openStmts.add(it) }
+                val stmtWayInsert = db.compileStatement("INSERT OR IGNORE INTO ways(way_id) VALUES (?)").also { openStmts.add(it) }
+                val stmtNameInsert = db.compileStatement("INSERT OR IGNORE INTO names(idx, name) VALUES (?, ?)").also { openStmts.add(it) }
+                val stmtEdgeInsert = db.compileStatement("INSERT INTO edges(from_idx, to_idx, dist, speed, flags, name_idx) VALUES (?, ?, ?, ?, ?, ?)").also { openStmts.add(it) }
 
-                val nodeCache = android.util.LruCache<Long, NodePt>(4096)
+                val nodeCache = android.util.LruCache<Long, NodePt>(16384)
                 val nameCache = android.util.LruCache<String, Int>(2048).apply { put("", 0) }
                 var nextNodeIdx = 0
                 var nextNameIdx = 1
@@ -428,33 +433,90 @@ object OfflineRoutingEngine {
                     return idx
                 }
 
-                fun resolveNode(osmId: Long): NodePt? {
-                    nodeCache.get(osmId)?.let { return it }
-                    val idStr = osmId.toString()
-                    db.rawQuery("SELECT idx, lat, lon FROM nodes WHERE osm_id = ? LIMIT 1", arrayOf(idStr)).use { c ->
-                        if (c.moveToFirst()) {
-                            val pt = NodePt(c.getInt(0), c.getDouble(1).toFloat(), c.getDouble(2).toFloat())
-                            nodeCache.put(osmId, pt)
-                            return pt
+                fun resolveWayNodes(
+                    wayNodeIds: List<Long>,
+                    resolved: HashMap<Long, NodePt>,
+                    missing: ArrayList<Long>,
+                    stillMissing: ArrayList<Long>,
+                    seenMissing: HashSet<Long>,
+                    sb: StringBuilder
+                ) {
+                    resolved.clear()
+                    missing.clear()
+                    stillMissing.clear()
+                    seenMissing.clear()
+
+                    for (i in 0 until wayNodeIds.size) {
+                        val id = wayNodeIds[i]
+                        if (resolved.containsKey(id)) continue
+                        val cached = nodeCache.get(id)
+                        if (cached != null) {
+                            resolved[id] = cached
+                        } else if (seenMissing.add(id)) {
+                            missing.add(id)
                         }
                     }
-                    db.rawQuery("SELECT lat, lon FROM chunk_nodes WHERE osm_id = ? LIMIT 1", arrayOf(idStr)).use { c ->
-                        if (c.moveToFirst()) {
-                            val lat = c.getDouble(0)
-                            val lon = c.getDouble(1)
-                            val idx = nextNodeIdx++
-                            stmtNodeInsert.clearBindings()
-                            stmtNodeInsert.bindLong(1, idx.toLong())
-                            stmtNodeInsert.bindLong(2, osmId)
-                            stmtNodeInsert.bindDouble(3, lat)
-                            stmtNodeInsert.bindDouble(4, lon)
-                            stmtNodeInsert.executeInsert()
-                            val pt = NodePt(idx, lat.toFloat(), lon.toFloat())
-                            nodeCache.put(osmId, pt)
-                            return pt
+                    if (missing.isEmpty()) return
+
+                    var offset = 0
+                    while (offset < missing.size) {
+                        val end = minOf(offset + 400, missing.size)
+                        sb.setLength(0)
+                        sb.append("SELECT osm_id, idx, lat, lon FROM nodes WHERE osm_id IN (")
+                        for (i in offset until end) {
+                            if (i > offset) sb.append(',')
+                            sb.append(missing[i])
+                        }
+                        sb.append(')')
+                        db.rawQuery(sb.toString(), null).use { c ->
+                            while (c.moveToNext()) {
+                                val osmId = c.getLong(0)
+                                val pt = NodePt(c.getInt(1), c.getDouble(2).toFloat(), c.getDouble(3).toFloat())
+                                resolved[osmId] = pt
+                                nodeCache.put(osmId, pt)
+                            }
+                        }
+                        offset = end
+                    }
+
+                    for (i in 0 until missing.size) {
+                        val id = missing[i]
+                        if (!resolved.containsKey(id)) {
+                            stillMissing.add(id)
                         }
                     }
-                    return null
+                    if (stillMissing.isEmpty()) return
+
+                    offset = 0
+                    while (offset < stillMissing.size) {
+                        val end = minOf(offset + 400, stillMissing.size)
+                        sb.setLength(0)
+                        sb.append("SELECT osm_id, lat, lon FROM chunk_nodes WHERE osm_id IN (")
+                        for (i in offset until end) {
+                            if (i > offset) sb.append(',')
+                            sb.append(stillMissing[i])
+                        }
+                        sb.append(')')
+                        db.rawQuery(sb.toString(), null).use { c ->
+                            while (c.moveToNext()) {
+                                val osmId = c.getLong(0)
+                                if (resolved.containsKey(osmId)) continue
+                                val lat = c.getDouble(1)
+                                val lon = c.getDouble(2)
+                                val idx = nextNodeIdx++
+                                stmtNodeInsert.clearBindings()
+                                stmtNodeInsert.bindLong(1, idx.toLong())
+                                stmtNodeInsert.bindLong(2, osmId)
+                                stmtNodeInsert.bindDouble(3, lat)
+                                stmtNodeInsert.bindDouble(4, lon)
+                                stmtNodeInsert.executeInsert()
+                                val pt = NodePt(idx, lat.toFloat(), lon.toFloat())
+                                resolved[osmId] = pt
+                                nodeCache.put(osmId, pt)
+                            }
+                        }
+                        offset = end
+                    }
                 }
 
                 fun downloadChunkToFile(cIdx: Int, chunk: ChunkSpec, outFile: File): String? {
@@ -611,6 +673,11 @@ object OfflineRoutingEngine {
                     // Pass 2: Stream ways into SQLite nodes/edges
                     emitProgress("Processing roads ($chunkLabel)...", basePct + (62 / chunks.size), force = true)
                     val wayNodeIds = ArrayList<Long>(64)
+                    val wayNodeMap = HashMap<Long, NodePt>(64)
+                    val missingIds = ArrayList<Long>(64)
+                    val stillMissingIds = ArrayList<Long>(64)
+                    val seenMissing = HashSet<Long>(64)
+                    val inClauseSb = StringBuilder(256)
                     JsonReader(InputStreamReader(BufferedInputStream(FileInputStream(chunkFile), 32 * 1024), Charsets.UTF_8)).use { reader ->
                         reader.beginObject()
                         while (reader.hasNext()) {
@@ -705,9 +772,10 @@ object OfflineRoutingEngine {
                                         if (fwdFlags == 0 && revFlags == 0) continue
 
                                         val nIdx = resolveNameIdx(roadName)
+                                        resolveWayNodes(wayNodeIds, wayNodeMap, missingIds, stillMissingIds, seenMissing, inClauseSb)
                                         var prev: NodePt? = null
                                         for (k in 0 until wayNodeIds.size) {
-                                            val curr = resolveNode(wayNodeIds[k])
+                                            val curr = wayNodeMap[wayNodeIds[k]]
                                             if (prev != null && curr != null && prev.idx != curr.idx) {
                                                 val d = RoutingEngine.haversineMeters(
                                                     prev.lat.toDouble(), prev.lng.toDouble(),
@@ -809,129 +877,134 @@ object OfflineRoutingEngine {
                 val nameCount = db.rawQuery("SELECT COUNT(*) FROM names", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
                 if (!fetchedAny || nodeCount == 0 || edgeCount == 0) {
-                    onDone(null, if (!fetchedAny) lastErr else "No routable roads found in this area")
-                    return@Thread
-                }
-
-                emitProgress("Saving offline roads ($nodeCount nodes)...", 85, force = true)
-                val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}_${System.currentTimeMillis() % 10000}.tsr"
-                val outFile = File(dir(ctx), fileName)
-                val partFile = File(dir(ctx), "$fileName.part")
-                partFile.delete()
-                val now = System.currentTimeMillis()
-
-                DataOutputStream(GZIPOutputStream(BufferedOutputStream(FileOutputStream(partFile), 32 * 1024))).use { dos ->
-                    dos.writeInt(MAGIC)
-                    dos.writeUTF(regionName)
-                    dos.writeDouble(sLat)
-                    dos.writeDouble(wLng)
-                    dos.writeDouble(nLat)
-                    dos.writeDouble(eLng)
-                    dos.writeLong(now)
-                    dos.writeInt(nodeCount)
-                    dos.writeInt(edgeCount)
-                    dos.writeInt(nameCount)
-
-                    var lastNameIdx = -1
-                    while (true) {
-                        checkCancelled()
-                        var count = 0
-                        db.rawQuery(
-                            "SELECT idx, name FROM names WHERE idx > ? ORDER BY idx ASC LIMIT 5000",
-                            arrayOf(lastNameIdx.toString())
-                        ).use { c ->
-                            while (c.moveToNext()) {
-                                lastNameIdx = c.getInt(0)
-                                dos.writeUTF(c.getString(1) ?: "")
-                                count++
-                            }
-                        }
-                        if (count < 5000) break
-                    }
-
-                    var lastNodeIdx = -1
-                    while (true) {
-                        checkCancelled()
-                        var count = 0
-                        db.rawQuery(
-                            "SELECT idx, lat, lon FROM nodes WHERE idx > ? ORDER BY idx ASC LIMIT 10000",
-                            arrayOf(lastNodeIdx.toString())
-                        ).use { c ->
-                            while (c.moveToNext()) {
-                                lastNodeIdx = c.getInt(0)
-                                dos.writeFloat(c.getDouble(1).toFloat())
-                                dos.writeFloat(c.getDouble(2).toFloat())
-                                count++
-                            }
-                        }
-                        if (count < 10000) break
-                    }
-                    emitProgress("Saving offline road graph (92%)...", 92, force = true)
-
-                    var lastEdgeRowId = 0L
-                    var writtenEdges = 0
-                    while (true) {
-                        checkCancelled()
-                        var count = 0
-                        db.rawQuery(
-                            "SELECT rowid, from_idx, to_idx, dist, speed, flags, name_idx FROM edges WHERE rowid > ? ORDER BY rowid ASC LIMIT 10000",
-                            arrayOf(lastEdgeRowId.toString())
-                        ).use { c ->
-                            while (c.moveToNext()) {
-                                lastEdgeRowId = c.getLong(0)
-                                dos.writeInt(c.getInt(1))
-                                dos.writeInt(c.getInt(2))
-                                dos.writeFloat(c.getDouble(3).toFloat())
-                                dos.writeFloat(c.getDouble(4).toFloat())
-                                dos.writeByte(c.getInt(5))
-                                dos.writeInt(c.getInt(6))
-                                count++
-                            }
-                        }
-                        writtenEdges += count
-                        val savePct = 92 + ((writtenEdges.toLong() * 7L) / edgeCount.coerceAtLeast(1)).toInt()
-                        emitProgress("Saving offline road graph ($savePct%)...", savePct)
-                        if (count < 10000) break
-                    }
-                    dos.flush()
-                }
-
-                checkCancelled()
-                if (outFile.exists()) outFile.delete()
-                if (!partFile.renameTo(outFile)) {
-                    partFile.copyTo(outFile, overwrite = true)
+                    resultError = if (!fetchedAny) lastErr else "No routable roads found in this area"
+                    invokeDone = true
+                } else {
+                    emitProgress("Saving offline roads ($nodeCount nodes)...", 85, force = true)
+                    val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}_${System.currentTimeMillis() % 10000}.tsr"
+                    val outFile = File(dir(ctx), fileName)
+                    val partFile = File(dir(ctx), "$fileName.part")
                     partFile.delete()
-                }
+                    val now = System.currentTimeMillis()
 
-                val meta = OfflineRoadRegion(
-                    fileName = fileName,
-                    name = regionName,
-                    minLat = sLat,
-                    minLng = wLng,
-                    maxLat = nLat,
-                    maxLng = eLng,
-                    nodeCount = nodeCount,
-                    edgeCount = edgeCount,
-                    sizeBytes = outFile.length(),
-                    downloadedAt = now
-                )
-                synchronized(graphCacheLock) {
-                    if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                    DataOutputStream(GZIPOutputStream(BufferedOutputStream(FileOutputStream(partFile), 32 * 1024))).use { dos ->
+                        dos.writeInt(MAGIC)
+                        dos.writeUTF(regionName)
+                        dos.writeDouble(sLat)
+                        dos.writeDouble(wLng)
+                        dos.writeDouble(nLat)
+                        dos.writeDouble(eLng)
+                        dos.writeLong(now)
+                        dos.writeInt(nodeCount)
+                        dos.writeInt(edgeCount)
+                        dos.writeInt(nameCount)
+
+                        var lastNameIdx = -1
+                        while (true) {
+                            checkCancelled()
+                            var count = 0
+                            db.rawQuery(
+                                "SELECT idx, name FROM names WHERE idx > ? ORDER BY idx ASC LIMIT 5000",
+                                arrayOf(lastNameIdx.toString())
+                            ).use { c ->
+                                while (c.moveToNext()) {
+                                    lastNameIdx = c.getInt(0)
+                                    dos.writeUTF(c.getString(1) ?: "")
+                                    count++
+                                }
+                            }
+                            if (count < 5000) break
+                        }
+
+                        var lastNodeIdx = -1
+                        while (true) {
+                            checkCancelled()
+                            var count = 0
+                            db.rawQuery(
+                                "SELECT idx, lat, lon FROM nodes WHERE idx > ? ORDER BY idx ASC LIMIT 10000",
+                                arrayOf(lastNodeIdx.toString())
+                            ).use { c ->
+                                while (c.moveToNext()) {
+                                    lastNodeIdx = c.getInt(0)
+                                    dos.writeFloat(c.getDouble(1).toFloat())
+                                    dos.writeFloat(c.getDouble(2).toFloat())
+                                    count++
+                                }
+                            }
+                            if (count < 10000) break
+                        }
+                        emitProgress("Saving offline road graph (92%)...", 92, force = true)
+
+                        var lastEdgeRowId = 0L
+                        var writtenEdges = 0
+                        while (true) {
+                            checkCancelled()
+                            var count = 0
+                            db.rawQuery(
+                                "SELECT rowid, from_idx, to_idx, dist, speed, flags, name_idx FROM edges WHERE rowid > ? ORDER BY rowid ASC LIMIT 10000",
+                                arrayOf(lastEdgeRowId.toString())
+                            ).use { c ->
+                                while (c.moveToNext()) {
+                                    lastEdgeRowId = c.getLong(0)
+                                    dos.writeInt(c.getInt(1))
+                                    dos.writeInt(c.getInt(2))
+                                    dos.writeFloat(c.getDouble(3).toFloat())
+                                    dos.writeFloat(c.getDouble(4).toFloat())
+                                    dos.writeByte(c.getInt(5))
+                                    dos.writeInt(c.getInt(6))
+                                    count++
+                                }
+                            }
+                            writtenEdges += count
+                            val savePct = 92 + ((writtenEdges.toLong() * 7L) / edgeCount.coerceAtLeast(1)).toInt()
+                            emitProgress("Saving offline road graph ($savePct%)...", savePct)
+                            if (count < 10000) break
+                        }
+                        dos.flush()
+                    }
+
+                    checkCancelled()
+                    if (outFile.exists()) outFile.delete()
+                    if (!partFile.renameTo(outFile)) {
+                        partFile.copyTo(outFile, overwrite = true)
+                        partFile.delete()
+                    }
+
+                    val meta = OfflineRoadRegion(
+                        fileName = fileName,
+                        name = regionName,
+                        minLat = sLat,
+                        minLng = wLng,
+                        maxLat = nLat,
+                        maxLng = eLng,
+                        nodeCount = nodeCount,
+                        edgeCount = edgeCount,
+                        sizeBytes = outFile.length(),
+                        downloadedAt = now
+                    )
+                    synchronized(graphCacheLock) {
+                        if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                    }
+                    headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
+                    finishedCleanly = true
+                    resultRegion = meta
+                    invokeDone = true
                 }
-                headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
-                finishedCleanly = true
-                onDone(meta, null)
             } catch (_: CancelledSignal) {
                 wasCancelled = true
-                onDone(null, "Cancelled")
+                resultError = "Cancelled"
+                invokeDone = true
             } catch (e: CancellationException) {
                 wasCancelled = true
                 throw e
             } catch (_: OutOfMemoryError) {
-                onDone(null, "Not enough memory to process road data")
+                resultError = "Not enough memory to process road data"
+                invokeDone = true
             } catch (t: Throwable) {
-                onDone(null, t.message ?: "Failed to compile offline graph")
+                resultError = t.message ?: "Failed to compile offline graph"
+                invokeDone = true
             } finally {
+                for (stmt in openStmts) runCatching { stmt.close() }
                 runCatching { stageDb?.close() }
                 stageDbFile.delete()
                 File(stageDir, "stage.db-journal").delete()
@@ -947,6 +1020,9 @@ object OfflineRoutingEngine {
                     File(dir(ctx), "${packFileName(packId)}.part").delete()
                 }
                 activeDownloads.remove(jobKey, cancelFlag)
+            }
+            if (invokeDone) {
+                onDone(resultRegion, resultError)
             }
         }.apply {
             name = "terrasync-road-dl-$jobKey"
