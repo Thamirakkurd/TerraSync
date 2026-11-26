@@ -104,8 +104,11 @@ class MainActivity : AppCompatActivity() {
         private const val RULER_POINTS_CIRCLE_LAYER = "terrasync-ruler-points-circle-layer"
         private const val RULER_POINTS_NUM_LAYER = "terrasync-ruler-points-num-layer"
         private const val PINS_SOURCE = "terrasync-pins-source"
+        private const val PINS_CLUSTER_SOURCE = "terrasync-pins-cluster-source"
         private const val PINS_LAYER = "terrasync-pins-layer"
         private const val PINS_LABELS_LAYER = "terrasync-pins-labels-layer"
+        private const val PINS_CLUSTER_UNCLUSTERED_LAYER = "terrasync-pins-cluster-unclustered"
+        private const val PINS_CLUSTER_LABELS_LAYER = "terrasync-pins-cluster-labels"
         private const val PINS_CLUSTER_CIRCLE_LAYER = "terrasync-pins-cluster-circles"
         private const val PINS_CLUSTER_COUNT_LAYER = "terrasync-pins-cluster-count"
         private const val SELECTED_SOURCE = "terrasync-selected-source"
@@ -457,11 +460,15 @@ class MainActivity : AppCompatActivity() {
                 text = "Show more (${matches.size - rendered} remaining)"
                 textSize = 13f
                 isAllCaps = false
-                setTextColor(p.accentPrimary)
-                setBackgroundColor(p.chipSurface)
-                cornerRadius = dp(12)
                 insetTop = 0
                 insetBottom = 0
+                setTextColor(p.accentPrimary)
+                backgroundTintList = android.content.res.ColorStateList.valueOf(p.chipSurface)
+                strokeWidth = dp(1)
+                strokeColor = android.content.res.ColorStateList.valueOf(p.borderSubtle)
+                cornerRadius = dp(12)
+                elevation = 0f
+                stateListAnimator = null
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     dp(42)
@@ -2340,21 +2347,19 @@ class MainActivity : AppCompatActivity() {
         val showTitles = DevicePrefs.isShowBookmarkTitles(this)
         val clustered = DevicePrefs.isClusterDensePins(this)
 
-        val src = if (clustered) {
+        style.addSource(GeoJsonSource(PINS_SOURCE, FeatureCollection.fromFeatures(emptyList<Feature>())))
+        style.addSource(
             GeoJsonSource(
-                PINS_SOURCE,
+                PINS_CLUSTER_SOURCE,
+                FeatureCollection.fromFeatures(emptyList<Feature>()),
                 GeoJsonOptions()
                     .withCluster(true)
-                    .withClusterMaxZoom(12)
-                    .withClusterRadius(42)
+                    .withClusterMaxZoom(13)
+                    .withClusterRadius(46)
             )
-        } else {
-            GeoJsonSource(PINS_SOURCE)
-        }
-        style.addSource(src)
+        )
 
-        val labelLayer = SymbolLayer(PINS_LABELS_LAYER, PINS_SOURCE).withProperties(
-            PropertyFactory.visibility(if (showTitles) Property.VISIBLE else Property.NONE),
+        fun makePinLabelLayer(layerId: String, srcId: String) = SymbolLayer(layerId, srcId).withProperties(
             PropertyFactory.textField(Expression.get("label")),
             PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
             PropertyFactory.textSize(10.5f),
@@ -2369,76 +2374,87 @@ class MainActivity : AppCompatActivity() {
             PropertyFactory.textAllowOverlap(false),
             PropertyFactory.textIgnorePlacement(false),
             PropertyFactory.textOptional(true)
-        ).apply {
-            if (clustered) setFilter(Expression.not(Expression.has("point_count")))
-        }
+        )
 
-        val pinLayer = SymbolLayer(PINS_LAYER, PINS_SOURCE).withProperties(
+        fun makePinIconLayer(layerId: String, srcId: String) = SymbolLayer(layerId, srcId).withProperties(
             PropertyFactory.iconImage(Expression.get("icon")),
             PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
             PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
             PropertyFactory.iconSize(1.0f),
             PropertyFactory.iconAllowOverlap(true),
             PropertyFactory.iconIgnorePlacement(true)
-        ).apply {
-            if (clustered) setFilter(Expression.not(Expression.has("point_count")))
+        )
+
+        val labelLayer = makePinLabelLayer(PINS_LABELS_LAYER, PINS_SOURCE)
+        val clusterLabelLayer = makePinLabelLayer(PINS_CLUSTER_LABELS_LAYER, PINS_CLUSTER_SOURCE).apply {
+            setFilter(Expression.not(Expression.has("point_count")))
+        }
+        val pinLayer = makePinIconLayer(PINS_LAYER, PINS_SOURCE)
+        val clusterPinLayer = makePinIconLayer(PINS_CLUSTER_UNCLUSTERED_LAYER, PINS_CLUSTER_SOURCE).apply {
+            setFilter(Expression.not(Expression.has("point_count")))
+        }
+        val clusterCircleLayer = CircleLayer(PINS_CLUSTER_CIRCLE_LAYER, PINS_CLUSTER_SOURCE).apply {
+            setFilter(Expression.has("point_count"))
+            setProperties(
+                PropertyFactory.circleColor(Color.parseColor("#18794E")),
+                PropertyFactory.circleRadius(
+                    Expression.switchCase(
+                        Expression.gte(Expression.toNumber(Expression.get("point_count")), Expression.literal(250)),
+                        Expression.literal(25f),
+                        Expression.gte(Expression.toNumber(Expression.get("point_count")), Expression.literal(50)),
+                        Expression.literal(21f),
+                        Expression.literal(17f)
+                    )
+                ),
+                PropertyFactory.circleStrokeColor(Color.WHITE),
+                PropertyFactory.circleStrokeWidth(2.5f),
+                PropertyFactory.circleOpacity(0.95f)
+            )
+        }
+        val clusterCountLayer = SymbolLayer(PINS_CLUSTER_COUNT_LAYER, PINS_CLUSTER_SOURCE).apply {
+            setFilter(Expression.has("point_count"))
+            setProperties(
+                PropertyFactory.textField(
+                    Expression.coalesce(
+                        Expression.get("point_count_abbreviated"),
+                        Expression.toString(Expression.get("point_count"))
+                    )
+                ),
+                PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                PropertyFactory.textSize(12.5f),
+                PropertyFactory.textColor(Color.WHITE),
+                PropertyFactory.textAllowOverlap(true),
+                PropertyFactory.textIgnorePlacement(true)
+            )
         }
 
-        val hasHalo = style.getLayer(SELECTED_HALO_LAYER) != null
-        if (hasHalo) {
+        if (style.getLayer(SELECTED_HALO_LAYER) != null) {
             style.addLayerBelow(labelLayer, SELECTED_HALO_LAYER)
+            style.addLayerBelow(clusterLabelLayer, SELECTED_HALO_LAYER)
             style.addLayerAbove(pinLayer, SELECTED_HALO_LAYER)
         } else {
             style.addLayer(labelLayer)
+            style.addLayer(clusterLabelLayer)
             style.addLayer(pinLayer)
         }
+        style.addLayerAbove(clusterPinLayer, PINS_LAYER)
+        style.addLayerAbove(clusterCircleLayer, PINS_CLUSTER_UNCLUSTERED_LAYER)
+        style.addLayerAbove(clusterCountLayer, PINS_CLUSTER_CIRCLE_LAYER)
 
-        if (clustered) {
-            val clusterCircleLayer = CircleLayer(PINS_CLUSTER_CIRCLE_LAYER, PINS_SOURCE).apply {
-                setFilter(Expression.has("point_count"))
-                setProperties(
-                    PropertyFactory.circleColor(Color.parseColor("#2E8B47")),
-                    PropertyFactory.circleRadius(
-                        Expression.switchCase(
-                            Expression.gte(Expression.toNumber(Expression.get("point_count")), Expression.literal(250)),
-                            Expression.literal(24f),
-                            Expression.gte(Expression.toNumber(Expression.get("point_count")), Expression.literal(50)),
-                            Expression.literal(20f),
-                            Expression.literal(17f)
-                        )
-                    ),
-                    PropertyFactory.circleStrokeColor(Color.WHITE),
-                    PropertyFactory.circleStrokeWidth(2.4f),
-                    PropertyFactory.circleOpacity(0.94f)
-                )
-            }
-            val clusterCountLayer = SymbolLayer(PINS_CLUSTER_COUNT_LAYER, PINS_SOURCE).apply {
-                setFilter(Expression.has("point_count"))
-                setProperties(
-                    PropertyFactory.textField(Expression.get("point_count_abbreviated")),
-                    PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
-                    PropertyFactory.textSize(12.5f),
-                    PropertyFactory.textColor(Color.WHITE),
-                    PropertyFactory.textAllowOverlap(true),
-                    PropertyFactory.textIgnorePlacement(true)
-                )
-            }
-            style.addLayerAbove(clusterCircleLayer, PINS_LAYER)
-            style.addLayerAbove(clusterCountLayer, PINS_CLUSTER_CIRCLE_LAYER)
-        }
+        applyPinClusterModeVisibility(style, clustered, showTitles)
     }
 
-    private fun rebuildPinsSourceAndClusterLayers(style: Style) {
-        if (!style.isFullyLoaded) return
-        pinRenderSeq++
-        lastPinsRenderKey = null
-        style.removeLayer(PINS_CLUSTER_COUNT_LAYER)
-        style.removeLayer(PINS_CLUSTER_CIRCLE_LAYER)
-        style.removeLayer(PINS_LAYER)
-        style.removeLayer(PINS_LABELS_LAYER)
-        style.removeSource(PINS_SOURCE)
-        attachPinsSourceAndLayers(style)
-        renderPinsAndTracks(style)
+    private fun applyPinClusterModeVisibility(style: Style, clustered: Boolean, showTitles: Boolean) {
+        val visUnclustered = if (!clustered) Property.VISIBLE else Property.NONE
+        val visUnclusteredLabels = if (!clustered && showTitles) Property.VISIBLE else Property.NONE
+        val visClustered = if (clustered) Property.VISIBLE else Property.NONE
+        val visClusteredLabels = if (clustered && showTitles) Property.VISIBLE else Property.NONE
+        style.getLayer(PINS_LAYER)?.setProperties(PropertyFactory.visibility(visUnclustered))
+        style.getLayer(PINS_LABELS_LAYER)?.setProperties(PropertyFactory.visibility(visUnclusteredLabels))
+        style.getLayer(PINS_CLUSTER_UNCLUSTERED_LAYER)?.setProperties(PropertyFactory.visibility(visClustered))
+        style.getLayer(PINS_CLUSTER_LABELS_LAYER)?.setProperties(PropertyFactory.visibility(visClusteredLabels))
+        style.getLayer(PINS_CLUSTER_CIRCLE_LAYER)?.setProperties(PropertyFactory.visibility(visClustered))
+        style.getLayer(PINS_CLUSTER_COUNT_LAYER)?.setProperties(PropertyFactory.visibility(visClustered))
     }
 
     private fun getVisiblePins(): List<PinItem> {
@@ -2508,9 +2524,7 @@ class MainActivity : AppCompatActivity() {
         val clustered = DevicePrefs.isClusterDensePins(this)
         val showTitles = DevicePrefs.isShowBookmarkTitles(this)
 
-        style.getLayer(PINS_LABELS_LAYER)?.setProperties(
-            PropertyFactory.visibility(if (showTitles) Property.VISIBLE else Property.NONE)
-        )
+        applyPinClusterModeVisibility(style, clustered, showTitles)
 
         val selId = selectedPinId
         val pinsKey = "$dataVersion|$selId|$clustered|${statusesSnap.hashCode()}|${statusesSnap.size}|${hiddenLayerIds.hashCode()}|${hiddenLayerIds.size}|$hideSentPins|${sentIds.hashCode()}|${sentIds.size}"
@@ -2561,9 +2575,17 @@ class MainActivity : AppCompatActivity() {
                     pinFeatures.add(toPinFeature(sel, PinStatus.fromRaw(sel.status)))
                 }
                 val fc = FeatureCollection.fromFeatures(pinFeatures)
+                val emptyFc = FeatureCollection.fromFeatures(emptyList<Feature>())
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed && seq == pinRenderSeq && map?.style === style && style.isFullyLoaded) {
-                        style.getSourceAs<GeoJsonSource>(PINS_SOURCE)?.setGeoJson(fc)
+                        applyPinClusterModeVisibility(style, clustered, showTitles)
+                        if (clustered) {
+                            style.getSourceAs<GeoJsonSource>(PINS_CLUSTER_SOURCE)?.setGeoJson(fc)
+                            style.getSourceAs<GeoJsonSource>(PINS_SOURCE)?.setGeoJson(emptyFc)
+                        } else {
+                            style.getSourceAs<GeoJsonSource>(PINS_SOURCE)?.setGeoJson(fc)
+                            style.getSourceAs<GeoJsonSource>(PINS_CLUSTER_SOURCE)?.setGeoJson(emptyFc)
+                        }
                     }
                 }
             }
@@ -3076,7 +3098,8 @@ class MainActivity : AppCompatActivity() {
             screenPt.y + dp(14).toFloat()
         )
 
-        if (DevicePrefs.isClusterDensePins(this)) {
+        val clustered = DevicePrefs.isClusterDensePins(this)
+        if (clustered) {
             val clusterHits = m.queryRenderedFeatures(hitBox, PINS_CLUSTER_CIRCLE_LAYER)
             val clusterPt = clusterHits.firstOrNull()?.geometry() as? Point
             if (clusterPt != null) {
@@ -3092,7 +3115,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val pinHits = m.queryRenderedFeatures(hitBox, PINS_LAYER, PINS_LABELS_LAYER)
+        val pinHits = if (clustered) {
+            m.queryRenderedFeatures(hitBox, PINS_CLUSTER_UNCLUSTERED_LAYER, PINS_CLUSTER_LABELS_LAYER)
+        } else {
+            m.queryRenderedFeatures(hitBox, PINS_LAYER, PINS_LABELS_LAYER)
+        }
         val pin = pinHits
             .mapNotNull { hit -> hit.getStringProperty("id")?.let { id -> pinById[id] } }
             .distinctBy { it.id }
@@ -8556,7 +8583,8 @@ class MainActivity : AppCompatActivity() {
                     checked = DevicePrefs.isClusterDensePins(this)
                 ) { enabled ->
                     DevicePrefs.setClusterDensePins(this, enabled)
-                    map?.style?.let { st -> rebuildPinsSourceAndClusterLayers(st) }
+                    lastPinsRenderKey = null
+                    renderMapData()
                 }
                 body.addView(mapCard)
             }
