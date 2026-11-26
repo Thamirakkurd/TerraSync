@@ -487,20 +487,16 @@ class MainActivity : AppCompatActivity() {
                 height = maxOf(navBarInsetBottom, dp(14)) + dp(28)
             }
             (inScreenSheet.layoutParams as ViewGroup.MarginLayoutParams).apply {
-                topMargin = statusBarInsetTop + dp(12)
+                topMargin = 0
                 marginStart = insetStart
                 marginEnd = insetEnd
             }
+            val maxSheetH = (resources.displayMetrics.heightPixels - statusBarInsetTop - dp(12)).coerceAtLeast(dp(240))
+            if (::sheetBehavior.isInitialized) {
+                sheetBehavior.maxHeight = maxSheetH
+            }
             val sheetBottomInset = maxOf(navBarInsetBottom, imeInsetBottom)
             sheetContent.setPadding(dp(16), 0, dp(16), sheetBottomInset + dp(20))
-            if (imeInsetBottom > 0 && ::sheetBehavior.isInitialized && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
-                if (sheetBehavior.state != BottomSheetBehavior.STATE_EXPANDED) {
-                    sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
-                }
-                if (::sheetScrollView.isInitialized) {
-                    sheetScrollView.post { sheetScrollView.fullScroll(View.FOCUS_DOWN) }
-                }
-            }
             val pageBottom = maxOf(navBarInsetBottom, imeInsetBottom)
             for (i in 0 until pageOverlayContainer.childCount) {
                 pageOverlayContainer.getChildAt(i).setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, pageBottom)
@@ -510,13 +506,26 @@ class MainActivity : AppCompatActivity() {
             bottomDock.requestLayout()
             fullScreenSwipeUpCatcher.requestLayout()
             inScreenSheet.requestLayout()
+            if (imeInsetBottom > 0 && ::sheetBehavior.isInitialized && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                if (sheetBehavior.state != BottomSheetBehavior.STATE_EXPANDED) {
+                    sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+                }
+                if (::sheetScrollView.isInitialized) {
+                    sheetScrollView.post { sheetScrollView.fullScroll(View.FOCUS_DOWN) }
+                    sheetScrollView.postDelayed({
+                        if (!isFinishing && !isDestroyed) sheetScrollView.fullScroll(View.FOCUS_DOWN)
+                    }, 120L)
+                }
+            }
             insets
         }
 
         sheetBehavior = BottomSheetBehavior.from(inScreenSheet).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
             isHideable = true
+            isFitToContents = true
             skipCollapsed = false
+            maxHeight = (resources.displayMetrics.heightPixels - statusBarInsetTop - dp(12)).coerceAtLeast(dp(240))
             addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
                 override fun onStateChanged(bottomSheet: View, newState: Int) {
                     if (newState == BottomSheetBehavior.STATE_HIDDEN) {
@@ -2299,7 +2308,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderMapData() {
         val p = currentPalette()
-        btnSyncStatus.setColorFilter(if (isLiveConnected) p.green else p.amber)
+        btnSyncStatus.setColorFilter(if (isLiveConnected) p.accentPrimary else p.amber)
 
         val style = map?.style ?: return
         if (!style.isFullyLoaded) return
@@ -2802,6 +2811,8 @@ class MainActivity : AppCompatActivity() {
         activeSheetPeekDp = peekDp
         val bottomClearance = maxOf(navBarInsetBottom, imeInsetBottom)
         val screenH = resources.displayMetrics.heightPixels
+        val maxSheetH = (screenH - statusBarInsetTop - dp(12)).coerceAtLeast(dp(240))
+        sheetBehavior.maxHeight = maxSheetH
         val targetPeek = if (expandToFit) {
             val availW = (resources.displayMetrics.widthPixels - sideInsetLeft - sideInsetRight).coerceAtLeast(dp(240))
             inScreenSheet.measure(
@@ -2809,7 +2820,8 @@ class MainActivity : AppCompatActivity() {
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
             )
             val measured = inScreenSheet.measuredHeight.coerceAtLeast(dp(peekDp) + bottomClearance)
-            minOf(measured, (screenH * 0.78f).toInt().coerceAtLeast(dp(240)))
+            val capH = if (imeInsetBottom > 0) maxSheetH else (screenH * 0.85f).toInt().coerceAtLeast(dp(240))
+            minOf(measured, capH)
         } else {
             val maxPeek = (screenH * 0.68f).toInt().coerceAtLeast(dp(200))
             minOf(dp(peekDp) + bottomClearance, maxPeek)
@@ -2821,10 +2833,17 @@ class MainActivity : AppCompatActivity() {
             isSwappingSheetInPlace = true
             if (::sheetScrollView.isInitialized && !inPlace) sheetScrollView.scrollTo(0, 0)
             sheetBehavior.setPeekHeight(targetPeek, false)
-            if (expandToFit && sheetBehavior.state != BottomSheetBehavior.STATE_EXPANDED) {
-                sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+            inScreenSheet.requestLayout()
+            if (expandToFit) {
+                inScreenSheet.post {
+                    if (!isFinishing && !isDestroyed && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                        sheetBehavior.state = BottomSheetBehavior.STATE_EXPANDED
+                    }
+                    isSwappingSheetInPlace = false
+                }
+            } else {
+                inScreenSheet.post { isSwappingSheetInPlace = false }
             }
-            inScreenSheet.post { isSwappingSheetInPlace = false }
         } else {
             bottomDock.translationY = 0f
             UiAnimations.fadeHide(bottomDock, 120L)
@@ -3868,7 +3887,7 @@ class MainActivity : AppCompatActivity() {
         sheetContent.addView(btnRow)
 
         UiAnimations.animateSheetContentReveal(sheetContent)
-        showInScreenSheet(peekDp = 315)
+        showInScreenSheet(peekDp = 315, expandToFit = true)
     }
 
     // --- Route Preview (Route From + Car / Bicycle / Walk Modes) & Active Navigation ---
@@ -8929,6 +8948,7 @@ class MainActivity : AppCompatActivity() {
             background = GradientDrawable().apply {
                 setColor(p.cardSurface)
                 cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), p.borderSubtle)
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -9873,6 +9893,8 @@ class MainActivity : AppCompatActivity() {
         applyResponsiveChromeSizing()
         updateScaleBar()
         if (::sheetBehavior.isInitialized && sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+            val maxSheetH = (resources.displayMetrics.heightPixels - statusBarInsetTop - dp(12)).coerceAtLeast(dp(240))
+            sheetBehavior.maxHeight = maxSheetH
             val maxPeek = (resources.displayMetrics.heightPixels * 0.62f).toInt().coerceAtLeast(dp(180))
             sheetBehavior.peekHeight = minOf(dp(activeSheetPeekDp) + navBarInsetBottom, maxPeek)
         }
