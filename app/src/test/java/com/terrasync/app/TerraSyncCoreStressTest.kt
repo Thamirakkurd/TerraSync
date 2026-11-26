@@ -14,6 +14,7 @@ import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.util.Calendar
+import java.util.Locale
 import java.util.zip.GZIPOutputStream
 
 class TerraSyncCoreStressTest {
@@ -71,6 +72,7 @@ class TerraSyncCoreStressTest {
                 if (usedMb > peakUsedMb) peakUsedMb = usedMb
             }
 
+            val streamT0 = System.nanoTime()
             var nodeCount = 0
             val (parsedOk, remarkErr) = FileInputStream(tmpFile).use { fis ->
                 OfflineRoutingEngine.streamOverpassNodes(fis) { _, _, _ ->
@@ -92,10 +94,18 @@ class TerraSyncCoreStressTest {
                     if ((wayCount and 0x1FFF) == 0) sampleHeap()
                 }
             }
+            val streamElapsedMs = ((System.nanoTime() - streamT0) / 1_000_000L).coerceAtLeast(1L)
             sampleHeap()
             assertEquals(totalWays, wayCount)
             assertEquals(totalWays * 4, edgeCount)
-            assertTrue("Peak JVM heap ${"%.1f".format(peakUsedMb)} MB exceeded 105 MB limit", peakUsedMb < 105.0)
+            assertTrue("Peak JVM heap ${"%.1f".format(Locale.US, peakUsedMb)} MB exceeded 105 MB limit", peakUsedMb < 105.0)
+            val fileMb = tmpFile.length() / (1024.0 * 1024.0)
+            val throughputMbPerSec = (fileMb * 2.0) / (streamElapsedMs / 1000.0)
+            println(
+                "[CI-STRESS] Overpass stream (-Xmx128m): file=${"%.2f".format(Locale.US, fileMb)} MB " +
+                    "(2 passes), elapsed=${streamElapsedMs} ms, speed=${"%.2f".format(Locale.US, throughputMbPerSec)} MB/s, " +
+                    "nodes=$nodeCount, ways=$wayCount, edges=$edgeCount, peakHeap=${"%.1f".format(Locale.US, peakUsedMb)} MB"
+            )
 
             val baos = ByteArrayOutputStream()
             val nowMs = 1_764_150_000_000L
@@ -216,6 +226,7 @@ class TerraSyncCoreStressTest {
         assertTrue(report.whatsappText.contains("QA Stress 1800"))
         assertTrue(report.whatsappText.contains("*360* edits"))
         assertTrue("Expected < 1000 ms for 1,800-pin report, got ${elapsedMs} ms", elapsedMs < 1000L)
+        println("[CI-STRESS] DailyReport 1800 pins: elapsed=${elapsedMs} ms, done=${report.doneCount}, issue=${report.issueCount}, pending=${report.pendingCount}")
     }
 
     @Test
@@ -313,5 +324,101 @@ class TerraSyncCoreStressTest {
         assertEquals(AppLanguage.KURDISH_BADINI, AppLanguage.fromId("ku_badini"))
         assertTrue(AppLanguage.KURDISH_SORANI.isRtl)
         assertTrue(AppLanguage.KURDISH_BADINI.isRtl)
+    }
+
+    @Test
+    fun testSpeedFallbackEstimatorRejectsCrossProviderJumpAndTracks50Kmh() {
+        // 1. Cross-provider jump (network/fused -> gps at different coordinate) must reset to 0, never spike
+        var st = SpeedFallbackEstimator.SpeedSampleState(
+            derivedSpeedMps = 0f,
+            lat = 36.850500,
+            lng = 42.948500,
+            provider = "fused",
+            elapsedMs = 1_000L
+        )
+        st = SpeedFallbackEstimator.update(
+            prev = st,
+            lat = 36.850750, // ~27.8m north
+            lng = 42.948500,
+            provider = "gps",
+            hasSpeed = false,
+            speedMps = 0f,
+            accurate = true,
+            elapsedMs = 1_500L
+        )
+        assertEquals("Cross-provider jump must not spike speed", 0f, st.derivedSpeedMps, 0.001f)
+        assertEquals("gps", st.provider)
+
+        // 2. Network provider updates & inaccurate fixes must always return 0 m/s
+        val netState = SpeedFallbackEstimator.update(
+            prev = st,
+            lat = 36.851000,
+            lng = 42.948500,
+            provider = "network",
+            hasSpeed = true,
+            speedMps = 18.0f,
+            accurate = true,
+            elapsedMs = 2_000L
+        )
+        assertEquals(0f, netState.derivedSpeedMps, 0.001f)
+
+        val inaccurateState = SpeedFallbackEstimator.update(
+            prev = st,
+            lat = 36.851000,
+            lng = 42.948500,
+            provider = "gps",
+            hasSpeed = true,
+            speedMps = 20.8f,
+            accurate = false,
+            elapsedMs = 2_500L
+        )
+        assertEquals(0f, inaccurateState.derivedSpeedMps, 0.001f)
+
+        // 3. Four sequential moving GPS fixes at ~13.9 m/s (~50 km/h) with native speed & derived fallback
+        var navState = SpeedFallbackEstimator.SpeedSampleState()
+        for (step in 1..4) {
+            navState = SpeedFallbackEstimator.update(
+                prev = navState,
+                lat = 36.850500,
+                lng = 42.948500 + step * 0.000155,
+                provider = "gps",
+                hasSpeed = true,
+                speedMps = 13.9f,
+                accurate = true,
+                elapsedMs = step * 1_000L
+            )
+            assertEquals(13.9f, navState.derivedSpeedMps, 0.01f)
+        }
+
+        // Fallback calculation (hasSpeed=false) across ~13.9m steps at 1.0s intervals (~0.000155 deg lng @ 36.85 lat)
+        var fbState = SpeedFallbackEstimator.SpeedSampleState()
+        for (step in 0..3) {
+            fbState = SpeedFallbackEstimator.update(
+                prev = fbState,
+                lat = 36.850500,
+                lng = 42.948500 + step * 0.000155,
+                provider = "gps",
+                hasSpeed = false,
+                speedMps = 0f,
+                accurate = true,
+                elapsedMs = 10_000L + step * 1_000L
+            )
+            if (step == 0) {
+                assertEquals(0f, fbState.derivedSpeedMps, 0.001f)
+            } else {
+                val kmh = fbState.derivedSpeedMps * 3.6f
+                assertTrue("Expected ~50 km/h (46..54 km/h), got $kmh", kmh in 46.0f..54.0f)
+            }
+        }
+    }
+
+    @Test
+    fun testFormatEtaDurationHoursAndMinutes() {
+        assertEquals("1 min", formatEtaDuration(30.0))
+        assertEquals("17 min", formatEtaDuration(1020.0))
+        assertEquals("1h", formatEtaDuration(3600.0))
+        assertEquals("1h 48m", formatEtaDuration(6480.0))
+        assertEquals("6h 35m", formatEtaDuration(23700.0))
+        assertEquals("22h 43m", formatEtaDuration(81780.0))
     }
 }

@@ -9,7 +9,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.BufferedWriter
 import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStreamWriter
+import java.nio.charset.StandardCharsets
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -126,7 +131,12 @@ class OfflineRoutingAndStoreRobolectricTest {
         LocalFolderStore.clearCacheForTest()
         assertTrue("Expected persisted local_folders_v1.json on disk", storeFile.exists())
 
+        // Simulate interrupted atomic write leftovers (.tmp & .tmp2) and verify loadAll cleans both
+        val staleTmp = File(ctx.filesDir, "local_folders_v1.json.tmp").apply { writeText("{}") }
+        val staleTmp2 = File(ctx.filesDir, "local_folders_v1.json.tmp2").apply { writeText("{}") }
         val reloaded = LocalFolderStore.loadAll(ctx)
+        assertTrue("Expected stale .tmp deleted", !staleTmp.exists())
+        assertTrue("Expected stale .tmp2 deleted", !staleTmp2.exists())
         assertEquals(1, reloaded.layers.size)
         assertEquals("Robolectric Folder", reloaded.layers[0].name)
         assertEquals(250, reloaded.pins.size)
@@ -154,5 +164,105 @@ class OfflineRoutingAndStoreRobolectricTest {
 
         storeFile.delete()
         LocalFolderStore.clearCacheForTest()
+    }
+
+    @Test
+    fun testOfflineRoutingSqliteStagingMultiMbGraphStress() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val chunkFile = File.createTempFile("qa_robo_multimb_", ".json", ctx.cacheDir)
+        val packId = "qa_robo_multimb"
+        val rows = 120
+        val cols = 125 // 15,000 nodes, 245 ways -> ~2.0+ MB JSON, ~59,510 directed edges
+        try {
+            BufferedWriter(OutputStreamWriter(FileOutputStream(chunkFile), StandardCharsets.UTF_8), 64 * 1024).use { w ->
+                w.write("{\"version\":0.6,\"elements\":[")
+                var first = true
+                for (r in 0 until rows) {
+                    val lat = 36.80 + r * 0.0008
+                    for (c in 0 until cols) {
+                        val id = r * cols + c + 1
+                        val lon = 42.90 + c * 0.0009
+                        if (!first) w.write(",")
+                        first = false
+                        w.write("{\"type\":\"node\",\"id\":")
+                        w.write(id.toString())
+                        w.write(",\"lat\":")
+                        w.write(lat.toString())
+                        w.write(",\"lon\":")
+                        w.write(lon.toString())
+                        w.write("}")
+                    }
+                }
+                var wayId = 1_000_000
+                // Horizontal roads
+                for (r in 0 until rows) {
+                    wayId++
+                    w.write(",{\"type\":\"way\",\"id\":")
+                    w.write(wayId.toString())
+                    w.write(",\"nodes\":[")
+                    for (c in 0 until cols) {
+                        if (c > 0) w.write(",")
+                        w.write((r * cols + c + 1).toString())
+                    }
+                    w.write("],\"tags\":{\"highway\":\"secondary\",\"name\":\"Akre East-West $r\"}}")
+                }
+                // Vertical roads
+                for (c in 0 until cols) {
+                    wayId++
+                    w.write(",{\"type\":\"way\",\"id\":")
+                    w.write(wayId.toString())
+                    w.write(",\"nodes\":[")
+                    for (r in 0 until rows) {
+                        if (r > 0) w.write(",")
+                        w.write((r * cols + c + 1).toString())
+                    }
+                    w.write("],\"tags\":{\"highway\":\"residential\",\"name\":\"Akre Cross $c\"}}")
+                }
+                w.write("]}")
+            }
+
+            assertTrue("Expected multi-MB chunk (>= 1.8 MB), got ${chunkFile.length()}", chunkFile.length() >= 1_800_000L)
+
+            val runtime = Runtime.getRuntime()
+            System.gc()
+            val t0 = System.nanoTime()
+            val region = OfflineRoutingEngine.compileLocalOverpassChunksToTsr(
+                ctx = ctx,
+                regionName = "QA Multi-MB Grid",
+                packId = packId,
+                minLat = 36.79,
+                minLng = 42.89,
+                maxLat = 36.91,
+                maxLng = 43.03,
+                chunkFiles = listOf(chunkFile)
+            )
+            val compileMs = (System.nanoTime() - t0) / 1_000_000L
+            val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024.0 * 1024.0)
+
+            assertNotNull("Expected compiled .tsr from multi-MB SQLite staging", region)
+            assertEquals(rows * cols, region!!.nodeCount)
+            assertTrue("Expected >= 59000 bidirectional edges, got ${region.edgeCount}", region.edgeCount >= 59_000)
+
+            val (route, err) = OfflineRoutingEngine.routeOffline(
+                ctx = ctx,
+                startLat = 36.8002,
+                startLng = 42.9002,
+                endLat = 36.80 + (rows - 1) * 0.0008,
+                endLng = 42.90 + (cols - 1) * 0.0009,
+                mode = TravelMode.CAR
+            )
+            assertNotNull("Expected corner-to-corner offline route (err=$err)", route)
+            assertTrue("Expected route distance > 15 km, got ${route!!.totalDistanceMeters}", route.totalDistanceMeters > 15_000.0)
+            assertTrue("Expected turn-by-turn steps", route.steps.isNotEmpty())
+            println(
+                "[CI-STRESS] SQLite staging multi-MB: chunk=${"%.2f".format(Locale.US, chunkFile.length() / (1024.0 * 1024.0))} MB, " +
+                    "compile=${compileMs} ms, nodes=${region.nodeCount}, edges=${region.edgeCount}, " +
+                    "tsr=${region.sizeBytes / 1024} KB, routeKm=${"%.2f".format(Locale.US, route.totalDistanceMeters / 1000.0)}, " +
+                    "heapUsed=${"%.1f".format(Locale.US, usedMb)} MB"
+            )
+        } finally {
+            OfflineRoutingEngine.deletePackRegion(ctx, packId)
+            chunkFile.delete()
+        }
     }
 }

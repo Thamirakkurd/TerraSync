@@ -162,6 +162,14 @@ fun formatDistanceShort(meters: Double, unit: SpeedUnit = SpeedUnit.METRIC): Str
     }
 }
 
+fun formatEtaDuration(durationSeconds: Double): String {
+    val totalMin = (durationSeconds / 60.0).toInt().coerceAtLeast(1)
+    if (totalMin < 60) return "$totalMin min"
+    val hours = totalMin / 60
+    val mins = totalMin % 60
+    return if (mins == 0) "${hours}h" else "${hours}h ${mins}m"
+}
+
 internal object SpeedFallbackEstimator {
     data class SpeedSampleState(
         val derivedSpeedMps: Float = 0f,
@@ -181,18 +189,24 @@ internal object SpeedFallbackEstimator {
         accurate: Boolean,
         elapsedMs: Long
     ): SpeedSampleState {
+        if (!accurate || provider == "network") {
+            return SpeedSampleState(0f, Double.NaN, Double.NaN, "", elapsedMs)
+        }
         if (hasSpeed && speedMps > 0.1f) {
             return SpeedSampleState(speedMps, lat, lng, provider, elapsedMs)
         }
-        if (!accurate) return prev
         if (prev.lat.isNaN() || prev.lng.isNaN()) {
             return SpeedSampleState(0f, lat, lng, provider, elapsedMs)
         }
         val dtSec = (elapsedMs - prev.elapsedMs) / 1000f
         val dist = RoutingEngine.haversineMeters(prev.lat, prev.lng, lat, lng).toFloat()
-        // Ignore cross-provider echoes (e.g., FUSED_PROVIDER mirroring GPS_PROVIDER at the same point).
-        if (dist < 1.5f && provider != prev.provider && dtSec < 2.2f) {
-            return prev
+        if (prev.provider.isNotEmpty() && provider != prev.provider) {
+            // Ignore cross-provider echoes (e.g., FUSED_PROVIDER mirroring GPS_PROVIDER at the same point).
+            if (dist < 1.5f && dtSec < 2.2f) {
+                return prev
+            }
+            // Never derive speed from a coordinate jump between distinct location providers; re-anchor cleanly.
+            return SpeedSampleState(0f, lat, lng, provider, elapsedMs)
         }
         if (dtSec < 0.35f) return prev
         if (dtSec in 0.35f..5.0f) {

@@ -26,6 +26,11 @@ class LassoOverlayView @JvmOverloads constructor(
     private val density = resources.displayMetrics.density
     private val dashIntervals = floatArrayOf(10f * density, 6f * density)
     private val dashCycle = 16f * density
+    private val dashPhaseSteps = 60
+    private val dashEffects = Array(dashPhaseSteps) { idx ->
+        DashPathEffect(dashIntervals, -(dashCycle * idx / dashPhaseSteps))
+    }
+    private var lastDashStep = -1
     private var dashAnimator: ValueAnimator? = null
     private var fillAnimator: ValueAnimator? = null
     private var fillAlphaInt = 0x26
@@ -52,24 +57,29 @@ class LassoOverlayView @JvmOverloads constructor(
         strokeWidth = 3.2f * density
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        pathEffect = DashPathEffect(dashIntervals, 0f)
+        pathEffect = dashEffects[0]
     }
 
     private fun startDashAnimation() {
         if (UiAnimations.isReducedMotion(context)) {
-            strokePaint.pathEffect = DashPathEffect(dashIntervals, 0f)
+            strokePaint.pathEffect = dashEffects[0]
             return
         }
+        if (!isAttachedToWindow || visibility != VISIBLE || windowVisibility != VISIBLE) return
         if (dashAnimator?.isRunning == true) return
         dashAnimator?.cancel()
-        dashAnimator = ValueAnimator.ofFloat(0f, dashCycle).apply {
+        lastDashStep = -1
+        dashAnimator = ValueAnimator.ofInt(0, dashPhaseSteps - 1).apply {
             duration = 650L
             repeatCount = ValueAnimator.INFINITE
             interpolator = LinearInterpolator()
             addUpdateListener { anim ->
-                val phase = anim.animatedValue as Float
-                strokePaint.pathEffect = DashPathEffect(dashIntervals, -phase)
-                postInvalidateOnAnimation()
+                val idx = (anim.animatedValue as Int).coerceIn(0, dashPhaseSteps - 1)
+                if (idx != lastDashStep) {
+                    lastDashStep = idx
+                    strokePaint.pathEffect = dashEffects[idx]
+                    postInvalidateOnAnimation()
+                }
             }
             start()
         }
@@ -89,15 +99,25 @@ class LassoOverlayView @JvmOverloads constructor(
         isClosed = false
         fillAlphaInt = 0x26
         fillPaint.alpha = fillAlphaInt
-        strokePaint.pathEffect = DashPathEffect(dashIntervals, 0f)
+        lastDashStep = 0
+        strokePaint.pathEffect = dashEffects[0]
         invalidate()
     }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
+        if (visibility != VISIBLE || windowVisibility != VISIBLE) {
+            stopAnimations()
+        } else if (this.visibility == VISIBLE && isAttachedToWindow && points.size >= 2) {
+            startDashAnimation()
+        }
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
         if (visibility != VISIBLE) {
             stopAnimations()
-        } else if (points.size >= 2) {
+        } else if (this.visibility == VISIBLE && isAttachedToWindow && points.size >= 2) {
             startDashAnimation()
         }
     }

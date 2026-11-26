@@ -97,10 +97,10 @@ object AppStrings {
     fun rulerTapNext(ctx: Context) = tr(ctx, "Tap next point to measure", "دەست بنێ بە خاڵی دواتر", "دەست ل خالا دی بدە بو پیڤانێ", "انقر على النقطة التالية للقياس")
     fun rulerTotalPoints(ctx: Context, count: Int) = tr(
         ctx,
-        "Total distance between $count points",
-        "کۆی دووری نێوان $count خاڵ",
-        "سەرجەمێ دووراتیا دناڤبەرا $count خالان دا",
-        "إجمالي المسافة بين $count نقاط"
+        "Across $count points",
+        "دووری نێوان $count خاڵ",
+        "دووراتیا $count خالان",
+        "المسافة بين $count نقاط"
     )
 
     // Field Quick-Select & Undo

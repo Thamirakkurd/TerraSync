@@ -114,6 +114,10 @@ class MainActivity : AppCompatActivity() {
         private const val PINS_CLUSTER_COUNT_LAYER = "terrasync-pins-cluster-count"
         private const val SELECTED_SOURCE = "terrasync-selected-source"
         private const val SELECTED_HALO_LAYER = "terrasync-selected-halo-layer"
+        private const val SELECTED_PIN_SOURCE = "terrasync-selected-pin-source"
+        private const val SELECTED_PIN_LAYER = "terrasync-selected-pin-layer"
+        private const val SELECTED_COORD_SOURCE = "terrasync-selected-coord-source"
+        private const val SELECTED_COORD_LAYER = "terrasync-selected-coord-layer"
         private const val PULSE_SOURCE = "terrasync-pulse-source"
         private const val PULSE_LAYER = "terrasync-pulse-layer"
         private const val USER_LOC_SOURCE = "terrasync-userloc-source"
@@ -266,6 +270,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var inScreenSheet: LinearLayout
     private lateinit var sheetDragHandle: View
+    internal lateinit var sheetStickyHeader: LinearLayout
     private lateinit var sheetScrollView: androidx.core.widget.NestedScrollView
     internal lateinit var sheetContent: LinearLayout
     private lateinit var sheetBehavior: BottomSheetBehavior<LinearLayout>
@@ -539,6 +544,7 @@ class MainActivity : AppCompatActivity() {
     private var tappedResolvedTitle: String = ""
     private var tappedResolvedSub: String = ""
     private var sheetOpenSeq: Int = 0
+    private var isSheetPendingOpen: Boolean = false
     private var lastGpsFixTimeMs: Long = 0L
 
     // Local-only Sent Tracking & Circle-Select State
@@ -778,8 +784,10 @@ class MainActivity : AppCompatActivity() {
             addBottomSheetCallback(object : BottomSheetBehavior.BottomSheetCallback() {
                 override fun onStateChanged(bottomSheet: View, newState: Int) {
                     if (newState == BottomSheetBehavior.STATE_HIDDEN) {
+                        isSheetPendingOpen = false
                         sheetQuickSelectPinId = null
                         pendingRouteReq = null
+                        clearSheetStickyHeader()
                         clearSelectedMarker()
                         if (previewRoute != null && activeNavRoute == null) {
                             routeRequestSeq++
@@ -1010,11 +1018,23 @@ class MainActivity : AppCompatActivity() {
         dlg.setOnShowListener {
             DesignSystem.styleAlertDialog(this, dlg, p)
             dlg.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
-                background = GradientDrawable().apply {
-                    setColor(p.accentPrimary)
-                    cornerRadius = dp(20).toFloat()
+                if (this is MaterialButton) {
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(p.accentPrimary)
+                    setTextColor(Color.WHITE)
+                    cornerRadius = dp(20)
+                    insetTop = 0
+                    insetBottom = 0
+                    strokeWidth = 0
+                    elevation = 0f
+                    stateListAnimator = null
+                } else {
+                    ViewCompat.setBackgroundTintList(this, null)
+                    background = GradientDrawable().apply {
+                        setColor(p.accentPrimary)
+                        cornerRadius = dp(20).toFloat()
+                    }
+                    setTextColor(Color.WHITE)
                 }
-                setTextColor(Color.WHITE)
                 setPadding(dp(18), dp(8), dp(18), dp(8))
                 minHeight = dp(40)
                 setOnClickListener { trySave() }
@@ -1149,6 +1169,7 @@ class MainActivity : AppCompatActivity() {
         DesignSystem.applyTabularNumerals(tvNavMeta)
         inScreenSheet = findViewById(R.id.inScreenSheet)
         sheetDragHandle = findViewById(R.id.sheetDragHandle)
+        sheetStickyHeader = findViewById(R.id.sheetStickyHeader)
         sheetScrollView = findViewById(R.id.sheetScrollView)
         sheetContent = findViewById(R.id.sheetContent)
         pageOverlayContainer = findViewById(R.id.pageOverlayContainer)
@@ -1550,13 +1571,6 @@ class MainActivity : AppCompatActivity() {
         btnCompass.setOnClickListener {
             UiAnimations.hapticTick(btnCompass)
             UiAnimations.animatePulseBump(btnCompass, 1.08f)
-            if (!UiAnimations.isReducedMotion(this)) {
-                btnCompass.animate()
-                    .rotation(0f)
-                    .setDuration(240L)
-                    .setInterpolator(UiAnimations.EMPHASIZED_DECELERATE)
-                    .start()
-            }
             map?.let { m ->
                 val reset = CameraPosition.Builder(m.cameraPosition)
                     .bearing(0.0)
@@ -1701,7 +1715,7 @@ class MainActivity : AppCompatActivity() {
                     toggleRulerMode(false)
                     return
                 }
-                if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
+                if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN || isSheetPendingOpen) {
                     val qsPinId = sheetQuickSelectPinId
                     if (qsPinId != null) {
                         val freshPin = pinById[qsPinId]
@@ -2142,6 +2156,40 @@ class MainActivity : AppCompatActivity() {
                 style.addLayer(haloLayer)
             }
         }
+        // Selected pin overlay strictly ABOVE sibling/clustered pins + coord dot above pins for raw geo: links
+        if (style.getSource(SELECTED_PIN_SOURCE) == null) {
+            style.addSource(GeoJsonSource(SELECTED_PIN_SOURCE))
+            val selectedPinLayer = SymbolLayer(SELECTED_PIN_LAYER, SELECTED_PIN_SOURCE).withProperties(
+                PropertyFactory.iconImage(Expression.get("icon")),
+                PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
+                PropertyFactory.iconSize(1.0f),
+                PropertyFactory.iconAllowOverlap(true),
+                PropertyFactory.iconIgnorePlacement(true)
+            )
+            when {
+                style.getLayer(PINS_CLUSTER_COUNT_LAYER) != null ->
+                    style.addLayerAbove(selectedPinLayer, PINS_CLUSTER_COUNT_LAYER)
+                style.getLayer(PINS_LAYER) != null ->
+                    style.addLayerAbove(selectedPinLayer, PINS_LAYER)
+                else -> style.addLayer(selectedPinLayer)
+            }
+        }
+        if (style.getSource(SELECTED_COORD_SOURCE) == null) {
+            style.addSource(GeoJsonSource(SELECTED_COORD_SOURCE))
+            val coordLayer = CircleLayer(SELECTED_COORD_LAYER, SELECTED_COORD_SOURCE).withProperties(
+                PropertyFactory.circleColor("#5AA8E8"),
+                PropertyFactory.circleOpacity(0.90f),
+                PropertyFactory.circleRadius(14.5f),
+                PropertyFactory.circleStrokeWidth(0f),
+                PropertyFactory.circleStrokeOpacity(0f)
+            )
+            if (style.getLayer(SELECTED_PIN_LAYER) != null) {
+                style.addLayerAbove(coordLayer, SELECTED_PIN_LAYER)
+            } else {
+                style.addLayer(coordLayer)
+            }
+        }
 
         // Ruler Measurement Layers (Terracotta line + white casing + numbered waypoints)
         if (style.getSource(RULER_LINE_SOURCE) == null) {
@@ -2387,8 +2435,7 @@ class MainActivity : AppCompatActivity() {
 
         applyPinClusterModeVisibility(style, clustered, showTitles)
 
-        val selId = selectedPinId
-        val pinsKey = "$dataVersion|$selId|$clustered|${statusesSnap.hashCode()}|${statusesSnap.size}|${hiddenLayerIds.hashCode()}|${hiddenLayerIds.size}|$hideSentPins|${sentIds.hashCode()}|${sentIds.size}"
+        val pinsKey = "$dataVersion|$clustered|${statusesSnap.hashCode()}|${statusesSnap.size}|${hiddenLayerIds.hashCode()}|${hiddenLayerIds.size}|$hideSentPins|${sentIds.hashCode()}|${sentIds.size}"
         if (pinsKey != lastPinsRenderKey) {
             lastPinsRenderKey = pinsKey
             val seq = ++pinRenderSeq
@@ -2397,7 +2444,6 @@ class MainActivity : AppCompatActivity() {
                 val doneFeatures = ArrayList<Feature>(pinsSnap.size / 2)
                 val issueFeatures = ArrayList<Feature>(pinsSnap.size / 4)
                 val pendingFeatures = ArrayList<Feature>(pinsSnap.size / 4)
-                var selectedPinItem: PinItem? = null
 
                 fun toPinFeature(pin: PinItem, st: PinStatus): Feature {
                     val trimmed = pin.name.trim()
@@ -2414,10 +2460,6 @@ class MainActivity : AppCompatActivity() {
                     if (pin.layerId in hiddenLayerIds || pin.id in sentIds) continue
                     val st = PinStatus.fromRaw(pin.status)
                     if (st.key !in statusesSnap) continue
-                    if (selId != null && pin.id == selId) {
-                        selectedPinItem = pin
-                        continue
-                    }
                     val f = toPinFeature(pin, st)
                     when (st) {
                         PinStatus.DONE -> doneFeatures.add(f)
@@ -2427,14 +2469,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val pinFeatures = ArrayList<Feature>(
-                    doneFeatures.size + issueFeatures.size + pendingFeatures.size + (if (selectedPinItem != null) 1 else 0)
+                    doneFeatures.size + issueFeatures.size + pendingFeatures.size
                 )
                 pinFeatures.addAll(doneFeatures)
                 pinFeatures.addAll(issueFeatures)
                 pinFeatures.addAll(pendingFeatures)
-                selectedPinItem?.let { sel ->
-                    pinFeatures.add(toPinFeature(sel, PinStatus.fromRaw(sel.status)))
-                }
                 val fc = FeatureCollection.fromFeatures(pinFeatures)
                 val emptyFc = FeatureCollection.fromFeatures(emptyList<Feature>())
                 runOnUiThread {
@@ -2510,8 +2549,7 @@ class MainActivity : AppCompatActivity() {
 
         val pillRoute = if (activeNavRoute == null) previewRoute else null
         val pillFeatures = if (pillRoute != null && pillRoute.geometry.size >= 2) {
-            val etaMin = (pillRoute.totalDurationSeconds / 60.0).toInt().coerceAtLeast(1)
-            val pillLabel = if (etaMin >= 60) "${etaMin / 60}h ${etaMin % 60}m" else "$etaMin min"
+            val pillLabel = formatEtaDuration(pillRoute.totalDurationSeconds)
             val pillKey = "$pillLabel|${pillRoute.mode.routeColorHex}"
             if (lastRoutePillKey != pillKey) {
                 val pillBmp = MapBitmaps.createRoutePill(this, pillLabel, pillRoute.mode.routeColorHex)
@@ -2550,12 +2588,42 @@ class MainActivity : AppCompatActivity() {
     private fun renderSelectedMarker(styleArg: Style? = null) {
         val style = styleArg ?: map?.style ?: return
         if (!style.isFullyLoaded) return
-        val selLoc = selectedMarkerLatLng
-        val selFeatures = if (selLoc != null) {
-            listOf(Feature.fromGeometry(Point.fromLngLat(selLoc.longitude, selLoc.latitude)))
-        } else emptyList()
+        val selId = selectedPinId
+        val selPin = selId?.let { pinById[it] }?.takeIf { pin ->
+            val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
+            val st = PinStatus.fromRaw(pin.status)
+            pin.layerId !in hiddenLayerIds &&
+                st.key in visibleStatuses &&
+                (!hideSentPins || !DevicePrefs.isPinLocalSent(this, pin.id))
+        }
+        val haloFeatures: List<Feature>
+        val topPinFeatures: List<Feature>
+        val coordFeatures: List<Feature>
+        if (selPin != null) {
+            val pt = Point.fromLngLat(selPin.lng, selPin.lat)
+            haloFeatures = listOf(Feature.fromGeometry(pt))
+            topPinFeatures = listOf(
+                Feature.fromGeometry(pt).apply {
+                    addStringProperty("id", selPin.id)
+                    addStringProperty("name", selPin.name)
+                    addStringProperty("icon", PinStatus.fromRaw(selPin.status).iconId)
+                }
+            )
+            coordFeatures = emptyList()
+        } else {
+            val selLoc = selectedMarkerLatLng
+            haloFeatures = emptyList()
+            topPinFeatures = emptyList()
+            coordFeatures = if (selLoc != null) {
+                listOf(Feature.fromGeometry(Point.fromLngLat(selLoc.longitude, selLoc.latitude)))
+            } else emptyList()
+        }
         style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(selFeatures))
+            ?.setGeoJson(FeatureCollection.fromFeatures(haloFeatures))
+        style.getSourceAs<GeoJsonSource>(SELECTED_PIN_SOURCE)
+            ?.setGeoJson(FeatureCollection.fromFeatures(topPinFeatures))
+        style.getSourceAs<GeoJsonSource>(SELECTED_COORD_SOURCE)
+            ?.setGeoJson(FeatureCollection.fromFeatures(coordFeatures))
     }
 
     internal fun updateSyncStatusBadge() {
@@ -3015,9 +3083,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         val pinHits = if (clustered) {
-            m.queryRenderedFeatures(hitBox, PINS_CLUSTER_UNCLUSTERED_LAYER, PINS_CLUSTER_LABELS_LAYER)
+            m.queryRenderedFeatures(hitBox, SELECTED_PIN_LAYER, PINS_CLUSTER_UNCLUSTERED_LAYER, PINS_CLUSTER_LABELS_LAYER)
         } else {
-            m.queryRenderedFeatures(hitBox, PINS_LAYER, PINS_LABELS_LAYER)
+            m.queryRenderedFeatures(hitBox, SELECTED_PIN_LAYER, PINS_LAYER, PINS_LABELS_LAYER)
         }
         val pin = pinHits
             .mapNotNull { hit -> hit.getStringProperty("id")?.let { id -> pinById[id] } }
@@ -3073,10 +3141,6 @@ class MainActivity : AppCompatActivity() {
         selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
         renderSelectedMarker()
         val stackedCount = findExactStackedPins(pin).size
-        // Only re-sort PINS_SOURCE when stacked pins share this coordinate; avoids single-pin tile flicker behind the blue halo
-        if (stackedCount > 1) {
-            map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
-        }
         val currentZoom = map?.cameraPosition?.zoom ?: 15.0
         val targetZoom = if (zoomIfFar) currentZoom.coerceAtLeast(15.8) else currentZoom
         centerUpperHalf(
@@ -3167,8 +3231,10 @@ class MainActivity : AppCompatActivity() {
             sheetBehavior.setPeekHeight(targetPeek, false)
             inScreenSheet.requestLayout()
             val openToken = ++sheetOpenSeq
+            isSheetPendingOpen = true
             inScreenSheet.post {
                 if (!isFinishing && !isDestroyed && openToken == sheetOpenSeq) {
+                    isSheetPendingOpen = false
                     sheetBehavior.state = if (expandToFit) {
                         BottomSheetBehavior.STATE_EXPANDED
                     } else {
@@ -3179,9 +3245,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    internal fun clearSheetStickyHeader() {
+        if (::sheetStickyHeader.isInitialized) {
+            sheetStickyHeader.removeAllViews()
+            sheetStickyHeader.visibility = View.GONE
+        }
+    }
+
     internal fun hideInScreenSheet() {
         hideSoftKeyboard()
+        val wasPending = isSheetPendingOpen
+        isSheetPendingOpen = false
         sheetOpenSeq++
+        if (wasPending && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
+            sheetQuickSelectPinId = null
+            pendingRouteReq = null
+            clearSheetStickyHeader()
+            clearSelectedMarker()
+            if (previewRoute != null && activeNavRoute == null) {
+                routeRequestSeq++
+                previewRoute = null
+                renderRouteOverlay()
+            }
+            if (activeNavRoute == null) {
+                resetMapPadding()
+            }
+            if (!isFullScreenMapMode) {
+                bottomDock.translationY = 0f
+                UiAnimations.fadeShow(bottomDock, 165L)
+            }
+        }
         sheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
     }
 
@@ -3204,6 +3297,7 @@ class MainActivity : AppCompatActivity() {
         val chipBg = p.chipSurface
         val cardTint = p.cardSurface
 
+        clearSheetStickyHeader()
         sheetContent.removeAllViews()
 
         // 1. Exact-Coordinate Stacked Pin Banner + Animated Prev/Next Buttons
@@ -3240,7 +3334,6 @@ class MainActivity : AppCompatActivity() {
                 selectedPinId = nextPin.id
                 selectedMarkerLatLng = LatLng(nextPin.lat, nextPin.lng)
                 renderSelectedMarker()
-                map?.style?.takeIf { it.isFullyLoaded }?.let { renderPinsAndTracks(it) }
                 fireStatusPulse(nextPin.lat, nextPin.lng, statusColorHex(nextPin.status))
                 showPinCard(nextPin, animateSwap = true, swapForward = forward)
             }
@@ -3987,6 +4080,7 @@ class MainActivity : AppCompatActivity() {
         activeTappedLatLng = LatLng(lat, lng)
         tappedResolvedTitle = title
         tappedResolvedSub = subtitle
+        clearSheetStickyHeader()
         sheetContent.removeAllViews()
 
         val header = LinearLayout(this).apply {
@@ -4312,7 +4406,7 @@ class MainActivity : AppCompatActivity() {
                     runCatching {
                         val b = LatLngBounds.Builder()
                         pts.forEach { b.include(it) }
-                        map?.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), dp(48), dp(90), dp(48), dp(270)), 600)
+                        map?.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), dp(72), dp(96), dp(72), dp(310)), 600)
                     }
                 }
                 showRoutePreviewCard(route, startLabel, destLat, destLng, destTitle)
@@ -4332,9 +4426,10 @@ class MainActivity : AppCompatActivity() {
         val txtPrimary = p.textPrimary
         val txtSub = p.textSecondary
 
+        clearSheetStickyHeader()
         sheetContent.removeAllViews()
 
-        val etaMin = (route.totalDurationSeconds / 60.0).toInt().coerceAtLeast(1)
+        val etaText = formatEtaDuration(route.totalDurationSeconds)
         val distStr = formatDistanceShort(route.totalDistanceMeters, DevicePrefs.getSpeedUnit(this))
 
         val header = LinearLayout(this).apply {
@@ -4377,7 +4472,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(dp(17), dp(17)).apply { marginEnd = dp(6) }
         })
         etaBadge.addView(TextView(this).apply {
-            text = "$etaMin min"
+            text = etaText
             textSize = 15f
             setTextColor(Color.WHITE)
             setTypeface(null, Typeface.BOLD)
@@ -4657,14 +4752,13 @@ class MainActivity : AppCompatActivity() {
         } else {
             (remainingRoadMeters / 1000.0) / 45.0 * 3600.0
         }
-        val etaMin = (etaSec / 60.0).toInt().coerceAtLeast(1)
 
         val unit = cachedSpeedUnit
         val nextInstr = if (isRerouting) "Recalculating route..." else step.instruction
         UiAnimations.animateCrossfadeText(tvNavArrow, step.arrow, slideDp = 4f)
         tvNavStepDist.text = if (isRerouting) "Rerouting" else formatDistanceShort(distToStep, unit)
         UiAnimations.animateCrossfadeText(tvNavInstruction, formatNavInstructionBidi(nextInstr), slideDp = 4f)
-        tvNavEta.text = "$etaMin min"
+        tvNavEta.text = formatEtaDuration(etaSec)
         val modeTag = if (route.engineLabel.contains("Offline", ignoreCase = true)) "Offline" else "Online"
         tvNavMeta.text = "${formatDistanceShort(remainingRoadMeters, unit)} • $modeTag"
 
@@ -4929,7 +5023,8 @@ class MainActivity : AppCompatActivity() {
         }
         val unit = cachedSpeedUnit
         val accurateFix = loc != null &&
-            (loc.provider == LocationManager.GPS_PROVIDER || !loc.hasAccuracy() || loc.accuracy <= 35f)
+            loc.provider != LocationManager.NETWORK_PROVIDER &&
+            (!loc.hasAccuracy() || loc.accuracy <= 35f)
         val rawMps = when {
             accurateFix && loc!!.hasSpeed() && loc.speed > 0.1f -> loc.speed
             accurateFix && speedSampleState.derivedSpeedMps > 0f -> speedSampleState.derivedSpeedMps
@@ -6636,16 +6731,8 @@ class MainActivity : AppCompatActivity() {
         var cachedDupExtras: Set<String> = emptySet()
         var cachedSameCoordExtras: Set<String> = emptySet()
         var cachedClusterSizes: Map<String, Int> = emptyMap()
-
-        fun ensureAnalysisCached(filtered: List<PinItem>) {
-            val key = filterKey to dataVersion
-            if (cachedAnalysisKey == key) return
-            cachedAnalysisKey = key
-            cachedDupExtras = findDuplicateExtraIds(filtered)
-            val (sameExtras, sizes) = analyzeSameCoordClusters(filtered)
-            cachedSameCoordExtras = sameExtras
-            cachedClusterSizes = sizes
-        }
+        var renderSeq = 0
+        var analysisSeq = 0
 
         fun syncAutoSelectButtons() {
             btnAutoDuplicates.text = "Duplicates (${cachedDupExtras.size})"
@@ -6689,79 +6776,186 @@ class MainActivity : AppCompatActivity() {
         }
 
         fun renderPinRows() {
+            val mySeq = ++renderSeq
             btnSort.text = if (sortNearest) "Nearest ↓" else "A–Z ↓"
             filterBtns.forEach { (k, b) ->
                 val active = k == filterKey
                 DesignSystem.styleSegmentedButton(b, active, p)
             }
 
-            listCard.removeAllViews()
-            val loc = currentLocation
-            val unit = cachedSpeedUnit
-            val allInFolder = currentSourcePins()
-            val filtered = allInFolder.filter { filterKey == "all" || PinStatus.fromRaw(it.status).key == filterKey }
-            latestFiltered = filtered
-
-            ensureAnalysisCached(filtered)
-            val clusterSizes = cachedClusterSizes
-
-            updateSelectionBarState()
-
-            val ordered = if (selectionMode && selectedPinIds.isNotEmpty()) {
-                val baseSorted = if (sortNearest && loc != null) {
-                    filtered.sortedBy { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
-                } else {
-                    filtered.sortedBy { it.name.lowercase() }
-                }
-                baseSorted.sortedByDescending { it.id in selectedPinIds }
-            } else if (sortNearest && loc != null) {
-                filtered.sortedBy { RoutingEngine.haversineMeters(loc.latitude, loc.longitude, it.lat, it.lng) }
-            } else {
-                filtered.sortedBy { it.name.lowercase() }
-            }
-
-            if (ordered.isEmpty()) {
+            if (listCard.childCount == 0) {
                 listCard.addView(TextView(this).apply {
-                    text = "No bookmarks match this filter."
+                    text = "Loading bookmarks..."
                     textSize = 13f
                     setTextColor(txtSub)
                     setPadding(dp(16), dp(16), dp(16), dp(16))
                 })
-                return
             }
 
-            val pageItems = ordered.take(displayLimit)
-            pageItems.forEachIndexed { idx, pin ->
-                if (idx > 0) {
-                    listCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
+            val loc = currentLocation
+            val unit = cachedSpeedUnit
+            val curFilterKey = filterKey
+            val curSortNearest = sortNearest
+            val curSelectionMode = selectionMode
+            val curSelectedSnap = if (curSelectionMode) selectedPinIds.toSet() else emptySet()
+            val curDisplayLimit = displayLimit
+            val allInFolder = currentSourcePins().toList()
+            val curKey = curFilterKey to dataVersion
+            val prevCachedOk = cachedAnalysisKey == curKey
+            val prevDupExtras = cachedDupExtras
+            val prevSameExtras = cachedSameCoordExtras
+            val prevClusterSizes = cachedClusterSizes
+
+            RoutingEngine.ioExecutor.execute {
+                val filtered = if (curFilterKey == "all") {
+                    allInFolder
+                } else {
+                    allInFolder.filter { PinStatus.fromRaw(it.status).key == curFilterKey }
                 }
-                var isSelected = pin.id in selectedPinIds
-                val sameCount = clusterSizes[pin.id] ?: 0
-                var checkBadge: TextView? = null
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    minimumHeight = dp(52)
-                    setPadding(dp(14), dp(11), dp(14), dp(11))
-                    if (selectionMode && isSelected) {
-                        setBackgroundColor(p.accentSoft)
-                    } else {
-                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                val dupExtras: Set<String>
+                val sameExtras: Set<String>
+                val clusterSizes: Map<String, Int>
+                if (prevCachedOk) {
+                    dupExtras = prevDupExtras
+                    sameExtras = prevSameExtras
+                    clusterSizes = prevClusterSizes
+                } else {
+                    dupExtras = findDuplicateExtraIds(filtered)
+                    val (sExtras, cSizes) = analyzeSameCoordClusters(filtered)
+                    sameExtras = sExtras
+                    clusterSizes = cSizes
+                }
+
+                val useNearest = curSortNearest && loc != null
+                val pageItems: List<PinItem>
+                val distLabelById: Map<String, String>
+                val totalCount = filtered.size
+                if (loc != null) {
+                    val uLat = loc.latitude
+                    val uLng = loc.longitude
+                    val scored = ArrayList<Pair<PinItem, Double>>(filtered.size)
+                    for (pin in filtered) {
+                        scored.add(pin to RoutingEngine.haversineMeters(uLat, uLng, pin.lat, pin.lng))
                     }
-                    setOnClickListener {
-                        if (selectionMode) {
-                            isSelected = if (selectedPinIds.add(pin.id)) true else {
-                                selectedPinIds.remove(pin.id)
-                                false
-                            }
-                            if (isSelected) {
+                    if (useNearest) {
+                        scored.sortWith(
+                            compareBy<Pair<PinItem, Double>> {
+                                if (curSelectionMode && curSelectedSnap.isNotEmpty() && it.first.id in curSelectedSnap) 0 else 1
+                            }.thenBy { it.second }
+                        )
+                    } else {
+                        scored.sortWith(
+                            compareBy<Pair<PinItem, Double>> {
+                                if (curSelectionMode && curSelectedSnap.isNotEmpty() && it.first.id in curSelectedSnap) 0 else 1
+                            }.thenBy { it.first.name.lowercase(Locale.ROOT) }
+                        )
+                    }
+                    val pageScored = scored.take(curDisplayLimit)
+                    pageItems = pageScored.map { it.first }
+                    val dMap = HashMap<String, String>(pageScored.size)
+                    for ((pin, distM) in pageScored) {
+                        dMap[pin.id] = formatDistanceShort(distM, unit)
+                    }
+                    distLabelById = dMap
+                } else {
+                    val sorted = filtered.sortedWith(
+                        compareBy<PinItem> {
+                            if (curSelectionMode && curSelectedSnap.isNotEmpty() && it.id in curSelectedSnap) 0 else 1
+                        }.thenBy { it.name.lowercase(Locale.ROOT) }
+                    )
+                    pageItems = sorted.take(curDisplayLimit)
+                    distLabelById = emptyMap()
+                }
+                val remainingCount = totalCount - pageItems.size
+
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || mySeq != renderSeq) return@runOnUiThread
+                    latestFiltered = filtered
+                    if (!prevCachedOk) {
+                        cachedAnalysisKey = curKey
+                        cachedDupExtras = dupExtras
+                        cachedSameCoordExtras = sameExtras
+                        cachedClusterSizes = clusterSizes
+                    }
+                    listCard.removeAllViews()
+                    updateSelectionBarState()
+
+                    if (pageItems.isEmpty()) {
+                        listCard.addView(TextView(this).apply {
+                            text = "No bookmarks match this filter."
+                            textSize = 13f
+                            setTextColor(txtSub)
+                            setPadding(dp(16), dp(16), dp(16), dp(16))
+                        })
+                        return@runOnUiThread
+                    }
+
+                    pageItems.forEachIndexed { idx, pin ->
+                        if (idx > 0) {
+                            listCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
+                        }
+                        var isSelected = pin.id in selectedPinIds
+                        val sameCount = clusterSizes[pin.id] ?: 0
+                        var checkBadge: TextView? = null
+                        val row = LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            minimumHeight = dp(52)
+                            setPadding(dp(14), dp(11), dp(14), dp(11))
+                            if (selectionMode && isSelected) {
                                 setBackgroundColor(p.accentSoft)
                             } else {
                                 UiAnimations.applyRowRipple(this@MainActivity, this, night)
                             }
-                            checkBadge?.let { badge ->
-                                badge.text = if (isSelected) "✓" else ""
-                                badge.background = GradientDrawable().apply {
+                            setOnClickListener {
+                                if (selectionMode) {
+                                    isSelected = if (selectedPinIds.add(pin.id)) true else {
+                                        selectedPinIds.remove(pin.id)
+                                        false
+                                    }
+                                    if (isSelected) {
+                                        setBackgroundColor(p.accentSoft)
+                                    } else {
+                                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                                    }
+                                    checkBadge?.let { badge ->
+                                        badge.text = if (isSelected) "✓" else ""
+                                        badge.background = GradientDrawable().apply {
+                                            shape = GradientDrawable.OVAL
+                                            if (isSelected) {
+                                                setColor(p.accent)
+                                            } else {
+                                                setColor(Color.TRANSPARENT)
+                                                setStroke(dp(2), p.iconMuted)
+                                            }
+                                        }
+                                        UiAnimations.animateScalePop(badge, 0.72f, 160L)
+                                    }
+                                    updateSelectionBarState()
+                                } else {
+                                    ensurePinVisibleOnMap(pin)
+                                    closeFullPage()
+                                    selectPinAndOpenCard(pin, zoomIfFar = true)
+                                }
+                            }
+                            setOnLongClickListener {
+                                if (!selectionMode) {
+                                    selectionMode = true
+                                    selectedPinIds.add(pin.id)
+                                    renderPinRows()
+                                    true
+                                } else false
+                            }
+                        }
+
+                        if (selectionMode) {
+                            val badge = TextView(this).apply {
+                                text = if (isSelected) "✓" else ""
+                                textSize = 13f
+                                setTypeface(null, Typeface.BOLD)
+                                setTextColor(Color.WHITE)
+                                gravity = Gravity.CENTER
+                                background = GradientDrawable().apply {
                                     shape = GradientDrawable.OVAL
                                     if (isSelected) {
                                         setColor(p.accent)
@@ -6770,145 +6964,111 @@ class MainActivity : AppCompatActivity() {
                                         setStroke(dp(2), p.iconMuted)
                                     }
                                 }
-                                UiAnimations.animateScalePop(badge, 0.72f, 160L)
+                                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(12) }
                             }
-                            updateSelectionBarState()
+                            checkBadge = badge
+                            row.addView(badge)
                         } else {
-                            ensurePinVisibleOnMap(pin)
-                            closeFullPage()
-                            selectPinAndOpenCard(pin, zoomIfFar = true)
+                            row.addView(View(this).apply {
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    setColor(Color.parseColor(statusColorHex(pin.status)))
+                                }
+                                layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+                            })
                         }
-                    }
-                    setOnLongClickListener {
-                        if (!selectionMode) {
-                            selectionMode = true
-                            selectedPinIds.add(pin.id)
-                            renderPinRows()
-                            true
-                        } else false
-                    }
-                }
 
-                if (selectionMode) {
-                    val badge = TextView(this).apply {
-                        text = if (isSelected) "✓" else ""
-                        textSize = 13f
-                        setTypeface(null, Typeface.BOLD)
-                        setTextColor(Color.WHITE)
-                        gravity = Gravity.CENTER
-                        background = GradientDrawable().apply {
-                            shape = GradientDrawable.OVAL
-                            if (isSelected) {
-                                setColor(p.accent)
-                            } else {
-                                setColor(Color.TRANSPARENT)
-                                setStroke(dp(2), p.iconMuted)
+                        val col = LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                marginEnd = dp(8)
                             }
                         }
-                        layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(12) }
-                    }
-                    checkBadge = badge
-                    row.addView(badge)
-                } else {
-                    row.addView(View(this).apply {
-                        background = GradientDrawable().apply {
-                            shape = GradientDrawable.OVAL
-                            setColor(Color.parseColor(statusColorHex(pin.status)))
+                        val nameRow = LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
                         }
-                        layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
-                    })
-                }
+                        nameRow.addView(TextView(this).apply {
+                            text = pin.name
+                            textSize = 15f
+                            setTextColor(txtPrimary)
+                            setTypeface(null, Typeface.BOLD)
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                        })
+                        if (sameCount >= 2) {
+                            nameRow.addView(TextView(this).apply {
+                                text = "${sameCount}× GPS"
+                                textSize = 10f
+                                setTypeface(null, Typeface.BOLD)
+                                setTextColor(p.amber)
+                                DesignSystem.applyTabularNumerals(this)
+                                setPadding(dp(6), dp(2), dp(6), dp(2))
+                                background = GradientDrawable().apply {
+                                    setColor(p.amberSoft)
+                                    cornerRadius = dp(6).toFloat()
+                                }
+                                layoutParams = LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                    ViewGroup.LayoutParams.WRAP_CONTENT
+                                ).apply { marginStart = dp(6) }
+                            })
+                        }
+                        col.addView(nameRow)
 
-                val col = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                        marginEnd = dp(8)
+                        val st = PinStatus.fromRaw(pin.status)
+                        val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
+                        val subParts = mutableListOf(st.label)
+                        if (st == PinStatus.ISSUE && cleanNote.isNotBlank()) subParts += "⚠ $cleanNote"
+                        else if (st == PinStatus.DONE && cleanNote.isNotBlank()) subParts += "✓ $cleanNote"
+                        if (pin.isEdited && pin.editedBy.isNotBlank()) subParts += "Edited by ${pin.editedBy}"
+                        col.addView(TextView(this).apply {
+                            text = subParts.joinToString(" • ")
+                            textSize = 12f
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            setTextColor(
+                                when {
+                                    st == PinStatus.ISSUE -> p.red
+                                    st == PinStatus.DONE && cleanNote.isNotBlank() -> p.green
+                                    else -> txtSub
+                                }
+                            )
+                        })
+                        row.addView(col)
+
+                        val distLabel = distLabelById[pin.id]
+                        if (distLabel != null) {
+                            row.addView(TextView(this).apply {
+                                text = distLabel
+                                textSize = 12f
+                                setTextColor(p.accent)
+                                setTypeface(null, Typeface.BOLD)
+                                DesignSystem.applyTabularNumerals(this)
+                            })
+                        }
+                        listCard.addView(row)
+                    }
+
+                    if (remainingCount > 0) {
+                        listCard.addView(DesignSystem.createHairlineDivider(this, p))
+                        listCard.addView(TextView(this).apply {
+                            text = "Show more ($remainingCount remaining)"
+                            textSize = 13.5f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(p.accent)
+                            gravity = Gravity.CENTER
+                            minimumHeight = dp(48)
+                            setPadding(dp(16), dp(12), dp(16), dp(12))
+                            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+                            setOnClickListener {
+                                displayLimit += 150
+                                renderPinRows()
+                            }
+                        })
                     }
                 }
-                val nameRow = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                }
-                nameRow.addView(TextView(this).apply {
-                    text = pin.name
-                    textSize = 15f
-                    setTextColor(txtPrimary)
-                    setTypeface(null, Typeface.BOLD)
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                })
-                if (sameCount >= 2) {
-                    nameRow.addView(TextView(this).apply {
-                        text = "${sameCount}× GPS"
-                        textSize = 10f
-                        setTypeface(null, Typeface.BOLD)
-                        setTextColor(p.amber)
-                        DesignSystem.applyTabularNumerals(this)
-                        setPadding(dp(6), dp(2), dp(6), dp(2))
-                        background = GradientDrawable().apply {
-                            setColor(p.amberSoft)
-                            cornerRadius = dp(6).toFloat()
-                        }
-                        layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT
-                        ).apply { marginStart = dp(6) }
-                    })
-                }
-                col.addView(nameRow)
-
-                val st = PinStatus.fromRaw(pin.status)
-                val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
-                val subParts = mutableListOf(st.label)
-                if (st == PinStatus.ISSUE && cleanNote.isNotBlank()) subParts += "⚠ $cleanNote"
-                else if (st == PinStatus.DONE && cleanNote.isNotBlank()) subParts += "✓ $cleanNote"
-                if (pin.isEdited && pin.editedBy.isNotBlank()) subParts += "Edited by ${pin.editedBy}"
-                col.addView(TextView(this).apply {
-                    text = subParts.joinToString(" • ")
-                    textSize = 12f
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    setTextColor(
-                        when {
-                            st == PinStatus.ISSUE -> p.red
-                            st == PinStatus.DONE && cleanNote.isNotBlank() -> p.green
-                            else -> txtSub
-                        }
-                    )
-                })
-                row.addView(col)
-
-                if (loc != null) {
-                    val d = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, pin.lat, pin.lng)
-                    row.addView(TextView(this).apply {
-                        text = formatDistanceShort(d, unit)
-                        textSize = 12f
-                        setTextColor(p.accent)
-                        setTypeface(null, Typeface.BOLD)
-                        DesignSystem.applyTabularNumerals(this)
-                    })
-                }
-                listCard.addView(row)
-            }
-
-            val remainingCount = ordered.size - pageItems.size
-            if (remainingCount > 0) {
-                listCard.addView(DesignSystem.createHairlineDivider(this, p))
-                listCard.addView(TextView(this).apply {
-                    text = "Show more ($remainingCount remaining)"
-                    textSize = 13.5f
-                    setTypeface(null, Typeface.BOLD)
-                    setTextColor(p.accent)
-                    gravity = Gravity.CENTER
-                    minimumHeight = dp(48)
-                    setPadding(dp(16), dp(12), dp(16), dp(12))
-                    UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                    setOnClickListener {
-                        displayLimit += 150
-                        renderPinRows()
-                    }
-                })
             }
         }
 
@@ -6918,30 +7078,78 @@ class MainActivity : AppCompatActivity() {
             renderPinRows()
         }
         btnAutoDuplicates.setOnClickListener {
-            ensureAnalysisCached(latestFiltered)
-            val extras = cachedDupExtras
-            selectedPinIds.clear()
-            selectedPinIds.addAll(extras)
-            renderPinRows()
-            val msg = if (extras.isEmpty()) {
-                "No duplicate bookmarks found in this folder"
-            } else {
-                "Auto-selected ${extras.size} duplicate cop${if (extras.size == 1) "y" else "ies"} (kept 1 primary per group)"
+            val curKey = filterKey to dataVersion
+            fun applyDup(extras: Set<String>) {
+                selectedPinIds.clear()
+                selectedPinIds.addAll(extras)
+                renderPinRows()
+                val msg = if (extras.isEmpty()) {
+                    "No duplicate bookmarks found in this folder"
+                } else {
+                    "Auto-selected ${extras.size} duplicate cop${if (extras.size == 1) "y" else "ies"} (kept 1 primary per group)"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
             }
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            if (cachedAnalysisKey == curKey) {
+                applyDup(cachedDupExtras)
+            } else {
+                val myASeq = ++analysisSeq
+                val listSnap = if (latestFiltered.isNotEmpty()) {
+                    latestFiltered
+                } else {
+                    val fk = filterKey
+                    currentSourcePins().filter { fk == "all" || PinStatus.fromRaw(it.status).key == fk }
+                }
+                RoutingEngine.ioExecutor.execute {
+                    val dup = findDuplicateExtraIds(listSnap)
+                    val (same, sizes) = analyzeSameCoordClusters(listSnap)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed || myASeq != analysisSeq) return@runOnUiThread
+                        cachedAnalysisKey = curKey
+                        cachedDupExtras = dup
+                        cachedSameCoordExtras = same
+                        cachedClusterSizes = sizes
+                        applyDup(dup)
+                    }
+                }
+            }
         }
         btnAutoSameCoords.setOnClickListener {
-            ensureAnalysisCached(latestFiltered)
-            val extras = cachedSameCoordExtras
-            selectedPinIds.clear()
-            selectedPinIds.addAll(extras)
-            renderPinRows()
-            val msg = if (extras.isEmpty()) {
-                "No bookmarks sharing the same coordinates found"
-            } else {
-                "Auto-selected ${extras.size} extra bookmark${if (extras.size == 1) "" else "s"} at same coordinates (kept 1 primary per spot)"
+            val curKey = filterKey to dataVersion
+            fun applySame(extras: Set<String>) {
+                selectedPinIds.clear()
+                selectedPinIds.addAll(extras)
+                renderPinRows()
+                val msg = if (extras.isEmpty()) {
+                    "No bookmarks sharing the same coordinates found"
+                } else {
+                    "Auto-selected ${extras.size} extra bookmark${if (extras.size == 1) "" else "s"} at same coordinates (kept 1 primary per spot)"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
             }
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            if (cachedAnalysisKey == curKey) {
+                applySame(cachedSameCoordExtras)
+            } else {
+                val myASeq = ++analysisSeq
+                val listSnap = if (latestFiltered.isNotEmpty()) {
+                    latestFiltered
+                } else {
+                    val fk = filterKey
+                    currentSourcePins().filter { fk == "all" || PinStatus.fromRaw(it.status).key == fk }
+                }
+                RoutingEngine.ioExecutor.execute {
+                    val dup = findDuplicateExtraIds(listSnap)
+                    val (same, sizes) = analyzeSameCoordClusters(listSnap)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed || myASeq != analysisSeq) return@runOnUiThread
+                        cachedAnalysisKey = curKey
+                        cachedDupExtras = dup
+                        cachedSameCoordExtras = same
+                        cachedClusterSizes = sizes
+                        applySame(same)
+                    }
+                }
+            }
         }
         btnSelectAll.setOnClickListener {
             selectedPinIds.clear()
@@ -7350,8 +7558,11 @@ class MainActivity : AppCompatActivity() {
         val presets = if (isIssue) ISSUE_PRESETS else DONE_PRESETS
         val statusKey = if (isIssue) "issue" else "done"
 
+        clearSheetStickyHeader()
         sheetContent.removeAllViews()
-        sheetContent.layoutDirection = if (AppStrings.isRtl(this)) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
+        val layoutDir = if (AppStrings.isRtl(this)) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
+        sheetContent.layoutDirection = layoutDir
+        sheetStickyHeader.layoutDirection = layoutDir
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -7394,7 +7605,8 @@ class MainActivity : AppCompatActivity() {
         })
         header.addView(titleCol)
         header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
-        sheetContent.addView(header)
+        sheetStickyHeader.addView(header)
+        sheetStickyHeader.visibility = View.VISIBLE
 
         val etReason = EditText(this).apply {
             hint = if (isIssue) AppStrings.customIssueHint(this@MainActivity) else AppStrings.optionalNoteHint(this@MainActivity)
@@ -7735,49 +7947,69 @@ class MainActivity : AppCompatActivity() {
 
         dlg.setOnShowListener {
             DesignSystem.styleAlertDialog(this, dlg, p)
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val btnPos = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
+            btnPos.setOnClickListener {
                 if (selectedIds.size < 2) {
                     Toast.makeText(this, "Select at least 2 folders", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
+                val selIdsSnap = selectedIds.toSet()
                 val combinedName = etName.text.toString().trim().ifBlank {
-                    "Combined (${selectedIds.size} folders)"
+                    "Combined (${selIdsSnap.size} folders)"
                 }
-                val rawPins = pins.filter { it.layerId in selectedIds }
-                val rawTracks = tracks.filter { it.layerId in selectedIds }
-                val finalPins = if (cbDedup.isChecked) {
-                    DailyReportGenerator.deduplicatePins(rawPins)
-                } else {
-                    rawPins
-                }
-
-                if (finalPins.isEmpty() && rawTracks.isEmpty()) {
-                    Toast.makeText(this, "Selected folders have no pins or tracks", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-
+                val doDedup = cbDedup.isChecked
+                val doHideOriginals = cbHideOriginals.isChecked
+                val pinsSnap = pins.toList()
+                val tracksSnap = tracks.toList()
                 val newLayerId = LocalFolderStore.newLocalLayerId()
                 val stamp = DevicePrefs.getDeviceStamp(this)
                 val devId = DevicePrefs.getDeviceId(this)
-                val skippedCount = rawPins.size - finalPins.size
                 val uniqueName = makeUniqueLayerName(combinedName)
-                val parsedCombined = ParsedKml(
-                    pins = finalPins.map { it.copy(id = UUID.randomUUID().toString(), layerId = newLayerId) },
-                    tracks = rawTracks.map { it.copy(id = UUID.randomUUID().toString(), layerId = newLayerId) },
-                    documentName = uniqueName
-                )
-                LocalFolderStore.saveNewLayer(this, newLayerId, uniqueName, stamp, devId, parsedCombined)
-                DevicePrefs.addCachedLayerName(this, uniqueName)
-                DevicePrefs.setLayerVisible(this, newLayerId, true)
-                if (cbHideOriginals.isChecked) {
-                    selectedIds.forEach { oldId ->
-                        DevicePrefs.setLayerVisible(this, oldId, false)
+                btnPos.isEnabled = false
+                btnPos.text = "Combining..."
+
+                RoutingEngine.ioExecutor.execute {
+                    val rawPins = pinsSnap.filter { it.layerId in selIdsSnap }
+                    val rawTracks = tracksSnap.filter { it.layerId in selIdsSnap }
+                    val finalPins = if (doDedup) {
+                        DailyReportGenerator.deduplicatePins(rawPins)
+                    } else {
+                        rawPins
+                    }
+
+                    if (finalPins.isEmpty() && rawTracks.isEmpty()) {
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            btnPos.isEnabled = true
+                            btnPos.text = "Combine"
+                            Toast.makeText(this, "Selected folders have no pins or tracks", Toast.LENGTH_SHORT).show()
+                        }
+                        return@execute
+                    }
+
+                    val skippedCount = rawPins.size - finalPins.size
+                    val parsedCombined = ParsedKml(
+                        pins = finalPins.map { it.copy(id = UUID.randomUUID().toString(), layerId = newLayerId) },
+                        tracks = rawTracks.map { it.copy(id = UUID.randomUUID().toString(), layerId = newLayerId) },
+                        documentName = uniqueName
+                    )
+                    LocalFolderStore.saveNewLayer(applicationContext, newLayerId, uniqueName, stamp, devId, parsedCombined)
+
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        DevicePrefs.addCachedLayerName(this, uniqueName)
+                        DevicePrefs.setLayerVisible(this, newLayerId, true)
+                        if (doHideOriginals) {
+                            selIdsSnap.forEach { oldId ->
+                                DevicePrefs.setLayerVisible(this, oldId, false)
+                            }
+                        }
+                        applyMergedFoldersAndRender()
+                        val skipNote = if (skippedCount > 0) " ($skippedCount duplicates skipped)" else ""
+                        Toast.makeText(this, "Combined ${finalPins.size} pins locally into \"$uniqueName\"$skipNote", Toast.LENGTH_LONG).show()
+                        dlg.dismiss()
                     }
                 }
-                applyMergedFoldersAndRender()
-                val skipNote = if (skippedCount > 0) " ($skippedCount duplicates skipped)" else ""
-                Toast.makeText(this, "Combined ${finalPins.size} pins locally into \"$uniqueName\"$skipNote", Toast.LENGTH_LONG).show()
-                dlg.dismiss()
             }
         }
         dlg.show()
@@ -8118,7 +8350,7 @@ class MainActivity : AppCompatActivity() {
         }
         stackedPinBuckets = buckets
         dataVersion++
-        if (layers.isNotEmpty()) {
+        if (cachedLocal != null && (layers.isNotEmpty() || isLiveConnected || DevicePrefs.getJoinedLayerIds(this).isEmpty())) {
             DevicePrefs.saveCachedLayerNames(this, layers.map { it.name })
         }
         renderMapData()

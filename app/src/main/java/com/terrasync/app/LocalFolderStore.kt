@@ -226,8 +226,10 @@ object LocalFolderStore {
             cachedSnapshot?.let { return it }
             val f = storeFile(ctx)
             val staleTmp = File(ctx.filesDir, "$FILE_NAME.tmp")
+            val staleTmp2 = File(ctx.filesDir, "$FILE_NAME.tmp2")
             val loaded = synchronized(diskLock) {
                 if (staleTmp.exists()) runCatching { staleTmp.delete() }
+                if (staleTmp2.exists()) runCatching { staleTmp2.delete() }
                 if (!f.exists()) {
                     LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
                 } else {

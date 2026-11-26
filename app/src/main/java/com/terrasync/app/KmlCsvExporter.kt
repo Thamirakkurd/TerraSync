@@ -232,11 +232,13 @@ object KmlCsvExporter {
         }
         val appCtx = ctx.applicationContext
         val layersSnap = localLayers.toList()
-        val pinsByLayer = allPins.groupBy { it.layerId }
-        val tracksByLayer = allTracks.groupBy { it.layerId }
+        val pinsSnap = allPins.toList()
+        val tracksSnap = allTracks.toList()
         android.widget.Toast.makeText(ctx, AppStrings.preparingBackup(ctx), android.widget.Toast.LENGTH_SHORT).show()
 
         RoutingEngine.ioExecutor.execute {
+            val pinsByLayer = pinsSnap.groupBy { it.layerId }
+            val tracksByLayer = tracksSnap.groupBy { it.layerId }
             val result = runCatching {
                 val dir = File(appCtx.cacheDir, "exports").apply { mkdirs() }
                 cleanupOldExports(dir)

@@ -1,6 +1,5 @@
 package com.terrasync.app
 
-import android.animation.ValueAnimator
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -15,6 +14,7 @@ import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -216,8 +216,7 @@ internal fun MainActivity.showDailyWhatsAppReportDialog(
     progHeader.addView(tvProgressPct)
     summaryCard.addView(progHeader)
 
-    val barTrack = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
+    val barTrack = FrameLayout(this).apply {
         background = GradientDrawable().apply {
             setColor(p.borderSubtle)
             cornerRadius = dp(4).toFloat()
@@ -227,6 +226,10 @@ internal fun MainActivity.showDailyWhatsAppReportDialog(
             topMargin = dp(6)
             bottomMargin = dp(8)
         }
+    }
+    val barSegments = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     }
     val segDone = View(this).apply {
         setBackgroundColor(p.green)
@@ -240,9 +243,10 @@ internal fun MainActivity.showDailyWhatsAppReportDialog(
         setBackgroundColor(Color.TRANSPARENT)
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
     }
-    barTrack.addView(segDone)
-    barTrack.addView(segIssue)
-    barTrack.addView(segPending)
+    barSegments.addView(segDone)
+    barSegments.addView(segIssue)
+    barSegments.addView(segPending)
+    barTrack.addView(barSegments)
     summaryCard.addView(barTrack)
 
     val chipsRow = LinearLayout(this).apply {
@@ -313,13 +317,12 @@ internal fun MainActivity.showDailyWhatsAppReportDialog(
     var activeReportText = ""
     var activeScopedPins = layerPinsSnapshot
     var genSeq = 0
-    var barAnimator: ValueAnimator? = null
 
     fun applyProgressWeights(doneW: Float, issueW: Float, pendingW: Float) {
         (segDone.layoutParams as LinearLayout.LayoutParams).weight = doneW
         (segIssue.layoutParams as LinearLayout.LayoutParams).weight = issueW
         (segPending.layoutParams as LinearLayout.LayoutParams).weight = pendingW
-        barTrack.requestLayout()
+        barSegments.requestLayout()
     }
 
     fun computeAndDisplay(useMapFiltered: Boolean) {
@@ -360,28 +363,26 @@ internal fun MainActivity.showDailyWhatsAppReportDialog(
                 chipIssue.text = "⚠ ${report.issueCount} $issueLbl"
                 chipPending.text = "○ ${report.pendingCount} $pendingLbl"
 
-                barAnimator?.cancel()
+                barSegments.animate().cancel()
+                applyProgressWeights(
+                    report.doneCount.toFloat(),
+                    report.issueCount.toFloat(),
+                    if (total > 0) report.pendingCount.toFloat() else 1f
+                )
                 if (total <= 0 || UiAnimations.isReducedMotion(this@showDailyWhatsAppReportDialog)) {
-                    applyProgressWeights(
-                        report.doneCount.toFloat(),
-                        report.issueCount.toFloat(),
-                        if (total > 0) report.pendingCount.toFloat() else 1f
-                    )
+                    barSegments.scaleX = 1f
                 } else {
-                    val targetDone = report.doneCount.toFloat()
-                    val targetIssue = report.issueCount.toFloat()
-                    val totalF = total.toFloat()
-                    barAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                        duration = 280L
-                        interpolator = UiAnimations.EMPHASIZED_DECELERATE
-                        addUpdateListener { anim ->
-                            val t = anim.animatedValue as Float
-                            val dW = targetDone * t
-                            val iW = targetIssue * t
-                            val pW = (totalF - dW - iW).coerceAtLeast(0f)
-                            applyProgressWeights(dW, iW, pW)
-                        }
-                        start()
+                    barSegments.scaleX = 0f
+                    val rtlBar = AppStrings.isRtl(this@showDailyWhatsAppReportDialog)
+                    barSegments.post {
+                        if (isFinishing || isDestroyed || mySeq != genSeq) return@post
+                        barSegments.pivotX = if (rtlBar) barTrack.width.toFloat() else 0f
+                        barSegments.pivotY = barTrack.height * 0.5f
+                        barSegments.animate()
+                            .scaleX(1f)
+                            .setDuration(280L)
+                            .setInterpolator(UiAnimations.EMPHASIZED_DECELERATE)
+                            .start()
                     }
                 }
             }
@@ -489,5 +490,5 @@ internal fun MainActivity.showDailyWhatsAppReportDialog(
             .setView(container)
             .create()
     )
-    reportDialog.setOnDismissListener { barAnimator?.cancel() }
+    reportDialog.setOnDismissListener { barSegments.animate().cancel() }
 }

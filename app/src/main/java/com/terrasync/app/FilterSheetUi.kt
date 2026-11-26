@@ -16,6 +16,7 @@ internal fun MainActivity.showMultiStatusFilterDialog() {
     val night = p.isDark
     val isRtl = AppStrings.isRtl(this)
 
+    clearSheetStickyHeader()
     sheetContent.removeAllViews()
     sheetContent.layoutDirection = if (isRtl) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
 

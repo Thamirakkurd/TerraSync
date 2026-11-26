@@ -262,6 +262,7 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
     var timeFilter = "all" // "all", "after_hours", "in_hours"
     var operatorFilter: String? = null
     var displayLimit = 120
+    var auditSeq = 0
 
     val contentRoot = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -270,259 +271,276 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
     body.addView(contentRoot)
 
     fun renderAudit(animateReload: Boolean = false) {
-        contentRoot.removeAllViews()
+        val mySeq = ++auditSeq
         val workStart = DevicePrefs.getWorkStartMinutes(this)
         val workEnd = DevicePrefs.getWorkEndMinutes(this)
         val windowStr = "${PinEditHistoryAudit.formatMinutes(workStart)} – ${PinEditHistoryAudit.formatMinutes(workEnd)}"
-        val layerPins = pinsByLayerId[layer.id].orEmpty()
-        val deviceMap = DailyReportGenerator.buildDeviceToTeamMap(pins, buildLocalDeviceAliasMap())
-        val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPins, workStart, workEnd, deviceMap)
-        currentEntries = allEntries
+        val layerPinsSnap = pinsByLayerId[layer.id].orEmpty().toList()
+        val allPinsSnap = pins.toList()
+        val aliasesSnap = buildLocalDeviceAliasMap()
+        val curTimeFilter = timeFilter
+        val curOpFilter = operatorFilter
+        val curDisplayLimit = displayLimit
 
-        val afterHoursCnt = allEntries.count { it.isOutsideWorkHours }
-        val inHoursCnt = allEntries.size - afterHoursCnt
-
-        // 1. Summary & Working-Hours Control Card
-        val summaryCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12, bottomMarginDp = 10)
-
-        val folderRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(8))
-        }
-        folderRow.addView(TextView(this).apply {
-            text = layer.name
-            textSize = 15.5f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        })
-        folderRow.addView(TextView(this).apply {
-            text = if (isLocal) "LOCAL" else if (isOwner) "CLOUD OWNER" else "CLOUD"
-            textSize = 10f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(if (isLocal) p.accentPrimary else p.green)
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            background = GradientDrawable().apply {
-                setColor(if (isLocal) p.accentPrimarySoft else p.greenSoft)
-                cornerRadius = dp(8).toFloat()
-            }
-        })
-        summaryCard.addView(folderRow)
-
-        val hoursRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, dp(10))
-        }
-        val hoursCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        hoursCol.addView(TextView(this).apply {
-            text = AppStrings.workingHours(this@buildEditHistoryPage)
-            textSize = 11.5f
-            setTextColor(txtSub)
-        })
-        hoursCol.addView(TextView(this).apply {
-            text = windowStr
-            textSize = 15f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(txtPrimary)
-            DesignSystem.applyTabularNumerals(this)
-        })
-        hoursRow.addView(hoursCol)
-        hoursRow.addView(MaterialButton(this).apply {
-            text = AppStrings.change(this@buildEditHistoryPage)
-            textSize = 12f
-            setTypeface(null, Typeface.BOLD)
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            minWidth = 0
-            minimumWidth = 0
-            setPadding(dp(14), 0, dp(14), 0)
-            cornerRadius = dp(18)
-            setTextColor(p.accentPrimary)
-            backgroundTintList = ColorStateList.valueOf(p.accentPrimarySoft)
-            strokeWidth = 0
-            elevation = 0f
-            stateListAnimator = null
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                showWorkingHoursDialog { renderAudit(false) }
-            }
-        })
-        summaryCard.addView(hoursRow)
-
-        summaryCard.addView(DesignSystem.createHairlineDivider(this, p))
-
-        // 3 Tabular Stat Counters
-        val statsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(10), 0, dp(2))
-        }
-        fun addStat(label: String, count: Int, color: Int) {
-            val col = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            col.addView(TextView(this).apply {
-                text = "$count"
-                textSize = 20f
-                setTypeface(null, Typeface.BOLD)
-                setTextColor(color)
-                DesignSystem.applyTabularNumerals(this)
-            })
-            col.addView(TextView(this).apply {
-                text = label
-                textSize = 11.5f
+        if (contentRoot.childCount == 0) {
+            contentRoot.addView(TextView(this).apply {
+                text = "Loading edit history..."
+                textSize = 13.5f
                 setTextColor(txtSub)
+                setPadding(dp(4), dp(14), dp(4), dp(14))
             })
-            statsRow.addView(col)
         }
-        addStat(AppStrings.totalEdits(this), allEntries.size, txtPrimary)
-        addStat(AppStrings.inHours(this), inHoursCnt, p.green)
-        addStat(AppStrings.afterHours(this), afterHoursCnt, if (afterHoursCnt > 0) p.red else txtSub)
-        summaryCard.addView(statsRow)
-        contentRoot.addView(summaryCard)
 
-        // 2. Time Filter Pills (All / After Hours / In Hours)
-        val filterScroll = android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-        }
-        val filterRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(2), 0, dp(8))
-        }
-        listOf(
-            listOf("all", "${AppStrings.all(this)} (${allEntries.size})", p.accent, 0),
-            listOf("after_hours", "${AppStrings.afterHours(this)} ($afterHoursCnt)", p.red, R.drawable.ic_history),
-            listOf("in_hours", "${AppStrings.inHours(this)} ($inHoursCnt)", p.green, R.drawable.ic_check)
-        ).forEachIndexed { idx, spec ->
-            val key = spec[0] as String
-            val lbl = spec[1] as String
-            val activeCol = spec[2] as Int
-            val iconRes = spec[3] as Int
-            val selected = timeFilter == key
-            filterRow.addView(MaterialButton(this).apply {
-                text = lbl
-                textSize = 12f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(12), 0, dp(12), 0)
-                cornerRadius = dp(12)
-                DesignSystem.applyTabularNumerals(this)
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
-                    if (idx < 2) marginEnd = dp(6)
+        RoutingEngine.ioExecutor.execute {
+            val deviceMap = DailyReportGenerator.buildDeviceToTeamMap(allPinsSnap, aliasesSnap)
+            val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPinsSnap, workStart, workEnd, deviceMap)
+            val afterHoursCnt = allEntries.count { it.isOutsideWorkHours }
+            val inHoursCnt = allEntries.size - afterHoursCnt
+            val operatorCounts = allEntries.groupingBy { it.operatorShort }.eachCount()
+                .entries.sortedByDescending { it.value }
+            val filtered = allEntries.filter { e ->
+                val timeOk = when (curTimeFilter) {
+                    "after_hours" -> e.isOutsideWorkHours
+                    "in_hours" -> !e.isOutsideWorkHours
+                    else -> true
                 }
-                DesignSystem.styleSegmentedButton(this, selected, p, activeCol)
-                if (iconRes != 0) {
-                    icon = ContextCompat.getDrawable(this@buildEditHistoryPage, iconRes)
-                    iconSize = dp(14)
-                    iconPadding = dp(5)
-                    iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
-                    iconTint = ColorStateList.valueOf(if (selected) Color.WHITE else activeCol)
+                val opOk = curOpFilter == null || e.operatorShort == curOpFilter
+                timeOk && opOk
+            }
+            val pageItems = filtered.take(curDisplayLimit)
+            val groupedByDate = pageItems.groupBy { it.dateGroup }
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed || mySeq != auditSeq) return@runOnUiThread
+                currentEntries = allEntries
+                contentRoot.removeAllViews()
+
+                // 1. Summary & Working-Hours Control Card
+                val summaryCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12, bottomMarginDp = 10)
+
+                val folderRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 0, 0, dp(8))
                 }
-                UiAnimations.attachSnappyPress(this)
-                setOnClickListener {
-                    if (timeFilter != key) {
-                        timeFilter = key
-                        displayLimit = 120
-                        renderAudit(animateReload = true)
+                folderRow.addView(TextView(this).apply {
+                    text = layer.name
+                    textSize = 15.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginEnd = dp(8)
                     }
-                }
-            })
-        }
-        filterScroll.addView(filterRow)
-        contentRoot.addView(filterScroll)
+                })
+                folderRow.addView(TextView(this).apply {
+                    text = if (isLocal) "LOCAL" else if (isOwner) "CLOUD OWNER" else "CLOUD"
+                    textSize = 10f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(if (isLocal) p.accentPrimary else p.green)
+                    setPadding(dp(8), dp(3), dp(8), dp(3))
+                    background = GradientDrawable().apply {
+                        setColor(if (isLocal) p.accentPrimarySoft else p.greenSoft)
+                        cornerRadius = dp(8).toFloat()
+                    }
+                })
+                summaryCard.addView(folderRow)
 
-        // 3. Operator Filter Pills
-        val operatorCounts = allEntries.groupingBy { it.operatorShort }.eachCount()
-            .entries.sortedByDescending { it.value }
-        if (operatorCounts.size > 1) {
-            val opScroll = android.widget.HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                overScrollMode = View.OVER_SCROLL_NEVER
-            }
-            val opRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 0, 0, dp(10))
-            }
-            fun addOpChip(label: String, opKey: String?) {
-                opRow.addView(MaterialButton(this).apply {
-                    text = label
+                val hoursRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(4), 0, dp(10))
+                }
+                val hoursCol = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                hoursCol.addView(TextView(this).apply {
+                    text = AppStrings.workingHours(this@buildEditHistoryPage)
                     textSize = 11.5f
+                    setTextColor(txtSub)
+                })
+                hoursCol.addView(TextView(this).apply {
+                    text = windowStr
+                    textSize = 15f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    DesignSystem.applyTabularNumerals(this)
+                })
+                hoursRow.addView(hoursCol)
+                hoursRow.addView(MaterialButton(this).apply {
+                    text = AppStrings.change(this@buildEditHistoryPage)
+                    textSize = 12f
+                    setTypeface(null, Typeface.BOLD)
                     isAllCaps = false
                     insetTop = 0
                     insetBottom = 0
                     minWidth = 0
                     minimumWidth = 0
-                    setPadding(dp(10), 0, dp(10), 0)
-                    cornerRadius = dp(9)
-                    DesignSystem.applyTabularNumerals(this)
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
-                        marginEnd = dp(6)
-                    }
-                    DesignSystem.styleSegmentedButton(this, operatorFilter == opKey, p)
+                    setPadding(dp(14), 0, dp(14), 0)
+                    cornerRadius = dp(18)
+                    setTextColor(p.accentPrimary)
+                    backgroundTintList = ColorStateList.valueOf(p.accentPrimarySoft)
+                    strokeWidth = 0
+                    elevation = 0f
+                    stateListAnimator = null
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
-                        if (operatorFilter != opKey) {
-                            operatorFilter = opKey
-                            displayLimit = 120
-                            renderAudit(animateReload = true)
-                        }
+                        showWorkingHoursDialog { renderAudit(false) }
                     }
                 })
-            }
-            addOpChip(AppStrings.allTeams(this), null)
-            operatorCounts.forEach { (opName, cnt) ->
-                addOpChip("$opName ($cnt)", opName)
-            }
-            opScroll.addView(opRow)
-            contentRoot.addView(opScroll)
-        }
+                summaryCard.addView(hoursRow)
 
-        // 4. Filtered Chronological Timeline Grouped by Date
-        val filtered = allEntries.filter { e ->
-            val timeOk = when (timeFilter) {
-                "after_hours" -> e.isOutsideWorkHours
-                "in_hours" -> !e.isOutsideWorkHours
-                else -> true
-            }
-            val opOk = operatorFilter == null || e.operatorShort == operatorFilter
-            timeOk && opOk
-        }
+                summaryCard.addView(DesignSystem.createHairlineDivider(this, p))
 
-        if (filtered.isEmpty()) {
-            val emptyCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 18)
-            emptyCard.addView(TextView(this).apply {
-                text = when {
-                    allEntries.isEmpty() -> "No edits recorded yet in this folder. Whenever team members update a pin, each timestamped submission appears here."
-                    timeFilter == "after_hours" -> "✓ Great — zero submissions were made outside working hours ($windowStr)."
-                    else -> "No matching submissions for this filter."
+                // 3 Tabular Stat Counters
+                val statsRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dp(10), 0, dp(2))
                 }
-                textSize = 13.5f
-                setLineSpacing(dp(2).toFloat(), 1.05f)
-                setTextColor(txtSub)
-            })
-            contentRoot.addView(emptyCard)
-            if (animateReload) UiAnimations.staggerRevealChildren(contentRoot, maxAnimated = 4)
-            return
-        }
+                fun addStat(label: String, count: Int, color: Int) {
+                    val col = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    col.addView(TextView(this).apply {
+                        text = "$count"
+                        textSize = 20f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(color)
+                        DesignSystem.applyTabularNumerals(this)
+                    })
+                    col.addView(TextView(this).apply {
+                        text = label
+                        textSize = 11.5f
+                        setTextColor(txtSub)
+                    })
+                    statsRow.addView(col)
+                }
+                addStat(AppStrings.totalEdits(this), allEntries.size, txtPrimary)
+                addStat(AppStrings.inHours(this), inHoursCnt, p.green)
+                addStat(AppStrings.afterHours(this), afterHoursCnt, if (afterHoursCnt > 0) p.red else txtSub)
+                summaryCard.addView(statsRow)
+                contentRoot.addView(summaryCard)
 
-        val pageItems = filtered.take(displayLimit)
-        val groupedByDate = pageItems.groupBy { it.dateGroup }
+                // 2. Time Filter Pills (All / After Hours / In Hours)
+                val filterScroll = android.widget.HorizontalScrollView(this).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                }
+                val filterRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dp(2), 0, dp(8))
+                }
+                listOf(
+                    listOf("all", "${AppStrings.all(this)} (${allEntries.size})", p.accent, 0),
+                    listOf("after_hours", "${AppStrings.afterHours(this)} ($afterHoursCnt)", p.red, R.drawable.ic_history),
+                    listOf("in_hours", "${AppStrings.inHours(this)} ($inHoursCnt)", p.green, R.drawable.ic_check)
+                ).forEachIndexed { idx, spec ->
+                    val key = spec[0] as String
+                    val lbl = spec[1] as String
+                    val activeCol = spec[2] as Int
+                    val iconRes = spec[3] as Int
+                    val selected = curTimeFilter == key
+                    filterRow.addView(MaterialButton(this).apply {
+                        text = lbl
+                        textSize = 12f
+                        isAllCaps = false
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(12), 0, dp(12), 0)
+                        cornerRadius = dp(12)
+                        DesignSystem.applyTabularNumerals(this)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
+                            if (idx < 2) marginEnd = dp(6)
+                        }
+                        DesignSystem.styleSegmentedButton(this, selected, p, activeCol)
+                        if (iconRes != 0) {
+                            icon = ContextCompat.getDrawable(this@buildEditHistoryPage, iconRes)
+                            iconSize = dp(14)
+                            iconPadding = dp(5)
+                            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+                            iconTint = ColorStateList.valueOf(if (selected) Color.WHITE else activeCol)
+                        }
+                        UiAnimations.attachSnappyPress(this)
+                        setOnClickListener {
+                            if (timeFilter != key) {
+                                timeFilter = key
+                                displayLimit = 120
+                                renderAudit(animateReload = true)
+                            }
+                        }
+                    })
+                }
+                filterScroll.addView(filterRow)
+                contentRoot.addView(filterScroll)
+
+                // 3. Operator Filter Pills
+                if (operatorCounts.size > 1) {
+                    val opScroll = android.widget.HorizontalScrollView(this).apply {
+                        isHorizontalScrollBarEnabled = false
+                        overScrollMode = View.OVER_SCROLL_NEVER
+                    }
+                    val opRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, 0, 0, dp(10))
+                    }
+                    fun addOpChip(label: String, opKey: String?) {
+                        opRow.addView(MaterialButton(this).apply {
+                            text = label
+                            textSize = 11.5f
+                            isAllCaps = false
+                            insetTop = 0
+                            insetBottom = 0
+                            minWidth = 0
+                            minimumWidth = 0
+                            setPadding(dp(10), 0, dp(10), 0)
+                            cornerRadius = dp(9)
+                            DesignSystem.applyTabularNumerals(this)
+                            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
+                                marginEnd = dp(6)
+                            }
+                            DesignSystem.styleSegmentedButton(this, curOpFilter == opKey, p)
+                            UiAnimations.attachSnappyPress(this)
+                            setOnClickListener {
+                                if (operatorFilter != opKey) {
+                                    operatorFilter = opKey
+                                    displayLimit = 120
+                                    renderAudit(animateReload = true)
+                                }
+                            }
+                        })
+                    }
+                    addOpChip(AppStrings.allTeams(this), null)
+                    operatorCounts.forEach { (opName, cnt) ->
+                        addOpChip("$opName ($cnt)", opName)
+                    }
+                    opScroll.addView(opRow)
+                    contentRoot.addView(opScroll)
+                }
+
+                // 4. Filtered Chronological Timeline Grouped by Date
+                if (filtered.isEmpty()) {
+                    val emptyCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 18)
+                    emptyCard.addView(TextView(this).apply {
+                        text = when {
+                            allEntries.isEmpty() -> "No edits recorded yet in this folder. Whenever team members update a pin, each timestamped submission appears here."
+                            curTimeFilter == "after_hours" -> "✓ Great — zero submissions were made outside working hours ($windowStr)."
+                            else -> "No matching submissions for this filter."
+                        }
+                        textSize = 13.5f
+                        setLineSpacing(dp(2).toFloat(), 1.05f)
+                        setTextColor(txtSub)
+                    })
+                    contentRoot.addView(emptyCard)
+                    if (animateReload) UiAnimations.staggerRevealChildren(contentRoot, maxAnimated = 4)
+                    return@runOnUiThread
+                }
 
         groupedByDate.forEach { (dateLabel, dayEntries) ->
             val dayLate = dayEntries.count { it.isOutsideWorkHours }
@@ -716,6 +734,8 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
 
         if (animateReload) {
             UiAnimations.staggerRevealChildren(contentRoot, maxAnimated = 4)
+        }
+            }
         }
     }
 

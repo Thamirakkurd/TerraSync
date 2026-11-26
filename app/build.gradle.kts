@@ -14,7 +14,7 @@ android {
         targetSdk = 34
         val tagVer = (project.findProperty("appVersionName") as String?)
             ?: System.getenv("GITHUB_REF_NAME")?.removePrefix("v")?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+.*")) }
-            ?: "3.10.0-dev"
+            ?: "3.10.1-dev"
         val baseNum = tagVer.substringBefore("-").split(".").mapNotNull { it.toIntOrNull() }
             .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20700 }
         val preOffset = if (!tagVer.contains("-")) {
@@ -89,6 +89,12 @@ android {
             isIncludeAndroidResources = true
             all {
                 it.maxHeapSize = (project.findProperty("unitTestMaxHeap") as String?) ?: "512m"
+                it.testLogging.showStandardStreams = true
+                it.testLogging.events(
+                    org.gradle.api.tasks.testing.logging.TestLogEvent.PASSED,
+                    org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED,
+                    org.gradle.api.tasks.testing.logging.TestLogEvent.SKIPPED
+                )
             }
         }
     }
