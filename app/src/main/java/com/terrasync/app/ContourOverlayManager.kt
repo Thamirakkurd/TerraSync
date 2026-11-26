@@ -18,6 +18,8 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
@@ -46,6 +48,7 @@ class ContourOverlayManager {
         private const val MAX_TILES_PER_VIEW = 4
         private const val MIN_CONTOUR_ZOOM = 10.5
         private const val DEBOUNCE_MS = 450L
+        private const val DISK_CACHE_MAX_BYTES = 8L * 1024L * 1024L
     }
 
     private data class TileGrid(val z: Int, val x: Int, val y: Int, val n: Int, val elev: FloatArray)
@@ -58,7 +61,13 @@ class ContourOverlayManager {
         }
     }
     private val tileCache = LruCache<String, TileGrid>(18)
+    @Volatile private var diskCacheDir: File? = null
+    private val diskWriteLock = Any()
     private val seq = AtomicInteger(0)
+
+    fun initDiskCache(cacheRoot: File) {
+        diskCacheDir = File(cacheRoot, "terrarium_dem").apply { mkdirs() }
+    }
     private var pendingRunnable: Runnable? = null
     private var lastViewportKey: String = ""
 
@@ -242,19 +251,63 @@ class ContourOverlayManager {
         }
     }
 
+    private fun readDiskTile(z: Int, x: Int, y: Int): ByteArray? {
+        val dir = diskCacheDir ?: return null
+        val file = File(dir, "${z}_${x}_${y}.png")
+        if (!file.exists() || !file.isFile || file.length() <= 64L) return null
+        return runCatching {
+            file.setLastModified(System.currentTimeMillis())
+            file.readBytes()
+        }.getOrNull()
+    }
+
+    private fun writeDiskTile(z: Int, x: Int, y: Int, bytes: ByteArray) {
+        val dir = diskCacheDir ?: return
+        synchronized(diskWriteLock) {
+            runCatching {
+                if (!dir.exists()) dir.mkdirs()
+                val dst = File(dir, "${z}_${x}_${y}.png")
+                val tmp = File(dir, "${z}_${x}_${y}.png.tmp")
+                FileOutputStream(tmp).use { fos ->
+                    fos.write(bytes)
+                    fos.flush()
+                }
+                if (dst.exists()) dst.delete()
+                if (!tmp.renameTo(dst)) {
+                    tmp.copyTo(dst, overwrite = true)
+                    tmp.delete()
+                }
+                val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".png") } ?: return@runCatching
+                var total = files.sumOf { it.length() }
+                if (total > DISK_CACHE_MAX_BYTES) {
+                    for (old in files.sortedBy { it.lastModified() }) {
+                        if (total <= (DISK_CACHE_MAX_BYTES * 3L) / 4L) break
+                        val len = old.length()
+                        if (old.delete()) total -= len
+                    }
+                }
+            }
+        }
+    }
+
     private fun fetchOrCachedGrid(z: Int, x: Int, y: Int): TileGrid? {
         val key = "$z/$x/$y"
         synchronized(tileCache) {
             tileCache.get(key)?.let { return it }
         }
-        val url = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$z/$x/$y.png"
-        val req = Request.Builder().url(url).build()
-        val bytes = runCatching {
-            RoutingEngine.sharedOkHttpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                resp.body?.bytes()
+        val diskBytes = readDiskTile(z, x, y)
+        val bytes = diskBytes ?: run {
+            val url = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$z/$x/$y.png"
+            val req = Request.Builder().url(url).build()
+            runCatching {
+                RoutingEngine.sharedOkHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    resp.body?.bytes()
+                }
+            }.getOrNull()?.also { fresh ->
+                if (fresh.size > 64) writeDiskTile(z, x, y, fresh)
             }
-        }.getOrNull() ?: return null
+        } ?: return null
 
         val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
         return try {
@@ -326,6 +379,20 @@ class ContourOverlayManager {
             return (qx shl 32) xor (qy and 0xFFFFFFFFL)
         }
 
+        var segBuf = DoubleArray(512)
+        var segCount = 0
+        fun addSegment(ax: Double, ay: Double, bx: Double, by: Double) {
+            val base = segCount * 4
+            if (base + 4 > segBuf.size) {
+                segBuf = segBuf.copyOf(segBuf.size * 2)
+            }
+            segBuf[base] = ax
+            segBuf[base + 1] = ay
+            segBuf[base + 2] = bx
+            segBuf[base + 3] = by
+            segCount++
+        }
+
         var level = startLevel
         while (level <= endLevel) {
             if (level <= 0) {
@@ -334,7 +401,7 @@ class ContourOverlayManager {
             }
             val lf = level.toFloat()
             val isMajor = (level % majorStep == 0)
-            val segments = ArrayList<Pair<Point, Point>>(64)
+            segCount = 0
 
             for (gy in 0 until n) {
                 val latTop = rowLats[gy]
@@ -355,78 +422,71 @@ class ContourOverlayManager {
                     val lngL = west + lngSpan * (gx.toDouble() / n.toDouble())
                     val lngR = west + lngSpan * ((gx + 1).toDouble() / n.toDouble())
 
-                    fun topPt(): Point {
-                        val t = interp(vTL, vTR, lf)
-                        return Point.fromLngLat(lngL + (lngR - lngL) * t, latTop)
-                    }
-                    fun rightPt(): Point {
-                        val t = interp(vTR, vBR, lf)
-                        return Point.fromLngLat(lngR, latTop + (latBot - latTop) * t)
-                    }
-                    fun botPt(): Point {
-                        val t = interp(vBL, vBR, lf)
-                        return Point.fromLngLat(lngL + (lngR - lngL) * t, latBot)
-                    }
-                    fun leftPt(): Point {
-                        val t = interp(vTL, vBL, lf)
-                        return Point.fromLngLat(lngL, latTop + (latBot - latTop) * t)
-                    }
+                    fun topLng(): Double = lngL + (lngR - lngL) * interp(vTL, vTR, lf)
+                    fun rightLat(): Double = latTop + (latBot - latTop) * interp(vTR, vBR, lf)
+                    fun botLng(): Double = lngL + (lngR - lngL) * interp(vBL, vBR, lf)
+                    fun leftLat(): Double = latTop + (latBot - latTop) * interp(vTL, vBL, lf)
 
                     when (mask) {
-                        1, 14 -> segments.add(leftPt() to botPt())
-                        2, 13 -> segments.add(botPt() to rightPt())
-                        3, 12 -> segments.add(leftPt() to rightPt())
-                        4, 11 -> segments.add(topPt() to rightPt())
+                        1, 14 -> addSegment(lngL, leftLat(), botLng(), latBot)
+                        2, 13 -> addSegment(botLng(), latBot, lngR, rightLat())
+                        3, 12 -> addSegment(lngL, leftLat(), lngR, rightLat())
+                        4, 11 -> addSegment(topLng(), latTop, lngR, rightLat())
                         5 -> {
-                            segments.add(leftPt() to topPt())
-                            segments.add(botPt() to rightPt())
+                            addSegment(lngL, leftLat(), topLng(), latTop)
+                            addSegment(botLng(), latBot, lngR, rightLat())
                         }
-                        6, 9 -> segments.add(topPt() to botPt())
-                        7, 8 -> segments.add(leftPt() to topPt())
+                        6, 9 -> addSegment(topLng(), latTop, botLng(), latBot)
+                        7, 8 -> addSegment(lngL, leftLat(), topLng(), latTop)
                         10 -> {
-                            segments.add(leftPt() to botPt())
-                            segments.add(topPt() to rightPt())
+                            addSegment(lngL, leftLat(), botLng(), latBot)
+                            addSegment(topLng(), latTop, lngR, rightLat())
                         }
                     }
                 }
             }
 
-            if (segments.isNotEmpty()) {
-                // Stitch segments greedily into polylines so labels flow cleanly along contour lines
-                val adj = HashMap<Long, MutableList<Int>>(segments.size * 2)
-                segments.forEachIndexed { idx, (a, b) ->
-                    adj.getOrPut(ptKey(a.longitude(), a.latitude())) { mutableListOf() }.add(idx)
-                    adj.getOrPut(ptKey(b.longitude(), b.latitude())) { mutableListOf() }.add(idx)
+            if (segCount > 0) {
+                val adj = HashMap<Long, MutableList<Int>>(segCount * 2)
+                for (idx in 0 until segCount) {
+                    val b = idx * 4
+                    adj.getOrPut(ptKey(segBuf[b], segBuf[b + 1])) { mutableListOf() }.add(idx)
+                    adj.getOrPut(ptKey(segBuf[b + 2], segBuf[b + 3])) { mutableListOf() }.add(idx)
                 }
-                val used = BooleanArray(segments.size)
-                for (i in segments.indices) {
+                val used = BooleanArray(segCount)
+                for (i in 0 until segCount) {
                     if (used[i]) continue
                     used[i] = true
+                    val b0 = i * 4
                     val chain = ArrayDeque<Point>()
-                    chain.addLast(segments[i].first)
-                    chain.addLast(segments[i].second)
+                    chain.addLast(Point.fromLngLat(segBuf[b0], segBuf[b0 + 1]))
+                    chain.addLast(Point.fromLngLat(segBuf[b0 + 2], segBuf[b0 + 3]))
 
-                    // Extend forward
                     while (true) {
                         val tail = chain.last()
-                        val candidates = adj[ptKey(tail.longitude(), tail.latitude())] ?: break
+                        val tailKey = ptKey(tail.longitude(), tail.latitude())
+                        val candidates = adj[tailKey] ?: break
                         val nextIdx = candidates.firstOrNull { !used[it] } ?: break
                         used[nextIdx] = true
-                        val (a, b) = segments[nextIdx]
-                        val tailKey = ptKey(tail.longitude(), tail.latitude())
-                        val nextPt = if (ptKey(a.longitude(), a.latitude()) == tailKey) b else a
-                        chain.addLast(nextPt)
+                        val b = nextIdx * 4
+                        val ax = segBuf[b]
+                        val ay = segBuf[b + 1]
+                        val bx = segBuf[b + 2]
+                        val by = segBuf[b + 3]
+                        chain.addLast(if (ptKey(ax, ay) == tailKey) Point.fromLngLat(bx, by) else Point.fromLngLat(ax, ay))
                     }
-                    // Extend backward
                     while (true) {
                         val head = chain.first()
-                        val candidates = adj[ptKey(head.longitude(), head.latitude())] ?: break
+                        val headKey = ptKey(head.longitude(), head.latitude())
+                        val candidates = adj[headKey] ?: break
                         val prevIdx = candidates.firstOrNull { !used[it] } ?: break
                         used[prevIdx] = true
-                        val (a, b) = segments[prevIdx]
-                        val headKey = ptKey(head.longitude(), head.latitude())
-                        val prevPt = if (ptKey(a.longitude(), a.latitude()) == headKey) b else a
-                        chain.addFirst(prevPt)
+                        val b = prevIdx * 4
+                        val ax = segBuf[b]
+                        val ay = segBuf[b + 1]
+                        val bx = segBuf[b + 2]
+                        val by = segBuf[b + 3]
+                        chain.addFirst(if (ptKey(ax, ay) == headKey) Point.fromLngLat(bx, by) else Point.fromLngLat(ax, ay))
                     }
 
                     if (chain.size >= 2) {

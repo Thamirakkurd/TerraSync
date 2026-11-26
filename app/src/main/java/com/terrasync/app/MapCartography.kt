@@ -6,12 +6,15 @@ import android.graphics.Color
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.BackgroundLayer
+import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
+import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.VectorSource
+import java.util.WeakHashMap
 
 /**
  * Organic Maps cartographic styling, highway route shields, high-DPI POI badges,
@@ -21,6 +24,84 @@ object MapCartography {
 
     const val MOSQUES_LAYER_ID = "terrasync-mosques-layer"
     const val POI_BADGES_LAYER_ID = "terrasync-poi-badges-layer"
+
+    private class CachedStyleIndex(
+        val backgroundLayers: List<BackgroundLayer>,
+        val fillTargets: List<Pair<FillLayer, String>>,
+        val lineTargets: List<Triple<LineLayer, Boolean, String>>,
+        val shieldLayers: List<Pair<SymbolLayer, Boolean>>,
+        val mainLabelLayers: List<SymbolLayer>,
+        val poiTextLayers: List<SymbolLayer>,
+        val building3dLayers: List<Layer>,
+        var basePoiSuppressed: Boolean = false
+    )
+
+    private val styleCacheLock = Any()
+    private val styleIndexCache = WeakHashMap<Style, CachedStyleIndex>()
+
+    private fun getOrBuildStyleIndex(style: Style): CachedStyleIndex {
+        synchronized(styleCacheLock) {
+            styleIndexCache[style]?.let { return it }
+        }
+        val bg = ArrayList<BackgroundLayer>()
+        val fills = ArrayList<Pair<FillLayer, String>>()
+        val lines = ArrayList<Triple<LineLayer, Boolean, String>>()
+        val shields = ArrayList<Pair<SymbolLayer, Boolean>>()
+        val mainLabels = ArrayList<SymbolLayer>()
+        val poiText = ArrayList<SymbolLayer>()
+        val bldgs3d = ArrayList<Layer>()
+
+        for (layer in style.layers) {
+            val id = layer.id.lowercase()
+            if (layer is FillExtrusionLayer ||
+                (id.contains("building") && id.contains("3d"))
+            ) {
+                bldgs3d.add(layer)
+            }
+            when (layer) {
+                is BackgroundLayer -> bg.add(layer)
+                is FillLayer -> {
+                    when (id) {
+                        "landuse_residential", "landcover_wood", "landcover_grass", "park", "building", "water" ->
+                            fills.add(layer to id)
+                    }
+                }
+                is LineLayer -> {
+                    val isMinorOrTrack = id.contains("minor") || id.contains("service") ||
+                        id.contains("track") || id.contains("path") ||
+                        id.contains("residential") || id.contains("unclassified")
+                    val role = when {
+                        id.contains("motorway") && id.contains("casing") -> "mw_casing"
+                        id.contains("motorway") -> "mw"
+                        (id.contains("trunk") || id.contains("primary") || id.contains("major_inner")) && !id.contains("casing") -> "major"
+                        (id.contains("trunk") || id.contains("primary") || id.contains("major_casing")) && id.contains("casing") -> "major_casing"
+                        id.contains("secondary") && !id.contains("casing") -> "sec"
+                        id.contains("secondary") && id.contains("casing") -> "sec_casing"
+                        (id.contains("road_minor") || id.contains("highway_minor") || id.contains("road_service") || id.contains("road_link")) && !id.contains("casing") -> "minor"
+                        (id.contains("road_minor") || id.contains("road_service") || id.contains("road_link")) && id.contains("casing") -> "minor_casing"
+                        else -> ""
+                    }
+                    if (isMinorOrTrack || role.isNotEmpty()) lines.add(Triple(layer, isMinorOrTrack, role))
+                }
+                is SymbolLayer -> {
+                    val sl = layer.sourceLayer.lowercase()
+                    when {
+                        id.contains("shield") || id == "highway_ref" -> shields.add(layer to (id == "highway_ref"))
+                        sl == "place" || sl == "water_name" || sl == "waterway" ||
+                            sl == "mountain_peak" ||
+                            (sl == "transportation_name" && !id.contains("shield") && id != "highway_ref") -> mainLabels.add(layer)
+                        (sl == "poi" || id.contains("poi")) &&
+                            id != MOSQUES_LAYER_ID && id != POI_BADGES_LAYER_ID -> poiText.add(layer)
+                    }
+                }
+            }
+        }
+        return CachedStyleIndex(bg, fills, lines, shields, mainLabels, poiText, bldgs3d).also { built ->
+            synchronized(styleCacheLock) { styleIndexCache[style] = built }
+        }
+    }
+
+    fun getBuilding3dLayers(style: Style): List<Layer> = getOrBuildStyleIndex(style).building3dLayers
 
     fun registerPinBitmaps(ctx: Context, style: Style) {
         val pinStyle = DevicePrefs.getMapPinStyle(ctx)
@@ -172,164 +253,91 @@ object MapCartography {
         }
 
         runCatching {
-            for (layer in style.layers) {
-                val id = layer.id.lowercase()
-                when (layer) {
-                    is BackgroundLayer -> {
+            val idx = getOrBuildStyleIndex(style)
+            for (layer in idx.backgroundLayers) {
+                layer.setProperties(
+                    PropertyFactory.backgroundColor(
+                        Color.parseColor(if (isDark) "#14181F" else "#F7F6F2")
+                    )
+                )
+            }
+            for ((layer, id) in idx.fillTargets) {
+                when (id) {
+                    "landuse_residential" -> layer.setProperties(
+                        PropertyFactory.fillColor(Color.parseColor(if (isDark) "#1A2029" else "#F2F0EA"))
+                    )
+                    "landcover_wood" -> layer.setProperties(
+                        PropertyFactory.fillColor(Color.parseColor(if (isDark) "#1C2C22" else "#D2E6B8")),
+                        PropertyFactory.fillOpacity(if (isDark) 0.75f else 0.54f)
+                    )
+                    "landcover_grass", "park" -> layer.setProperties(
+                        PropertyFactory.fillColor(Color.parseColor(if (isDark) "#18261E" else "#DFEECC")),
+                        PropertyFactory.fillOpacity(if (isDark) 0.70f else 0.48f)
+                    )
+                    "building" -> {
+                        if (layer.minZoom > 13.0f) layer.minZoom = 13.0f
                         layer.setProperties(
-                            PropertyFactory.backgroundColor(
-                                Color.parseColor(if (isDark) "#14181F" else "#F7F6F2")
-                            )
+                            PropertyFactory.fillColor(Color.parseColor(if (isDark) "#272F3C" else "#DBD7CD")),
+                            PropertyFactory.fillOutlineColor(Color.parseColor(if (isDark) "#374254" else "#C2BDB0"))
                         )
                     }
-
-                    is FillLayer -> {
-                        when {
-                            id == "landuse_residential" -> layer.setProperties(
-                                PropertyFactory.fillColor(
-                                    Color.parseColor(if (isDark) "#1A2029" else "#F2F0EA")
-                                )
-                            )
-                            id == "landcover_wood" -> layer.setProperties(
-                                PropertyFactory.fillColor(
-                                    Color.parseColor(if (isDark) "#1C2C22" else "#D2E6B8")
-                                ),
-                                PropertyFactory.fillOpacity(if (isDark) 0.75f else 0.54f)
-                            )
-                            id == "landcover_grass" || id == "park" -> layer.setProperties(
-                                PropertyFactory.fillColor(
-                                    Color.parseColor(if (isDark) "#18261E" else "#DFEECC")
-                                ),
-                                PropertyFactory.fillOpacity(if (isDark) 0.70f else 0.48f)
-                            )
-                            id == "building" -> {
-                                if (layer.minZoom > 13.0f) layer.minZoom = 13.0f
-                                layer.setProperties(
-                                    PropertyFactory.fillColor(
-                                        Color.parseColor(if (isDark) "#272F3C" else "#DBD7CD")
-                                    ),
-                                    PropertyFactory.fillOutlineColor(
-                                        Color.parseColor(if (isDark) "#374254" else "#C2BDB0")
-                                    )
-                                )
-                            }
-                            id == "water" -> layer.setProperties(
-                                PropertyFactory.fillColor(
-                                    Color.parseColor(if (isDark) "#162A3D" else "#B8DBF2")
-                                )
-                            )
-                        }
-                    }
-
-                    is LineLayer -> {
-                        // Expose neighborhood streets & rural tracks earlier
-                        if (id.contains("minor") || id.contains("service") ||
-                            id.contains("track") || id.contains("path") ||
-                            id.contains("residential") || id.contains("unclassified")
-                        ) {
-                            if (layer.minZoom > 12.0f) layer.minZoom = 12.0f
-                        }
-
-                        // Organic Maps road hierarchy: crisp white residential grids + orange/amber arterials
-                        when {
-                            id.contains("motorway") && id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#7C4A0A" else "#C96D00")
-                                )
-                            )
-                            id.contains("motorway") && !id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#D97706" else "#F59E0B")
-                                )
-                            )
-                            (id.contains("trunk") || id.contains("primary") || id.contains("major_inner")) &&
-                                !id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#C28727" else "#FBBF24")
-                                )
-                            )
-                            (id.contains("trunk") || id.contains("primary") || id.contains("major_casing")) &&
-                                id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#6B4C18" else "#D98A1B")
-                                )
-                            )
-                            id.contains("secondary") && !id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#46402B" else "#FDE68A")
-                                )
-                            )
-                            id.contains("secondary") && id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#2B2F3A" else "#D9C37E")
-                                )
-                            )
-                            (id.contains("road_minor") || id.contains("highway_minor") ||
-                                id.contains("road_service") || id.contains("road_link")) &&
-                                !id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#2A323F" else "#FFFFFF")
-                                )
-                            )
-                            (id.contains("road_minor") || id.contains("road_service") || id.contains("road_link")) &&
-                                id.contains("casing") -> layer.setProperties(
-                                PropertyFactory.lineColor(
-                                    Color.parseColor(if (isDark) "#181D26" else "#D6D3CB")
-                                )
-                            )
-                        }
-                    }
-
-                    is SymbolLayer -> {
-                        val sl = layer.sourceLayer.lowercase()
-                        when {
-                            // Crisp white rectangular route shields bordered in thin black (e.g. M5, M90)
-                            id.contains("shield") || id == "highway_ref" -> {
-                                layer.setProperties(
-                                    PropertyFactory.textColor(
-                                        Color.parseColor(if (isDark) "#F2F3F5" else "#1C1C1E")
-                                    ),
-                                    PropertyFactory.textHaloWidth(0f),
-                                    PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
-                                    PropertyFactory.textSize(10.5f)
-                                )
-                                if (id == "highway_ref") {
-                                    layer.setProperties(
-                                        PropertyFactory.iconImage("terrasync-highway-shield"),
-                                        PropertyFactory.iconTextFit(Property.ICON_TEXT_FIT_BOTH),
-                                        PropertyFactory.iconTextFitPadding(arrayOf(2f, 5f, 2f, 5f))
-                                    )
-                                }
-                            }
-                            sl == "place" || sl == "water_name" || sl == "waterway" ||
-                                sl == "mountain_peak" ||
-                                (sl == "transportation_name" && !id.contains("shield") && id != "highway_ref") -> {
-                                layer.setProperties(
-                                    PropertyFactory.textField(mainLabelExpr),
-                                    PropertyFactory.textFont(arrayOf("Noto Sans Regular"))
-                                )
-                            }
-                            (sl == "poi" || id.contains("poi")) &&
-                                id != MOSQUES_LAYER_ID && id != POI_BADGES_LAYER_ID -> {
-                                if (poiLabelExpr == null) {
-                                    layer.setProperties(PropertyFactory.textField(Expression.literal("")))
-                                } else {
-                                    layer.setProperties(
-                                        PropertyFactory.textField(poiLabelExpr),
-                                        PropertyFactory.textFont(arrayOf("Noto Sans Regular"))
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    "water" -> layer.setProperties(
+                        PropertyFactory.fillColor(Color.parseColor(if (isDark) "#162A3D" else "#B8DBF2"))
+                    )
+                }
+            }
+            for ((layer, isMinorOrTrack, role) in idx.lineTargets) {
+                if (isMinorOrTrack && layer.minZoom > 12.0f) {
+                    layer.minZoom = 12.0f
+                }
+                when (role) {
+                    "mw_casing" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#7C4A0A" else "#C96D00")))
+                    "mw" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#D97706" else "#F59E0B")))
+                    "major" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#C28727" else "#FBBF24")))
+                    "major_casing" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#6B4C18" else "#D98A1B")))
+                    "sec" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#46402B" else "#FDE68A")))
+                    "sec_casing" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#2B2F3A" else "#D9C37E")))
+                    "minor" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#2A323F" else "#FFFFFF")))
+                    "minor_casing" -> layer.setProperties(PropertyFactory.lineColor(Color.parseColor(if (isDark) "#181D26" else "#D6D3CB")))
+                }
+            }
+            for ((layer, isHighwayRef) in idx.shieldLayers) {
+                layer.setProperties(
+                    PropertyFactory.textColor(Color.parseColor(if (isDark) "#F2F3F5" else "#1C1C1E")),
+                    PropertyFactory.textHaloWidth(0f),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+                    PropertyFactory.textSize(10.5f)
+                )
+                if (isHighwayRef) {
+                    layer.setProperties(
+                        PropertyFactory.iconImage("terrasync-highway-shield"),
+                        PropertyFactory.iconTextFit(Property.ICON_TEXT_FIT_BOTH),
+                        PropertyFactory.iconTextFitPadding(arrayOf(2f, 5f, 2f, 5f))
+                    )
+                }
+            }
+            for (layer in idx.mainLabelLayers) {
+                layer.setProperties(
+                    PropertyFactory.textField(mainLabelExpr),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Regular"))
+                )
+            }
+            for (layer in idx.poiTextLayers) {
+                if (poiLabelExpr == null) {
+                    layer.setProperties(PropertyFactory.textField(Expression.literal("")))
+                } else {
+                    layer.setProperties(
+                        PropertyFactory.textField(poiLabelExpr),
+                        PropertyFactory.textFont(arrayOf("Noto Sans Regular"))
+                    )
                 }
             }
 
-            attachOrganicPoiBadgeLayers(style, isDark, poiLabelExpr)
+            attachOrganicPoiBadgeLayers(style, isDark, poiLabelExpr, idx)
         }
     }
 
-    private fun attachOrganicPoiBadgeLayers(style: Style, isDark: Boolean, poiLabelExpr: Expression?) {
+    private fun attachOrganicPoiBadgeLayers(style: Style, isDark: Boolean, poiLabelExpr: Expression?, idx: CachedStyleIndex) {
         val vecSource = style.sources.firstOrNull { it is VectorSource } ?: return
 
         val isMosqueExpr = Expression.any(
@@ -357,13 +365,10 @@ object MapCartography {
 
         val suppressBaseExpr = Expression.not(Expression.any(isMosqueExpr, isCustomBadgePoiExpr))
 
-        // Suppress duplicates on base style POI layers (idempotent across repeated label-language toggles)
-        for (layer in style.layers) {
-            if (layer is SymbolLayer &&
-                layer.id != MOSQUES_LAYER_ID &&
-                layer.id != POI_BADGES_LAYER_ID &&
-                (layer.sourceLayer == "poi" || layer.id.lowercase().contains("poi"))
-            ) {
+        // Suppress duplicates on base style POI layers (once per style load via CachedStyleIndex)
+        if (!idx.basePoiSuppressed) {
+            idx.basePoiSuppressed = true
+            for (layer in idx.poiTextLayers) {
                 runCatching {
                     val existing = layer.filter
                     if (existing == null) {

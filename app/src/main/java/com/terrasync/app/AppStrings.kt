@@ -180,4 +180,86 @@ object AppStrings {
     fun allSynced(ctx: Context) = tr(ctx, "All edits synced", "هەموو گۆڕانکارییەکان نێردران", "هەمی گوهارتن هاتنە هنارتن", "تمت مزامنة جميع التعديلات")
     fun appLanguageTitle(ctx: Context) = tr(ctx, "App Language", "زمانی بەرنامە", "زمانێ ئەپی", "لغة التطبيق")
     fun appLanguageSub(ctx: Context) = tr(ctx, "Interface labels with RTL layout for Kurdish (Sorani/Badini) & Arabic", "ڕووکاری ڕاست-بۆ-چەپ بۆ کوردی (سۆرانی/بادینی) و عەرەبی", "ڕوویێ ڕاست-بو-چەپ بو کوردی (سۆرانی/بادینی) و عەرەبی", "واجهة من اليمين لليسار للكردية (السورانية/البادينية) والعربية")
+
+    // Pin Card, Search & Stacked Localization (#REC-01, #REC-04)
+    fun stackedSummary(ctx: Context, count: Int, currentIdx: Int, total: Int) = tr(
+        ctx,
+        "$count stacked • $currentIdx/$total",
+        "$count لەسەریەک • $currentIdx/$total",
+        "$count لسەرهەڤ • $currentIdx/$total",
+        "$count متراكبة • $currentIdx/$total"
+    )
+    fun nextShort(ctx: Context) = tr(ctx, "Next →", "دواتر ←", "یێ دی ←", "التالي ←")
+    fun distanceAway(ctx: Context, distText: String) = tr(
+        ctx,
+        "$distText away",
+        "$distText دوورە",
+        "$distText دوورە",
+        "يبعد $distText"
+    )
+    fun bookmarksCount(ctx: Context, count: Int) = tr(
+        ctx,
+        "Bookmarks ($count)",
+        "نیشانکراوەکان ($count)",
+        "نیشانکری ($count)",
+        "الإشارات المرجعية ($count)"
+    )
+    fun searching(ctx: Context) = tr(ctx, "Searching...", "دەگەڕێت...", "گەڕیان...", "جارٍ البحث...")
+    fun noPlacesFound(ctx: Context) = tr(ctx, "No places found", "هیچ شوێنێک نەدۆزرایەوە", "چ جهـ نەهاتنە دیتن", "لم يتم العثور على أماكن")
+    fun mapPlacesCount(ctx: Context, count: Int) = tr(
+        ctx,
+        "Map Places ($count)",
+        "شوێنەکانی نەخشە ($count)",
+        "جهێن نەخشەی ($count)",
+        "أماكن الخريطة ($count)"
+    )
+    fun goToCoordinates(ctx: Context) = tr(ctx, "Go to coordinates", "بڕۆ بۆ کۆردینەیت", "هەرە بو کۆردینەیتان", "الانتقال إلى الإحداثيات")
+    fun searchPlaceholder(ctx: Context) = tr(ctx, "Search pins, places, or coords...", "گەڕان بۆ نیشانە، شوێن یان کۆردینەیت...", "ل نیشان، جهـ یان کۆردینەیتان بگەڕە...", "ابحث عن نقاط أو أماكن أو إحداثيات...")
+    fun searchHintPrompt(ctx: Context) = tr(
+        ctx,
+        "Type a bookmark name, status, or lat, lng coordinates — or tap Search Map Places for online locations.",
+        "ناوی نیشانە، دۆخ، یان کۆردینەیت بنووسە — یان گەڕان لە نەخشە داگرە بۆ شوێنە ئۆنلاینەکان.",
+        "ناڤێ نیشانێ، بارودۆخ یان کۆردینەیتان بنڤیسە — یان ل نەخشەی بگەڕە بو جهێن ئۆنلاین.",
+        "اكتب اسم النقطة أو الحالة أو الإحداثيات — أو اضغط البحث في الخريطة للمواقع عبر الإنترنت."
+    )
+    fun retry(ctx: Context) = tr(ctx, "Retry", "هەوڵدانەوە", "دووبارە هەولبدە", "إعادة المحاولة")
+    fun loadingBookmarks(ctx: Context) = tr(ctx, "Loading bookmarks...", "نیشانکراوەکان بار دەکرێت...", "نیشانکری دهێنە بارکرن...", "جارٍ تحميل الإشارات...")
+    fun loadingEditHistory(ctx: Context) = tr(ctx, "Loading edit history...", "مێژووی دەستکاری بار دەکرێت...", "مێژوویا گوهارتنان دهێتە بارکرن...", "جارٍ تحميل سجل التعديلات...")
+    fun noBookmarksMatchFilter(ctx: Context) = tr(ctx, "No bookmarks match this filter.", "هیچ نیشانەیەک لەگەڵ ئەم پاڵاوتنە ناگونجێت.", "چ نیشان لگەل ڤێ فلتەرێ ناگونجن.", "لا توجد نقاط تطابق هذا التصفية.")
+
+    // Settings Map & Shaders Localization (#REC-01)
+    fun mapStyleTitle(ctx: Context) = tr(ctx, "Map Style", "شێوازی نەخشە", "شێوازێ نەخشەی", "نمط الخريطة")
+    fun mapStyleSub(ctx: Context) = tr(ctx, "Crisp vector street grid or satellite hybrid imagery", "تۆڕی شەقامی ڤێکتەر یان وێنەی مانگی دەستکرد", "تۆڕا جاددێن ڤێکتەر یان وێنێن سەتەلایت", "شبكة شوارع متجهة أو صور أقمار صناعية")
+    fun appearanceThemeTitle(ctx: Context) = tr(ctx, "Appearance Theme", "ڕووکاری ڕەنگ", "ڕوویێ ڕەنگی", "مظهر التطبيق")
+    fun appearanceThemeSub(ctx: Context) = tr(ctx, "Automatically adapts map canvas and system bars", "بە شێوەی خۆکار نەخشە و شریتەکان دەگونجێنێت", "ب شێوەیێ ئۆتۆماتیکی نەخشەی دگونجینیت", "يتكيف تلقائياً مع الخريطة وأشرطة النظام")
+    fun themeDay(ctx: Context) = tr(ctx, "Day", "ڕۆژ", "ڕۆژ", "نهار")
+    fun themeNight(ctx: Context) = tr(ctx, "Night", "شەو", "شەڤ", "ليل")
+    fun themeAuto(ctx: Context) = tr(ctx, "Auto", "خۆکار", "ئۆتۆ", "تلقائي")
+    fun hillshadeIntensityTitle(ctx: Context) = tr(ctx, "Hillshading Intensity", "بڕی سێبەری شاخەکان", "ڕێژەیا سیبەرا چیایان", "شدة تظليل التضاريس")
+    fun hillshadeIntensitySub(ctx: Context) = tr(ctx, "Adjust relief depth for sunlight readability", "ڕێکخستنی قووڵی بەرزی و نزمی بۆ خوێندنەوە لە تیشکی خۆردا", "ڕێکخستنا کووراتیا عەردی بو خویندنا ب ڕۆژ", "اضبط عمق التضاريس لوضوح القراءة تحت الشمس")
+    fun mapPinStyleTitle(ctx: Context) = tr(ctx, "Map Pin Style", "شێوازی نیشانەکانی نەخشە", "شێوازێ نیشانێن نەخشەی", "نمط دبابيس الخريطة")
+    fun mapPinStyleSub(ctx: Context) = tr(ctx, "Switch instantly between white Concept Droplet rings and Classic Teardrop pins", "گۆڕینی خێرا لە نێوان ئەڵقەی Concept Droplet و نیشانەی کلاسیک", "گوهارتنا بلەز دناڤبەرا Concept Droplet و نیشانێن کلاسیک", "تبديل فوري بين حلقات Concept Droplet والدبابيس الكلاسيكية")
+    fun showZoomButtonsTitle(ctx: Context) = tr(ctx, "Show Zoom Buttons", "پیشاندانی دوگمەی نزیککردنەوە", "نیشاندانا دوگمێن نێزیککرنێ", "إظهار أزرار التكبير")
+    fun showZoomButtonsSub(ctx: Context) = tr(ctx, "Show slim frosted + / − pill above the right-side map arc (pinch zoom always active)", "پیشاندانی دوگمەی باریکی + / − لەسەر نەخشە (نزیککردنەوە بە دوو پەنجە هەمیشە چالاکە)", "نیشاندانا + / − لسەر نەخشەی (نێزیککرن ب دوو تبلان هەردەم کارا یە)", "إظهار زر + / − فوق قوس الخريطة الأيمن")
+    fun mapScaleBarTitle(ctx: Context) = tr(ctx, "Map Scale Bar", "پێوەری دووری نەخشە", "پیڤەرێ دووراتیا نەخشەی", "شريط مقياس الخريطة")
+    fun mapScaleBarSub(ctx: Context) = tr(ctx, "Metric (m / km) or imperial distance reference on canvas", "پێوانەی دووری مەتری (م / کم) یان ئیمپریال لەسەر نەخشە", "پیڤەرێ دووراتیا مەتری (م / کم) یان ئیمپریال لسەر نەخشەی", "مرجع المسافة المتري (م / كم) أو الإمبراطوري")
+    fun clusterDensePinsTitle(ctx: Context) = tr(ctx, "Cluster Dense Pins", "کۆکردنەوەی نیشانە چڕەکان", "کومکرنا نیشانێن چڕ", "تجميع النقاط المتقاربة")
+    fun clusterDensePinsSub(ctx: Context) = tr(ctx, "Group nearby pins into count badges when zoomed out for clearer overview panning", "کۆکردنەوەی نیشانە نزیکەکان لە کاتی دوورخستنەوەی نەخشە بۆ بینینێکی ڕوونتر", "کومکرنا نیشانێن نێزیک دەمێ دوورخستنێ بو دیتنەکا پاقژتر", "تجميع النقاط المتقاربة في شارات عدد عند التصغير")
+
+    // About & Sync Status Localization (#REC-24)
+    fun aboutTagline(ctx: Context) = tr(
+        ctx,
+        "Minimalist field mapping built with Organic Maps-inspired cartography: shaded relief, elevation contours, multilingual English/Kurdish/Arabic labels, Valhalla + embedded offline turn-by-turn routing, status-preserving KML/KMZ round-tripping, Firebase sync, and Android Auto support.",
+        "نەخشەکێشانی مەیدانی سادە و خێرا: سێبەری شاخەکان، هێڵەکانی بەرزی، ناوی فرەزمانی کوردی/عەرەبی/ئینگلیزی، ڕێنمایی ئۆفلاین و ئۆنلاین، هاوردە و هەناردەی KML/KMZ، هاوکاتکردنی هەور و پشتگیری Android Auto.",
+        "نەخشەکێشانا مەیدانی یا سادە و بلەز: سیبەرا چیایان، هێلێن بلنداهیێ، ناڤێن فرەزمان، ڕێنیشاندانا ئۆفلاین و ئۆنلاین، KML/KMZ، هەڤدەمکرنا عەوری و Android Auto.",
+        "خرائط ميدانية خفيفة بدقة عالية: تظليل التضاريس، خطوط الكنتور، تسميات متعددة اللغات، توجيه دون اتصال، استيراد وتصدير KML/KMZ، مزامنة سحابية ودعم Android Auto."
+    )
+    fun aboutDeveloperHeader(ctx: Context) = tr(ctx, "DEVELOPER & DIAGNOSTICS", "گەشەپێدەر و زانیاری", "گەشەپێدەر و زانیاری", "المطور والتشخيص")
+    fun aboutCloudLive(ctx: Context) = tr(ctx, "Cloud live", "هەور چالاکە", "عەور کارایە", "السحابة متصلة")
+    fun aboutOfflineCache(ctx: Context) = tr(ctx, "Offline cache", "کاشی ئۆفلاین", "کاشێ ئۆفلاین", "ذاكرة دون اتصال")
+    fun aboutGithubProfile(ctx: Context) = tr(ctx, "GitHub Profile", "هەژماری GitHub", "هەژمارا GitHub", "ملف GitHub")
+    fun aboutRepoTitle(ctx: Context) = tr(ctx, "TerraSync Repository", "کۆگای سەرچاوەی TerraSync", "کۆگەها کۆدێ TerraSync", "مستودع TerraSync")
+    fun aboutRepoSub(ctx: Context) = tr(ctx, "Source code & issue tracker", "کۆدی سەرچاوە و تۆماری کێشەکان", "کۆدێ ژێدەری و کێشە", "الكود المصدري ومتتبع المشكلات")
+    fun aboutReleasesTitle(ctx: Context) = tr(ctx, "Releases & Updates", "وەشان و نوێکارییەکان", "وەشان و نویکرن", "الإصدارات والتحديثات")
+    fun aboutReleasesSub(ctx: Context) = tr(ctx, "Latest signed APK builds", "نوێترین وەشانە واژووکراوەکانی APK", "نویترین وەشانێن APK یێن ئیمزاکری", "أحدث ملفات APK الموقعة")
 }

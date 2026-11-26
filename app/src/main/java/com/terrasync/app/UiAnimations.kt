@@ -566,6 +566,7 @@ object UiAnimations {
             .translationY(0f)
             .setDuration(175L)
             .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
             .start()
     }
 
@@ -599,6 +600,7 @@ object UiAnimations {
         for (i in 0 until container.childCount) {
             val child = container.getChildAt(i)
             child.animate().cancel()
+            child.elevation = 0f
             if (child.tag == TAG_EXITING) {
                 stale.add(child)
             } else {
@@ -640,6 +642,7 @@ object UiAnimations {
                 .translationX(outEnd)
                 .setDuration(220L)
                 .setInterpolator(EMPHASIZED_DECELERATE)
+                .withLayer()
                 .withEndAction { container.removeView(old) }
                 .start()
         }
@@ -648,6 +651,7 @@ object UiAnimations {
             .translationX(0f)
             .setDuration(220L)
             .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
             .withEndAction { incoming.elevation = 0f }
             .start()
     }
@@ -679,6 +683,7 @@ object UiAnimations {
             .translationX(0f)
             .setDuration(210L)
             .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
             .start()
 
         outgoingViews.forEach { old ->
@@ -688,6 +693,7 @@ object UiAnimations {
                 .translationX(outEnd)
                 .setDuration(210L)
                 .setInterpolator(EMPHASIZED_DECELERATE)
+                .withLayer()
                 .withEndAction { container.removeView(old) }
                 .start()
         }
@@ -735,6 +741,7 @@ object UiAnimations {
             .alpha(1f)
             .setDuration(160L)
             .setInterpolator(EMPHASIZED_DECELERATE)
+            .withLayer()
             .start()
     }
 

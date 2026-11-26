@@ -973,4 +973,28 @@ object DesignSystem {
         }
         UiAnimations.animateDialogEnter(dialog.window?.decorView)
     }
+
+    /** Wrap mixed-script titles/folders in Unicode isolates so adjacent separators/units stay aligned. */
+    fun isolateBidi(raw: String): String = if (raw.isBlank()) raw else "\u2068$raw\u2069"
+
+    fun joinBidi(vararg parts: String, sep: String = " • "): String =
+        parts.filter { it.isNotBlank() }.joinToString(sep) { isolateBidi(it) }
+
+    fun createGroupedRowBackground(
+        ctx: Context,
+        palette: ThemePalette,
+        isFirst: Boolean,
+        isLast: Boolean,
+        radiusDp: Float = 16f,
+        fillOverride: Int? = null
+    ): GradientDrawable {
+        val d = ctx.resources.displayMetrics.density
+        val r = radiusDp * d
+        val topR = if (isFirst) r else 0f
+        val botR = if (isLast) r else 0f
+        return GradientDrawable().apply {
+            setColor(fillOverride ?: palette.cardSurface)
+            cornerRadii = floatArrayOf(topR, topR, topR, topR, botR, botR, botR, botR)
+        }
+    }
 }

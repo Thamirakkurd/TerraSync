@@ -48,7 +48,8 @@ data class PinItem(
     val isEdited: Boolean = false,
     val editedBy: String = "",
     val editedAt: Long = 0L,
-    val editHistory: String = ""
+    val editHistory: String = "",
+    val folderPath: String = ""
 )
 
 data class TrackItem(
@@ -56,7 +57,8 @@ data class TrackItem(
     val layerId: String = "",
     val name: String = "",
     val coords: String = "",
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    val folderPath: String = ""
 )
 
 data class NavStep(
@@ -214,5 +216,45 @@ internal object SpeedFallbackEstimator {
             return SpeedSampleState(speed, lat, lng, provider, elapsedMs)
         }
         return SpeedSampleState(0f, lat, lng, provider, elapsedMs)
+    }
+}
+
+/** Thread-safe cached date formatters to avoid allocating SimpleDateFormat per pin/row/report. */
+internal object TimeFormatters {
+    private val canonicalHistoryFmt = ThreadLocal.withInitial {
+        java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.US)
+    }
+    private val dayMonthFmt = ThreadLocal.withInitial {
+        java.text.SimpleDateFormat("dd MMM", java.util.Locale.US)
+    }
+    private val hourMinFmt = ThreadLocal.withInitial {
+        java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+    }
+    private val csvFmt = ThreadLocal.withInitial {
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+    }
+    private val fileStampFmt = ThreadLocal.withInitial {
+        java.text.SimpleDateFormat("yyyyMMdd_HHmm", java.util.Locale.US)
+    }
+    private val reportFmt = object : ThreadLocal<Pair<java.util.Locale, java.text.SimpleDateFormat>>() {
+        override fun initialValue(): Pair<java.util.Locale, java.text.SimpleDateFormat> {
+            val loc = java.util.Locale.getDefault()
+            return loc to java.text.SimpleDateFormat("dd MMM yyyy • HH:mm", loc)
+        }
+    }
+
+    fun canonicalHistory(ts: Long): String = canonicalHistoryFmt.get()!!.format(java.util.Date(ts))
+    fun dayMonth(ts: Long): String = dayMonthFmt.get()!!.format(java.util.Date(ts))
+    fun hourMinute(ts: Long): String = hourMinFmt.get()!!.format(java.util.Date(ts))
+    fun csvTimestamp(ts: Long): String = csvFmt.get()!!.format(java.util.Date(ts))
+    fun fileStamp(ts: Long): String = fileStampFmt.get()!!.format(java.util.Date(ts))
+    fun reportTimestamp(ts: Long): String {
+        val loc = java.util.Locale.getDefault()
+        var pair = reportFmt.get()!!
+        if (pair.first != loc) {
+            pair = loc to java.text.SimpleDateFormat("dd MMM yyyy • HH:mm", loc)
+            reportFmt.set(pair)
+        }
+        return pair.second.format(java.util.Date(ts))
     }
 }

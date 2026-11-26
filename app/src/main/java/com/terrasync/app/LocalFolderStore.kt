@@ -12,9 +12,6 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -128,6 +125,7 @@ object LocalFolderStore {
                                 var editedBy = ""
                                 var editedAt = 0L
                                 var editHistory = ""
+                                var folderPath = ""
                                 jr.beginObject()
                                 while (jr.hasNext()) {
                                     when (jr.nextName()) {
@@ -144,6 +142,7 @@ object LocalFolderStore {
                                         "editedBy" -> editedBy = jr.nextStringOrEmpty()
                                         "editedAt" -> editedAt = jr.nextLongOrZero()
                                         "editHistory" -> editHistory = jr.nextStringOrEmpty()
+                                        "folderPath" -> folderPath = jr.nextStringOrEmpty()
                                         else -> jr.skipValue()
                                     }
                                 }
@@ -161,7 +160,8 @@ object LocalFolderStore {
                                     isEdited = isEdited,
                                     editedBy = editedBy,
                                     editedAt = editedAt,
-                                    editHistory = editHistory
+                                    editHistory = editHistory,
+                                    folderPath = folderPath
                                 )
                             }
                             jr.endArray()
@@ -176,6 +176,7 @@ object LocalFolderStore {
                                 var name = "Track"
                                 var coords = ""
                                 var updatedAt = 0L
+                                var folderPath = ""
                                 jr.beginObject()
                                 while (jr.hasNext()) {
                                     when (jr.nextName()) {
@@ -184,6 +185,7 @@ object LocalFolderStore {
                                         "name" -> name = jr.nextStringOrEmpty().ifBlank { "Track" }
                                         "coords" -> coords = jr.nextStringOrEmpty()
                                         "updatedAt" -> updatedAt = jr.nextLongOrZero()
+                                        "folderPath" -> folderPath = jr.nextStringOrEmpty()
                                         else -> jr.skipValue()
                                     }
                                 }
@@ -193,7 +195,8 @@ object LocalFolderStore {
                                     layerId = layerId,
                                     name = name,
                                     coords = coords,
-                                    updatedAt = updatedAt
+                                    updatedAt = updatedAt,
+                                    folderPath = folderPath
                                 )
                             }
                             jr.endArray()
@@ -300,6 +303,7 @@ object LocalFolderStore {
                             jw.name("editedBy").value(p.editedBy)
                             jw.name("editedAt").value(p.editedAt)
                             jw.name("editHistory").value(p.editHistory)
+                            if (p.folderPath.isNotBlank()) jw.name("folderPath").value(p.folderPath)
                             jw.endObject()
                         }
                         jw.endArray()
@@ -313,6 +317,7 @@ object LocalFolderStore {
                             jw.name("name").value(t.name)
                             jw.name("coords").value(t.coords)
                             jw.name("updatedAt").value(t.updatedAt)
+                            if (t.folderPath.isNotBlank()) jw.name("folderPath").value(t.folderPath)
                             jw.endObject()
                         }
                         jw.endArray()
@@ -639,5 +644,5 @@ object LocalFolderStore {
         return raw.replace(Regex("[\\r\\n]+"), " ").replace("→", "-").trim()
     }
 
-    private fun formatTime(ts: Long): String = SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(ts))
+    private fun formatTime(ts: Long): String = TimeFormatters.canonicalHistory(ts)
 }

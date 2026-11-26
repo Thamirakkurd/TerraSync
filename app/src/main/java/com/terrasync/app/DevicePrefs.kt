@@ -111,6 +111,7 @@ object DevicePrefs {
     private const val KEY_MAP_PIN_STYLE = "map_pin_style"
     private const val KEY_WORK_HOURS_PRESETS = "work_hours_presets"
     private const val KEY_CLUSTER_DENSE_PINS = "cluster_dense_pins"
+    private const val KEY_PENDING_ROAD_CHAIN = "pending_road_chain_packs"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
     internal val DEFAULT_WORK_HOUR_PRESETS: List<Pair<Int, Int>> = listOf(
@@ -335,6 +336,32 @@ object DevicePrefs {
             .putStringSet(KEY_BOOKMARKS, nextBookmarks)
             .putStringSet(KEY_LOCAL_SENT_PINS, nextSent)
             .apply()
+    }
+
+    fun prunePinReferencesKeeping(ctx: Context, validPinIds: Set<String>) {
+        val curBookmarks = getBookmarks(ctx)
+        val curSent = getLocalSentPinIds(ctx)
+        val prunedBookmarks = curBookmarks.filterTo(HashSet()) { it in validPinIds }
+        val prunedSent = curSent.filterTo(HashSet()) { it in validPinIds }
+        if (prunedBookmarks.size == curBookmarks.size && prunedSent.size == curSent.size) return
+        val ed = prefs(ctx).edit()
+        if (prunedBookmarks.size != curBookmarks.size) ed.putStringSet(KEY_BOOKMARKS, prunedBookmarks)
+        if (prunedSent.size != curSent.size) ed.putStringSet(KEY_LOCAL_SENT_PINS, prunedSent)
+        ed.apply()
+    }
+
+    fun getPendingRoadChainPackIds(ctx: Context): Set<String> {
+        return prefs(ctx).getStringSet(KEY_PENDING_ROAD_CHAIN, emptySet())?.toSet() ?: emptySet()
+    }
+
+    fun setPackRoadChainPending(ctx: Context, packId: String, pending: Boolean) {
+        val cur = getPendingRoadChainPackIds(ctx)
+        if (pending && cur.contains(packId)) return
+        if (!pending && !cur.contains(packId)) return
+        val next = cur.toMutableSet().apply {
+            if (pending) add(packId) else remove(packId)
+        }
+        prefs(ctx).edit().putStringSet(KEY_PENDING_ROAD_CHAIN, next).apply()
     }
 
     fun clearLocalSentPins(ctx: Context) {
