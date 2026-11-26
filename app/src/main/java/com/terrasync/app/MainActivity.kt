@@ -89,42 +89,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         internal val ALL_STATUSES = setOf("pending", "done", "issue")
-        private const val HILLSHADE_SOURCE = "terrasync-dem-source"
-        private const val HILLSHADE_LAYER = "terrasync-hillshade-layer"
-        private const val TRACKS_SOURCE = "terrasync-tracks-source"
-        private const val TRACKS_LAYER = "terrasync-tracks-layer"
-        private const val ROUTE_SOURCE = "terrasync-route-source"
-        private const val ROUTE_LAYER = "terrasync-route-layer"
-        private const val ROUTE_CASING_LAYER = "terrasync-route-casing-layer"
-        private const val ROUTE_WALK_CASING_LAYER = "terrasync-route-walk-casing-layer"
-        private const val ROUTE_WALK_LAYER = "terrasync-route-walk-layer"
-        private const val ROUTE_PILL_SOURCE = "terrasync-route-pill-source"
-        private const val ROUTE_PILL_LAYER = "terrasync-route-pill-layer"
-        private const val ROUTE_PILL_ICON = "route-time-pill"
-        private const val RULER_LINE_SOURCE = "terrasync-ruler-line-source"
-        private const val RULER_LINE_CASING_LAYER = "terrasync-ruler-line-casing-layer"
-        private const val RULER_LINE_LAYER = "terrasync-ruler-line-layer"
-        private const val RULER_POINTS_SOURCE = "terrasync-ruler-points-source"
-        private const val RULER_POINTS_CIRCLE_LAYER = "terrasync-ruler-points-circle-layer"
-        private const val RULER_POINTS_NUM_LAYER = "terrasync-ruler-points-num-layer"
-        private const val PINS_SOURCE = "terrasync-pins-source"
-        private const val PINS_CLUSTER_SOURCE = "terrasync-pins-cluster-source"
-        private const val PINS_LAYER = "terrasync-pins-layer"
-        private const val PINS_LABELS_LAYER = "terrasync-pins-labels-layer"
-        private const val PINS_CLUSTER_UNCLUSTERED_LAYER = "terrasync-pins-cluster-unclustered"
-        private const val PINS_CLUSTER_LABELS_LAYER = "terrasync-pins-cluster-labels"
-        private const val PINS_CLUSTER_CIRCLE_LAYER = "terrasync-pins-cluster-circles"
-        private const val PINS_CLUSTER_COUNT_LAYER = "terrasync-pins-cluster-count"
-        private const val SELECTED_SOURCE = "terrasync-selected-source"
-        private const val SELECTED_HALO_LAYER = "terrasync-selected-halo-layer"
-        private const val SELECTED_PIN_SOURCE = "terrasync-selected-pin-source"
-        private const val SELECTED_PIN_LAYER = "terrasync-selected-pin-layer"
-        private const val SELECTED_COORD_SOURCE = "terrasync-selected-coord-source"
-        private const val SELECTED_COORD_LAYER = "terrasync-selected-coord-layer"
-        private const val PULSE_SOURCE = "terrasync-pulse-source"
-        private const val PULSE_LAYER = "terrasync-pulse-layer"
-        private const val USER_LOC_SOURCE = "terrasync-userloc-source"
-        private const val USER_LOC_LAYER = "terrasync-userloc-layer"
 
         private val ISSUE_PRESETS = listOf(
             "Customer Refused / No Access",
@@ -148,57 +112,7 @@ class MainActivity : AppCompatActivity() {
             20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2640.0, 5280.0, 10560.0,
             26400.0, 52800.0, 105600.0, 264000.0
         )
-
-        private const val STYLE_SATELLITE = """
-        {
-          "version": 8,
-          "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-          "sources": {
-            "sat": {
-              "type": "raster",
-              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
-              "tileSize": 256,
-              "maxzoom": 19
-            },
-            "roads": {
-              "type": "raster",
-              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"],
-              "tileSize": 256,
-              "maxzoom": 19
-            },
-            "places": {
-              "type": "raster",
-              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
-              "tileSize": 256,
-              "maxzoom": 19
-            }
-          },
-          "layers": [
-            { "id": "sat-layer", "type": "raster", "source": "sat", "minzoom": 0, "maxzoom": 22 },
-            { "id": "roads-layer", "type": "raster", "source": "roads", "minzoom": 0, "maxzoom": 22 },
-            { "id": "places-layer", "type": "raster", "source": "places", "minzoom": 0, "maxzoom": 22 }
-          ]
-        }
-        """
-
     }
-
-    private data class SharedPinTarget(
-        val lat: Double,
-        val lng: Double,
-        val name: String,
-        val pinId: String,
-        val zoom: Double? = null,
-        val sourceHint: String = "Shared via TerraSync",
-        val hasExplicitLabel: Boolean = false
-    )
-    private data class PendingRouteReq(
-        val destLat: Double,
-        val destLng: Double,
-        val destTitle: String,
-        val mode: TravelMode,
-        val requestedAtMs: Long
-    )
 
     private lateinit var mapView: MapView
     private lateinit var topCluster: LinearLayout
@@ -245,10 +159,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bottomIconRow: LinearLayout
     private lateinit var fullScreenSwipeUpCatcher: View
     private var activeOpenNavTab: Int = -1
-    private var isFullScreenMapMode: Boolean = false
+    private var isFullScreenMapMode: Boolean
+        get() = viewModel.isFullScreenMap
+        set(value) { viewModel.isFullScreenMap = value }
     private var isCompassVisible: Boolean = false
     private var isSwappingSheetInPlace: Boolean = false
-    private var speedSampleState = SpeedFallbackEstimator.SpeedSampleState()
     private lateinit var speedBadge: LinearLayout
     private lateinit var tvSpeedValue: TextView
     private lateinit var tvSpeedUnit: TextView
@@ -279,7 +194,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sheetBehavior: BottomSheetBehavior<LinearLayout>
     internal lateinit var pageOverlayContainer: FrameLayout
 
-    internal var map: MapLibreMap? = null
+    internal val map: MapLibreMap?
+        get() = if (::mapRenderer.isInitialized) mapRenderer.map else null
     internal val contourManager = ContourOverlayManager()
     private val viewModel: MapViewModel by viewModels()
     private var isActivityStarted = false
@@ -287,6 +203,10 @@ class MainActivity : AppCompatActivity() {
     internal lateinit var offlineMaps: OfflineMapManager
     internal lateinit var repository: TerraSyncRepository
     internal val repo: SyncRepo get() = repository.syncRepo
+    private lateinit var mapRenderer: MapLayerRenderer
+    private lateinit var gpsController: GpsLocationController
+    private lateinit var navigationController: NavigationController
+    private lateinit var mapToolsController: MapToolsController
 
     internal val layers: List<LayerItem> get() = viewModel.folderSnapshot.layers
     internal val pins: List<PinItem> get() = viewModel.folderSnapshot.pins
@@ -295,8 +215,6 @@ class MainActivity : AppCompatActivity() {
     private val layerById: Map<String, LayerItem> get() = viewModel.folderSnapshot.layerById
     internal val pinsByLayerId: Map<String, List<PinItem>> get() = viewModel.folderSnapshot.pinsByLayerId
     private val tracksByLayerId: Map<String, List<TrackItem>> get() = viewModel.folderSnapshot.tracksByLayerId
-    private val dataVersion: Long get() = viewModel.folderSnapshot.dataVersion
-    private val stackedPinBuckets: Map<Long, List<PinItem>> get() = viewModel.folderSnapshot.stackedPinBuckets
 
     private data class SearchIndexEntry(
         val pin: PinItem,
@@ -718,15 +636,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @Volatile private var pinRenderSeq: Long = 0L
-    @Volatile private var trackRenderSeq: Long = 0L
-    internal var lastPinsRenderKey: String? = null
-    private var lastTracksRenderKey: String? = null
+    internal var lastPinsRenderKey: String?
+        get() = if (::mapRenderer.isInitialized) mapRenderer.lastPinsRenderKey else null
+        set(value) { if (::mapRenderer.isInitialized) mapRenderer.lastPinsRenderKey = value }
 
-    private enum class GpsPollProfile { OFF, ACTIVE_MAP, FOLLOW_LOCATING, NAVIGATION }
-    private var activeGpsProfile = GpsPollProfile.OFF
-
-    private val trackPointCache = HashMap<String, Pair<Long, List<Point>>>()
     internal var visibleStatuses: MutableSet<String>
         get() = viewModel.visibleStatuses
         set(value) { viewModel.visibleStatuses = value }
@@ -755,90 +668,28 @@ class MainActivity : AppCompatActivity() {
     private var sideInsetRight = 0
     private var activeSheetPeekDp = 280
     internal var sheetQuickSelectPinId: String? = null
-    private var pendingRouteReq: PendingRouteReq? = null
     private val uploadingLayerIds = mutableSetOf<String>()
     internal var activePageCleanup: (() -> Unit)? = null
     private var webSearchSeq = 0
-    private var pendingSharedPin: SharedPinTarget? = null
-    private var pendingZoomPoints: List<LatLng>? = null
-    private var activeSharedPinId: String? = null
-    private var activeTappedLatLng: LatLng? = null
     private var tappedTitleView: TextView? = null
     private var tappedSubView: TextView? = null
     private var tappedDistView: TextView? = null
-    private var tappedResolvedTitle: String = ""
-    private var tappedResolvedSub: String = ""
-    private var reverseGeocodeSeq: Int = 0
-    private var pendingReverseGeocodeRunnable: Runnable? = null
     private var sheetOpenSeq: Int = 0
     private var isSheetPendingOpen: Boolean = false
-    private var lastGpsFixTimeMs: Long = 0L
 
-    // Local-only Sent Tracking & Circle-Select State
     internal var hideSentPins: Boolean
         get() = viewModel.hideSentPins
         set(value) { viewModel.hideSentPins = value }
-    private var isLassoMode: Boolean
-        get() = viewModel.isLassoMode
-        set(value) { viewModel.isLassoMode = value }
-    private var lassoMoveMapMode: Boolean
-        get() = viewModel.lassoMoveMapMode
-        set(value) { viewModel.lassoMoveMapMode = value }
-    private var lassoPendingPinIds: List<String>
-        get() = viewModel.lassoPendingPinIds
-        set(value) { viewModel.lassoPendingPinIds = value }
-    private val sentUndoStack: MutableList<List<String>>
-        get() = viewModel.sentUndoStack
-    private var lastSentTogglePillText: String = ""
-
-    // Ruler state
+    private val isLassoMode: Boolean get() = viewModel.isLassoMode
+    private val lassoPendingPinIds: List<String> get() = viewModel.lassoPendingPinIds
     internal var isRulerMode: Boolean
         get() = viewModel.isRulerMode
         set(value) { viewModel.isRulerMode = value }
-    private val rulerPoints = mutableListOf<LatLng>()
-
-    // Selected pin or tapped location sky-blue dot marker
-    private var selectedPinId: String?
-        get() = viewModel.selectedPinId
-        set(value) { viewModel.selectedPinId = value }
-    private var selectedMarkerLatLng: LatLng? = null
-    private var pulseAnimator: ValueAnimator? = null
-
-    // Custom Route From Origin
-    private var routeOriginLatLng: LatLng? = null
-    private var routeOriginName: String = ""
-
-    // Interpolated GPS arrow state
-    internal var currentLocation: Location? = null
-    private var displayedLat: Double = 0.0
-    private var displayedLng: Double = 0.0
-    private var displayedBearing: Float = 0f
-    private var gpsAnim: ValueAnimator? = null
-    private var gpsTrackingActive = false
-    private var lastLiveLocationFixMs: Long = 0L
-    private var prevLocationElapsedMs: Long = 0L
-
-    // Route Preview & Active Turn-by-Turn Navigation State
-    private var previewRoute: NavRoute?
-        get() = viewModel.previewRoute
-        set(value) { viewModel.previewRoute = value }
-    private var routeRequestSeq: Int = 0
-    private var lastRoutePillKey: String? = null
-    private var activeNavRoute: NavRoute?
-        get() = viewModel.activeNavRoute
-        set(value) { viewModel.activeNavRoute = value }
-    private var activeNavTrimmedGeom: List<Pair<Double, Double>>? = null
-    private var navLastSegIdx: Int = 0
-    private var isRerouting: Boolean = false
-    private var navDestLatLng: LatLng? = null
-    private var navDestName: String
-        get() = viewModel.activeNavDestTitle
-        set(value) { viewModel.activeNavDestTitle = value }
-    private var navCurrentStepIdx: Int = 0
-    private var lastSpokenStepIdx: Int = -1
-    private var lastRerouteTime: Long = 0L
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
+    private val selectedPinId: String? get() = viewModel.selectedPinId
+    internal val currentLocation: Location?
+        get() = if (::gpsController.isInitialized) gpsController.currentLocation else null
+    private val previewRoute: NavRoute? get() = viewModel.previewRoute
+    private val activeNavRoute: NavRoute? get() = viewModel.activeNavRoute
 
     // Full-screen overlay stack
     internal val pageBackStack = mutableListOf<() -> Unit>()
@@ -846,8 +697,6 @@ class MainActivity : AppCompatActivity() {
     internal var liveBookmarksRefresh: (() -> Unit)? = null
     internal var livePinListRefresh: (() -> Unit)? = null
     internal var liveEditHistoryRefresh: (() -> Unit)? = null
-
-    private val gpsListener = LocationListener { loc -> onNewLocation(loc) }
 
     internal val kmlPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) handleImportUri(uri)
@@ -861,22 +710,9 @@ class MainActivity : AppCompatActivity() {
         ) {
             if (!ensureLocationServiceOn()) return@registerForActivityResult
             startLiveGpsUpdates()
-            val queued = pendingRouteReq
-            val loc = currentLocation
-            if (queued != null && loc != null && locationAgeMs(loc) <= 120_000L &&
-                System.currentTimeMillis() - queued.requestedAtMs <= 30_000L && activeNavRoute == null
-            ) {
-                pendingRouteReq = null
-                openRoutePreview(queued.destLat, queued.destLng, queued.destTitle, queued.mode)
-            } else if (queued == null) {
-                isFollowingGps = true
-                updateLocationIconTint()
-                loc?.let {
-                    map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 16.5))
-                }
-            }
+            if (::navigationController.isInitialized) navigationController.handleLocationPermissionGranted()
         } else {
-            pendingRouteReq = null
+            if (::navigationController.isInitialized) navigationController.onLocationPermissionDenied()
             Toast.makeText(this, "Location permission denied", Toast.LENGTH_SHORT).show()
         }
     }
@@ -955,16 +791,36 @@ class MainActivity : AppCompatActivity() {
         cachedSpeedUnit = DevicePrefs.getSpeedUnit(this)
 
         bindViews()
-        applyMapChromeTheme()
-        refreshLocalizedChrome()
-        applyKeepAwakeFlag()
-
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
-                ttsReady = true
-            }
-        }
+        mapRenderer = MapLayerRenderer(
+            context = this,
+            viewModel = viewModel,
+            contourManager = contourManager,
+            isDarkMapUi = ::isDarkMapUi,
+            isActivityAlive = { !isFinishing && !isDestroyed },
+            isActivityStarted = { isActivityStarted },
+            isActivityResumed = { isActivityResumed },
+            getRulerGeoPoints = { viewModel.rulerPoints },
+            getGpsDisplayPose = { if (::gpsController.isInitialized) gpsController.currentPoseOrNull() else null },
+            getActiveNavTrimmedGeom = { if (::navigationController.isInitialized) navigationController.activeNavTrimmedGeom else null },
+            onUpdateSyncBadge = ::updateSyncStatusBadge,
+            onFlushPendingZoom = { if (::mapToolsController.isInitialized) mapToolsController.flushPendingZoomIfReady() }
+        )
+        gpsController = GpsLocationController(
+            context = this,
+            viewModel = viewModel,
+            renderer = mapRenderer,
+            speedBadge = speedBadge,
+            tvSpeedValue = tvSpeedValue,
+            tvSpeedUnit = tvSpeedUnit,
+            btnLocate = btnLocate,
+            isOverlayVisible = { ::pageOverlayContainer.isInitialized && pageOverlayContainer.visibility == View.VISIBLE },
+            isActivityStarted = { isActivityStarted },
+            isActivityResumed = { isActivityResumed },
+            currentPalette = ::currentPalette,
+            themedDialogBuilder = ::themedDialogBuilder,
+            showThemedDialog = ::showThemedDialog,
+            getCachedSpeedUnit = { cachedSpeedUnit }
+        )
 
         val root = findViewById<ViewGroup>(R.id.rootContainer)
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
@@ -1042,14 +898,9 @@ class MainActivity : AppCompatActivity() {
                     if (newState == BottomSheetBehavior.STATE_HIDDEN) {
                         isSheetPendingOpen = false
                         sheetQuickSelectPinId = null
-                        pendingRouteReq = null
                         clearSheetStickyHeader()
                         clearSelectedMarker()
-                        if (previewRoute != null && activeNavRoute == null) {
-                            routeRequestSeq++
-                            previewRoute = null
-                            renderRouteOverlay()
-                        }
+                        if (::navigationController.isInitialized) navigationController.cancelPreviewOnSheetClosed()
                         if (activeNavRoute == null) {
                             resetMapPadding()
                         }
@@ -1085,12 +936,120 @@ class MainActivity : AppCompatActivity() {
             })
         }
 
+        navigationController = NavigationController(
+            activity = this,
+            viewModel = viewModel,
+            renderer = mapRenderer,
+            gpsController = gpsController,
+            topCluster = topCluster,
+            routeFromBanner = routeFromBanner,
+            tvRouteFromText = tvRouteFromText,
+            navBanner = navBanner,
+            tvNavArrow = tvNavArrow,
+            tvNavStepDist = tvNavStepDist,
+            tvNavInstruction = tvNavInstruction,
+            navBottomBar = navBottomBar,
+            tvNavEta = tvNavEta,
+            tvNavMeta = tvNavMeta,
+            bottomDock = bottomDock,
+            bottomNavDock = bottomNavDock,
+            btnRuler = btnRuler,
+            btnLasso = btnLasso,
+            sheetContent = sheetContent,
+            sheetBehavior = sheetBehavior,
+            undoController = undoController,
+            dp = ::dp,
+            currentPalette = ::currentPalette,
+            isActivityAlive = { !isFinishing && !isDestroyed },
+            isActivityResumed = { isActivityResumed },
+            getCachedSpeedUnit = { cachedSpeedUnit },
+            launchLocationPermission = {
+                locPermLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            },
+            clearSheetStickyHeader = ::clearSheetStickyHeader,
+            clearQuickSelectPinId = { sheetQuickSelectPinId = null },
+            showInScreenSheet = ::showInScreenSheet,
+            hideInScreenSheet = ::hideInScreenSheet,
+            safeStartActivity = ::safeStartActivity,
+            applyKeepAwakeFlag = ::applyKeepAwakeFlag,
+            applyExtraMapToolsVisibility = ::applyExtraMapToolsVisibility,
+            applyZoomButtonsVisibility = ::applyZoomButtonsVisibility,
+            dismissToolsForNav = {
+                if (isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
+                if (isLassoMode) toggleLassoMode(false)
+                if (isRulerMode) toggleRulerMode(false)
+            }
+        ).apply { initTts() }
+
+        mapToolsController = MapToolsController(
+            activity = this,
+            viewModel = viewModel,
+            renderer = mapRenderer,
+            gpsController = gpsController,
+            mapView = mapView,
+            lassoOverlay = lassoOverlay,
+            lassoCard = lassoCard,
+            tvLassoTitle = tvLassoTitle,
+            tvLassoSubtitle = tvLassoSubtitle,
+            btnLassoModeToggle = btnLassoModeToggle,
+            btnLassoMarkSent = btnLassoMarkSent,
+            btnLassoRedraw = btnLassoRedraw,
+            btnLassoUndo = btnLassoUndo,
+            btnLassoReset = btnLassoReset,
+            rulerCard = rulerCard,
+            btnRulerUndo = btnRulerUndo,
+            tvRulerDistance = tvRulerDistance,
+            tvRulerSubtitle = tvRulerSubtitle,
+            btnRulerReset = btnRulerReset,
+            btnSentToggle = btnSentToggle,
+            bottomDock = bottomDock,
+            bottomNavDock = bottomNavDock,
+            pageOverlayContainer = pageOverlayContainer,
+            undoController = undoController,
+            dp = ::dp,
+            currentPalette = ::currentPalette,
+            themedDialogBuilder = ::themedDialogBuilder,
+            showThemedDialog = ::showThemedDialog,
+            isActivityAlive = { !isFinishing && !isDestroyed },
+            getInsetsTopBottom = { statusBarInsetTop to navBarInsetBottom },
+            getSpeedUnit = { DevicePrefs.getSpeedUnit(this@MainActivity) },
+            updateFilterIconTint = ::updateFilterIconTint,
+            applyMapChromeTheme = ::applyMapChromeTheme,
+            isFullScreenMapMode = { isFullScreenMapMode },
+            setFullScreenMapMode = ::setFullScreenMapMode,
+            hideInScreenSheet = ::hideInScreenSheet,
+            isSheetHidden = { sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN },
+            closeFullPage = ::closeFullPage,
+            showPinCard = { pin, animateSwap -> showPinCard(pin, animateSwap = animateSwap) },
+            showTappedPlaceCard = ::showTappedPlaceCard,
+            onReverseGeocodeResult = { _, bestTitle, bestSub, distShort ->
+                tappedTitleView?.text = bestTitle
+                val isolatedSub = DesignSystem.isolateBidi(bestSub)
+                tappedSubView?.text = isolatedSub
+                tappedSubView?.visibility = if (bestSub.isNotBlank()) View.VISIBLE else View.GONE
+                tappedDistView?.text = if (distShort.isNotBlank()) {
+                    if (bestSub.isNotBlank()) " • $distShort" else distShort
+                } else ""
+                tappedDistView?.visibility = if (distShort.isNotBlank()) View.VISIBLE else View.GONE
+            },
+            onJoinShareCode = ::joinShareCode,
+            onImportUri = ::handleImportUri
+        )
+
+        gpsController.hasPendingRouteRequest = { navigationController.pendingRouteReq != null }
+        gpsController.onPendingRouteCheck = { loc -> navigationController.handlePendingRouteOnFix(loc) }
+        gpsController.onActiveNavigationLocation = { loc, route, dest -> navigationController.updateNavigationProgress(loc, route, dest) }
+
+        applyMapChromeTheme()
+        refreshLocalizedChrome()
+        applyKeepAwakeFlag()
+
         setupClickListeners()
         setupBackNavigation()
 
         mapView.onCreate(savedInstanceState)
         mapView.getMapAsync { m ->
-            map = m
+            mapRenderer.map = m
             m.uiSettings.isCompassEnabled = false
             m.uiSettings.isLogoEnabled = false
             m.uiSettings.isAttributionEnabled = false
@@ -1107,7 +1066,7 @@ class MainActivity : AppCompatActivity() {
                 updateScaleBar()
                 updateCompassForBearing(m.cameraPosition.bearing, animate = true)
                 if (isLassoMode && lassoPendingPinIds.isNotEmpty()) {
-                    clearLassoSelection()
+                    mapToolsController.clearLassoSelection()
                 }
             }
 
@@ -1130,9 +1089,9 @@ class MainActivity : AppCompatActivity() {
             m.addOnMapClickListener { latLng ->
                 if (activeNavRoute != null) return@addOnMapClickListener true
                 if (isRulerMode) {
-                    addRulerPoint(latLng)
+                    mapToolsController.addRulerPoint(latLng)
                 } else if (!isLassoMode) {
-                    handleMapTap(m, latLng)
+                    mapToolsController.handleMapTap(m, latLng)
                 }
                 true
             }
@@ -1142,10 +1101,7 @@ class MainActivity : AppCompatActivity() {
                 true
             }
 
-            pendingSharedPin?.let { target ->
-                pendingSharedPin = null
-                openSharedPinTarget(target)
-            }
+            mapToolsController.consumePendingSharedPinOnMapReady()
         }
 
         refreshJoinedSync()
@@ -1865,20 +1821,20 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, AppStrings.showingAllPins(this), Toast.LENGTH_SHORT).show()
         }
         btnLasso.setOnClickListener { toggleLassoMode(!isLassoMode) }
-        btnLassoModeToggle.setOnClickListener { toggleLassoMoveMapMode() }
-        btnLassoMarkSent.setOnClickListener { confirmLassoMarkSent() }
-        btnLassoRedraw.setOnClickListener { clearLassoSelection() }
-        btnLassoUndo.setOnClickListener { undoLastLassoMark() }
-        btnLassoReset.setOnClickListener { confirmResetAllSentPins() }
+        btnLassoModeToggle.setOnClickListener { mapToolsController.toggleLassoMoveMapMode() }
+        btnLassoMarkSent.setOnClickListener { mapToolsController.confirmLassoMarkSent() }
+        btnLassoRedraw.setOnClickListener { mapToolsController.clearLassoSelection() }
+        btnLassoUndo.setOnClickListener { mapToolsController.undoLastLassoMark() }
+        btnLassoReset.setOnClickListener { mapToolsController.confirmResetAllSentPins() }
         btnLassoClose.setOnClickListener { toggleLassoMode(false) }
         lassoOverlay.onLoopStarted = {
-            lassoPendingPinIds = emptyList()
-            updateLassoUi()
+            viewModel.clearLassoSelection()
+            mapToolsController.updateLassoUi()
         }
-        lassoOverlay.onLoopCompleted = { poly -> handleLassoLoopCompleted(poly) }
+        lassoOverlay.onLoopCompleted = { poly -> mapToolsController.handleLassoLoopCompleted(poly) }
         btnRuler.setOnClickListener { toggleRulerMode(!isRulerMode) }
-        btnRulerUndo.setOnClickListener { undoRulerPoint() }
-        btnRulerReset.setOnClickListener { resetRulerPoints() }
+        btnRulerUndo.setOnClickListener { mapToolsController.undoRulerPoint() }
+        btnRulerReset.setOnClickListener { mapToolsController.resetRulerPoints() }
         btnRulerClose.setOnClickListener { toggleRulerMode(false) }
         btnClearRouteFrom.setOnClickListener { clearRouteOrigin() }
 
@@ -1895,7 +1851,7 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             if (!ensureLocationServiceOn()) return@setOnClickListener
-            val staleStream = System.currentTimeMillis() - lastLiveLocationFixMs > 10_000L
+            val staleStream = System.currentTimeMillis() - gpsController.lastLiveLocationFixMs > 10_000L
             isFollowingGps = true
             startLiveGpsUpdates(forceRestart = staleStream)
             updateLocationIconTint()
@@ -1965,13 +1921,11 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 if (previewRoute != null) {
-                    routeRequestSeq++
-                    previewRoute = null
-                    renderRouteOverlay()
+                    if (::navigationController.isInitialized) navigationController.cancelPreviewOnSheetClosed()
                     hideInScreenSheet()
                     return
                 }
-                if (routeOriginLatLng != null) {
+                if (viewModel.routeOrigin != null) {
                     clearRouteOrigin()
                     return
                 }
@@ -2014,172 +1968,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleDeepLinkIntent(intent: Intent?) {
-        val data = intent?.data ?: return
-        intent.data = null
-
-        val scheme = data.scheme?.lowercase() ?: ""
-        val host = data.host?.lowercase() ?: ""
-        val path = data.path?.lowercase() ?: ""
-
-        if (scheme == "content" || scheme == "file") {
-            handleImportUri(data)
-            return
-        }
-
-        if ((scheme == "terrasync" && host == "pin") ||
-            (scheme == "https" && host == "thamirakkurd.github.io" && path.startsWith("/terrasync/pin"))
-        ) {
-            val lat = data.getQueryParameter("lat")?.toDoubleOrNull()
-            val lng = data.getQueryParameter("lng")?.toDoubleOrNull()
-            val rawName = data.getQueryParameter("name")?.trim().orEmpty()
-            val pinId = data.getQueryParameter("id")?.trim().orEmpty()
-            if (lat != null && lng != null && lat in -90.0..90.0 && lng in -180.0..180.0) {
-                hasAutoZoomedInitial = true
-                val target = SharedPinTarget(
-                    lat = lat,
-                    lng = lng,
-                    name = rawName.ifBlank { "Selected Location" },
-                    pinId = pinId,
-                    sourceHint = "Shared via TerraSync",
-                    hasExplicitLabel = rawName.isNotBlank()
-                )
-                if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
-            }
-            return
-        }
-
-        if (GeoIntentParser.isSupportedLocationUri(data)) {
-            hasAutoZoomedInitial = true
-            val parsed = GeoIntentParser.parse(data)
-            if (parsed != null) {
-                handleParsedLocationIntent(parsed)
-            } else {
-                Toast.makeText(this, "Could not read coordinates from link", Toast.LENGTH_SHORT).show()
-            }
-            return
-        }
-
-        val code = data.getQueryParameter("code")
-        if (!code.isNullOrBlank()) {
-            joinShareCode(code)
-        }
-    }
-
-    private fun handleParsedLocationIntent(parsed: ParsedLocationIntent) {
-        if (parsed.needsRedirectResolution && parsed.originalUrl.isNotBlank()) {
-            Toast.makeText(this, "Opening shared location...", Toast.LENGTH_SHORT).show()
-            RoutingEngine.ioExecutor.execute {
-                val resolved = GeoIntentParser.resolveRedirectAndParse(parsed.originalUrl)
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    if (resolved != null && !resolved.needsRedirectResolution) {
-                        handleParsedLocationIntent(resolved)
-                    } else {
-                        Toast.makeText(this, "Unable to resolve shared map link", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-            return
-        }
-
-        if (parsed.hasValidCoordinates) {
-            val lat = parsed.lat!!
-            val lng = parsed.lng!!
-            val hasLabel = parsed.label.isNotBlank()
-            val target = SharedPinTarget(
-                lat = lat,
-                lng = lng,
-                name = if (hasLabel) parsed.label else "Selected Location",
-                pinId = "",
-                zoom = parsed.zoom,
-                sourceHint = parsed.sourceHint,
-                hasExplicitLabel = hasLabel
-            )
-            if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
-            return
-        }
-
-        if (parsed.searchQuery.isNotBlank()) {
-            Toast.makeText(this, "Searching \"${parsed.searchQuery}\"...", Toast.LENGTH_SHORT).show()
-            val center = map?.cameraPosition?.target
-            RoutingEngine.searchPlaces(parsed.searchQuery, center?.latitude, center?.longitude) { places, err ->
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    val top = places.firstOrNull()
-                    if (top != null) {
-                        val resolvedName = top.title.ifBlank { parsed.searchQuery }
-                        val target = SharedPinTarget(
-                            lat = top.lat,
-                            lng = top.lng,
-                            name = resolvedName,
-                            pinId = "",
-                            zoom = parsed.zoom ?: 16.0,
-                            sourceHint = top.subtitle.ifBlank { parsed.sourceHint },
-                            hasExplicitLabel = resolvedName.isNotBlank()
-                        )
-                        if (map != null) openSharedPinTarget(target) else pendingSharedPin = target
-                    } else {
-                        Toast.makeText(this, err ?: "No location found for \"${parsed.searchQuery}\"", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }
+        if (::mapToolsController.isInitialized) mapToolsController.handleDeepLinkIntent(intent)
     }
 
     internal fun ensurePinVisibleOnMap(pin: PinItem) {
-        var changed = false
-        if (!DevicePrefs.isLayerVisible(this, pin.layerId)) {
-            DevicePrefs.setLayerVisible(this, pin.layerId, true)
-            changed = true
-        }
-        val normStatus = PinStatus.fromRaw(pin.status).key
-        if (normStatus !in visibleStatuses) {
-            visibleStatuses.add(normStatus)
-            DevicePrefs.setVisibleStatuses(this, visibleStatuses)
-            updateFilterIconTint()
-            changed = true
-            Toast.makeText(this, "Enabled ${statusLabel(normStatus)} filter to show pin", Toast.LENGTH_SHORT).show()
-        }
-        if (hideSentPins && DevicePrefs.isPinLocalSent(this, pin.id)) {
-            hideSentPins = false
-            DevicePrefs.setHideSentPins(this, false)
-            updateSentToggleUi()
-            changed = true
-            Toast.makeText(this, "Showing all pins to display sent pin", Toast.LENGTH_SHORT).show()
-        }
-        if (changed) renderMapData()
-    }
-
-    private fun openSharedPinTarget(target: SharedPinTarget) {
-        hasAutoZoomedInitial = true
-        if (isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
-        if (isFollowingGps) {
-            isFollowingGps = false
-            updateLocationIconTint()
-        }
-        if (pageOverlayContainer.visibility == View.VISIBLE) {
-            closeFullPage()
-        }
-        if (isRulerMode) toggleRulerMode(false)
-        if (isLassoMode) toggleLassoMode(false)
-
-        val matched = if (target.pinId.isNotBlank()) pinById[target.pinId] else null
-        if (matched != null) {
-            activeSharedPinId = null
-            ensurePinVisibleOnMap(matched)
-            selectPinAndOpenCard(matched, zoomIfFar = true)
-            return
-        }
-        val destLatLng = LatLng(target.lat, target.lng)
-        activeSharedPinId = target.pinId.ifBlank { null }
-        val desiredZoom = (target.zoom ?: (map?.cameraPosition?.zoom ?: 15.0).coerceAtLeast(16.0)).coerceIn(4.0, 20.0)
-        // Route straight into native map-coordinate selection (single sky-blue dot + native place sheet, zero orange overlay pin)
-        selectCoordinateOnMap(
-            latLng = destLatLng,
-            explicitTitle = if (target.hasExplicitLabel) target.name else null,
-            fallbackSub = target.sourceHint,
-            zoomTo = desiredZoom
-        )
+        if (::mapToolsController.isInitialized) mapToolsController.ensurePinVisibleOnMap(pin)
     }
 
     private fun selectCoordinateOnMap(
@@ -2188,703 +1981,13 @@ class MainActivity : AppCompatActivity() {
         fallbackSub: String = "",
         zoomTo: Double? = null
     ) {
-        selectedPinId = null
-        selectedMarkerLatLng = latLng
-        renderSelectedMarker()
-
-        if (zoomTo != null) {
-            mapView.post {
-                if (!isFinishing && !isDestroyed) {
-                    centerUpperHalf(latLng, zoomTo)
-                }
-            }
-        }
-
-        val cleanExplicit = explicitTitle?.trim().orEmpty()
-        val initialTitle = cleanExplicit.ifBlank { "Selected Location" }
-        showTappedPlaceCard(initialTitle, fallbackSub, latLng.latitude, latLng.longitude)
-
-        pendingReverseGeocodeRunnable?.let { mapView.removeCallbacks(it) }
-        RoutingEngine.cancelPendingReverseGeocode()
-        val geoSeq = ++reverseGeocodeSeq
-        val r = Runnable {
-            if (isFinishing || isDestroyed || geoSeq != reverseGeocodeSeq) return@Runnable
-            RoutingEngine.reverseGeocode(latLng.latitude, latLng.longitude) { place ->
-                if (place != null) {
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed || geoSeq != reverseGeocodeSeq) return@runOnUiThread
-                        if (activeTappedLatLng != latLng || selectedPinId != null) return@runOnUiThread
-                        if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
-                        val bestTitle = if (cleanExplicit.isNotBlank()) cleanExplicit else place.title
-                        val bestSub = place.subtitle.ifBlank { fallbackSub }
-                        tappedResolvedTitle = bestTitle
-                        tappedResolvedSub = bestSub
-                        tappedTitleView?.text = bestTitle
-                        val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
-                        val distShort = currentLocation?.let {
-                            AppStrings.distanceAway(
-                                this@MainActivity,
-                                formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)
-                            )
-                        } ?: ""
-                        val isolatedSub = DesignSystem.isolateBidi(bestSub)
-                        tappedSubView?.text = isolatedSub
-                        tappedSubView?.visibility = if (bestSub.isNotBlank()) View.VISIBLE else View.GONE
-                        tappedDistView?.text = if (distShort.isNotBlank()) {
-                            if (bestSub.isNotBlank()) " • $distShort" else distShort
-                        } else ""
-                        tappedDistView?.visibility = if (distShort.isNotBlank()) View.VISIBLE else View.GONE
-                    }
-                }
-            }
-        }
-        pendingReverseGeocodeRunnable = r
-        mapView.postDelayed(r, 180L)
+        if (::mapToolsController.isInitialized) mapToolsController.selectCoordinateOnMap(latLng, explicitTitle, fallbackSub, zoomTo)
     }
 
-    // --- Map Style, Optional 3D Buildings, Hillshading & Overlay Layers ---
-
-    internal fun loadMapStyle() {
-        val m = map ?: return
-        pulseAnimator?.cancel()
-        pulseAnimator = null
-        contourManager.cancelPending()
-        val night = isDarkMapUi()
-        val builder = when (mapStyleMode) {
-            MapStyleMode.SATELLITE -> Style.Builder().fromJson(STYLE_SATELLITE)
-            MapStyleMode.VECTOR -> Style.Builder().fromUri(
-                if (night) OfflineMapManager.STYLE_DARK_URL else OfflineMapManager.STYLE_STREET_URL
-            )
-        }
-        m.setStyle(builder) { style ->
-            lastRoutePillKey = null
-            lastPinsRenderKey = null
-            lastTracksRenderKey = null
-            apply3dBuildingsToggle(style)
-            MapCartography.registerMapBitmaps(this, style, night)
-            if (mapStyleMode == MapStyleMode.VECTOR) {
-                MapCartography.applyOrganicCartography(this, style, night)
-                attachTerrainHillshade(style)
-                contourManager.attachLayers(style, night, DevicePrefs.isContoursEnabled(this))
-            }
-            attachOverlayLayers(style)
-            renderMapData()
-            flushPendingZoomIfReady()
-            contourManager.scheduleUpdate(m, DevicePrefs.isContoursEnabled(this), mapStyleMode == MapStyleMode.VECTOR)
-        }
-    }
-
-    internal fun apply3dBuildingsToggle(style: Style) {
-        val show3d = DevicePrefs.is3dBuildingsEnabled(this)
-        val vis = if (show3d) Property.VISIBLE else Property.NONE
-        for (layer in MapCartography.getBuilding3dLayers(style)) {
-            layer.setProperties(PropertyFactory.visibility(vis))
-        }
-    }
-
-    internal fun applyHillshadeSettings(style: Style) {
-        val enabled = DevicePrefs.isHillshadeEnabled(this) && mapStyleMode == MapStyleMode.VECTOR
-        val intensity = DevicePrefs.getHillshadeIntensity(this)
-        val night = isDarkMapUi()
-        val existing = style.getLayerAs<HillshadeLayer>(HILLSHADE_LAYER)
-        if (existing != null) {
-            existing.setProperties(
-                PropertyFactory.visibility(if (enabled) Property.VISIBLE else Property.NONE),
-                PropertyFactory.hillshadeExaggeration(if (night) intensity.exaggeration * 0.55f else intensity.exaggeration),
-                PropertyFactory.hillshadeShadowColor(Color.parseColor(if (night) "#0A140D" else "#3C5E2B")),
-                PropertyFactory.hillshadeHighlightColor(Color.parseColor(if (night) "#2A3E31" else "#FFFFFF")),
-                PropertyFactory.hillshadeAccentColor(Color.parseColor(if (night) "#1F3527" else "#5D8346"))
-            )
-        } else if (enabled) {
-            attachTerrainHillshade(style)
-        }
-    }
-
-    private fun attachTerrainHillshade(style: Style) {
-        if (mapStyleMode != MapStyleMode.VECTOR || !DevicePrefs.isHillshadeEnabled(this)) return
-        runCatching {
-            if (map?.style !== style || !style.isFullyLoaded) return
-            if (style.getSource(HILLSHADE_SOURCE) == null) {
-                val tileSet = TileSet(
-                    "2.2.0",
-                    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-                ).apply {
-                    encoding = "terrarium"
-                    minZoom = 0f
-                    maxZoom = 14f
-                }
-                style.addSource(RasterDemSource(HILLSHADE_SOURCE, tileSet, 256))
-            }
-            if (style.getLayer(HILLSHADE_LAYER) == null) {
-                val night = isDarkMapUi()
-                val intensity = DevicePrefs.getHillshadeIntensity(this)
-                val hill = HillshadeLayer(HILLSHADE_LAYER, HILLSHADE_SOURCE).withProperties(
-                    PropertyFactory.hillshadeExaggeration(if (night) intensity.exaggeration * 0.55f else intensity.exaggeration),
-                    PropertyFactory.hillshadeShadowColor(Color.parseColor(if (night) "#0A140D" else "#3C5E2B")),
-                    PropertyFactory.hillshadeHighlightColor(Color.parseColor(if (night) "#2A3E31" else "#FFFFFF")),
-                    PropertyFactory.hillshadeAccentColor(Color.parseColor(if (night) "#1F3527" else "#5D8346")),
-                    PropertyFactory.hillshadeIlluminationDirection(315f)
-                )
-                val belowLayer = style.layers.firstOrNull { l ->
-                    val id = l.id.lowercase()
-                    id.contains("water") || id.contains("road") || id.contains("highway") || id.contains("building") || id.contains("contours")
-                }
-                if (belowLayer != null) style.addLayerBelow(hill, belowLayer.id) else style.addLayer(hill)
-            } else {
-                applyHillshadeSettings(style)
-            }
-        }
-    }
-
-    private fun attachOverlayLayers(style: Style) {
-        if (style.getSource(TRACKS_SOURCE) == null) {
-            style.addSource(GeoJsonSource(TRACKS_SOURCE))
-            style.addLayer(
-                LineLayer(TRACKS_LAYER, TRACKS_SOURCE).withProperties(
-                    PropertyFactory.lineColor("#06B6D4"),
-                    PropertyFactory.lineWidth(4f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                )
-            )
-        }
-
-        if (style.getSource(ROUTE_SOURCE) == null) {
-            style.addSource(GeoJsonSource(ROUTE_SOURCE))
-            style.addLayer(
-                LineLayer(ROUTE_CASING_LAYER, ROUTE_SOURCE).withProperties(
-                    PropertyFactory.lineColor("#FFFFFF"),
-                    PropertyFactory.lineWidth(9.5f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                )
-            )
-            style.addLayer(
-                LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
-                    PropertyFactory.lineColor(travelMode.routeColorHex),
-                    PropertyFactory.lineWidth(6.2f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                )
-            )
-            style.addLayer(
-                LineLayer(ROUTE_WALK_CASING_LAYER, ROUTE_SOURCE).withProperties(
-                    PropertyFactory.lineColor("#FFFFFF"),
-                    PropertyFactory.lineWidth(7.2f),
-                    PropertyFactory.lineDasharray(arrayOf(1.6f, 1.3f)),
-                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
-                    PropertyFactory.visibility(Property.NONE)
-                )
-            )
-            style.addLayer(
-                LineLayer(ROUTE_WALK_LAYER, ROUTE_SOURCE).withProperties(
-                    PropertyFactory.lineColor(TravelMode.WALKING.routeColorHex),
-                    PropertyFactory.lineWidth(4.8f),
-                    PropertyFactory.lineDasharray(arrayOf(2.4f, 1.8f)),
-                    PropertyFactory.lineCap(Property.LINE_CAP_BUTT),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
-                    PropertyFactory.visibility(Property.NONE)
-                )
-            )
-        }
-
-        if (style.getSource(ROUTE_PILL_SOURCE) == null) {
-            style.addSource(GeoJsonSource(ROUTE_PILL_SOURCE))
-            style.addLayer(
-                SymbolLayer(ROUTE_PILL_LAYER, ROUTE_PILL_SOURCE).withProperties(
-                    PropertyFactory.iconImage(ROUTE_PILL_ICON),
-                    PropertyFactory.iconAllowOverlap(true),
-                    PropertyFactory.iconIgnorePlacement(true)
-                )
-            )
-        }
-
-        if (style.getSource(PULSE_SOURCE) == null) {
-            style.addSource(GeoJsonSource(PULSE_SOURCE))
-            style.addLayer(
-                CircleLayer(PULSE_LAYER, PULSE_SOURCE).withProperties(
-                    PropertyFactory.circleColor(Expression.get("color")),
-                    PropertyFactory.circleStrokeColor(Expression.get("color")),
-                    PropertyFactory.circleStrokeWidth(2f),
-                    PropertyFactory.circleStrokeOpacity(0f),
-                    PropertyFactory.circleRadius(8f),
-                    PropertyFactory.circleOpacity(0f)
-                )
-            )
-        }
-
-        attachPinsSourceAndLayers(style)
-
-        // Unified solid borderless sky-blue selection dot strictly BELOW bookmark pins
-        if (style.getSource(SELECTED_SOURCE) == null) {
-            style.addSource(GeoJsonSource(SELECTED_SOURCE))
-            val haloLayer = CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
-                PropertyFactory.circleColor("#5AA8E8"),
-                PropertyFactory.circleOpacity(0.90f),
-                PropertyFactory.circleRadius(15.5f),
-                PropertyFactory.circleStrokeWidth(0f),
-                PropertyFactory.circleStrokeOpacity(0f)
-            )
-            if (style.getLayer(PINS_LAYER) != null) {
-                style.addLayerBelow(haloLayer, PINS_LAYER)
-            } else {
-                style.addLayer(haloLayer)
-            }
-        }
-        // Selected pin overlay strictly ABOVE sibling/clustered pins + coord dot above pins for raw geo: links
-        if (style.getSource(SELECTED_PIN_SOURCE) == null) {
-            style.addSource(GeoJsonSource(SELECTED_PIN_SOURCE))
-            val selectedPinLayer = SymbolLayer(SELECTED_PIN_LAYER, SELECTED_PIN_SOURCE).withProperties(
-                PropertyFactory.iconImage(Expression.get("icon")),
-                PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-                PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
-                PropertyFactory.iconSize(1.0f),
-                PropertyFactory.iconAllowOverlap(true),
-                PropertyFactory.iconIgnorePlacement(true)
-            )
-            when {
-                style.getLayer(PINS_CLUSTER_COUNT_LAYER) != null ->
-                    style.addLayerAbove(selectedPinLayer, PINS_CLUSTER_COUNT_LAYER)
-                style.getLayer(PINS_LAYER) != null ->
-                    style.addLayerAbove(selectedPinLayer, PINS_LAYER)
-                else -> style.addLayer(selectedPinLayer)
-            }
-        }
-        if (style.getSource(SELECTED_COORD_SOURCE) == null) {
-            style.addSource(GeoJsonSource(SELECTED_COORD_SOURCE))
-            val coordLayer = CircleLayer(SELECTED_COORD_LAYER, SELECTED_COORD_SOURCE).withProperties(
-                PropertyFactory.circleColor("#5AA8E8"),
-                PropertyFactory.circleOpacity(0.90f),
-                PropertyFactory.circleRadius(14.5f),
-                PropertyFactory.circleStrokeWidth(0f),
-                PropertyFactory.circleStrokeOpacity(0f)
-            )
-            if (style.getLayer(SELECTED_PIN_LAYER) != null) {
-                style.addLayerAbove(coordLayer, SELECTED_PIN_LAYER)
-            } else {
-                style.addLayer(coordLayer)
-            }
-        }
-
-        // Ruler Measurement Layers (Terracotta line + white casing + numbered waypoints)
-        if (style.getSource(RULER_LINE_SOURCE) == null) {
-            style.addSource(GeoJsonSource(RULER_LINE_SOURCE))
-            style.addLayer(
-                LineLayer(RULER_LINE_CASING_LAYER, RULER_LINE_SOURCE).withProperties(
-                    PropertyFactory.lineColor("#FFFFFF"),
-                    PropertyFactory.lineOpacity(0.90f),
-                    PropertyFactory.lineWidth(6.4f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                )
-            )
-            style.addLayer(
-                LineLayer(RULER_LINE_LAYER, RULER_LINE_SOURCE).withProperties(
-                    PropertyFactory.lineColor("#F0651F"),
-                    PropertyFactory.lineWidth(3.8f),
-                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                )
-            )
-        }
-        if (style.getSource(RULER_POINTS_SOURCE) == null) {
-            style.addSource(GeoJsonSource(RULER_POINTS_SOURCE))
-            style.addLayer(
-                CircleLayer(RULER_POINTS_CIRCLE_LAYER, RULER_POINTS_SOURCE).withProperties(
-                    PropertyFactory.circleColor("#FFFFFF"),
-                    PropertyFactory.circleRadius(12.5f),
-                    PropertyFactory.circleStrokeColor("#F0651F"),
-                    PropertyFactory.circleStrokeWidth(2.8f)
-                )
-            )
-            style.addLayer(
-                SymbolLayer(RULER_POINTS_NUM_LAYER, RULER_POINTS_SOURCE).withProperties(
-                    PropertyFactory.textField(Expression.get("num")),
-                    PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                    PropertyFactory.textSize(12f),
-                    PropertyFactory.textColor("#B8440E"),
-                    PropertyFactory.textAllowOverlap(true),
-                    PropertyFactory.textIgnorePlacement(true)
-                )
-            )
-        }
-
-        if (style.getSource(USER_LOC_SOURCE) == null) {
-            style.addSource(GeoJsonSource(USER_LOC_SOURCE))
-            style.addLayer(
-                SymbolLayer(USER_LOC_LAYER, USER_LOC_SOURCE).withProperties(
-                    PropertyFactory.iconImage("gps-arrow"),
-                    PropertyFactory.iconRotate(Expression.get("bearing")),
-                    PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
-                    PropertyFactory.iconAllowOverlap(true),
-                    PropertyFactory.iconIgnorePlacement(true)
-                )
-            )
-        }
-    }
-
-    private fun attachPinsSourceAndLayers(style: Style) {
-        if (style.getSource(PINS_SOURCE) != null) return
-        val darkLabels = isDarkMapUi() || mapStyleMode == MapStyleMode.SATELLITE
-        val labelColor = if (darkLabels) "#F8FAFC" else "#0F172A"
-        val haloColor = if (darkLabels) "#0F172A" else "#FFFFFF"
-        val showTitles = DevicePrefs.isShowBookmarkTitles(this)
-        val clustered = DevicePrefs.isClusterDensePins(this)
-
-        style.addSource(GeoJsonSource(PINS_SOURCE, FeatureCollection.fromFeatures(emptyList<Feature>())))
-        style.addSource(
-            GeoJsonSource(
-                PINS_CLUSTER_SOURCE,
-                FeatureCollection.fromFeatures(emptyList<Feature>()),
-                GeoJsonOptions()
-                    .withCluster(true)
-                    .withClusterMaxZoom(13)
-                    .withClusterRadius(46)
-            )
-        )
-
-        fun makePinLabelLayer(layerId: String, srcId: String) = SymbolLayer(layerId, srcId).withProperties(
-            PropertyFactory.textField(Expression.get("label")),
-            PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-            PropertyFactory.textSize(10.5f),
-            PropertyFactory.textMaxWidth(9.0f),
-            PropertyFactory.textLineHeight(1.05f),
-            PropertyFactory.textPadding(6f),
-            PropertyFactory.textColor(labelColor),
-            PropertyFactory.textHaloColor(haloColor),
-            PropertyFactory.textHaloWidth(1.8f),
-            PropertyFactory.textOffset(arrayOf(0f, 0.25f)),
-            PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
-            PropertyFactory.textAllowOverlap(false),
-            PropertyFactory.textIgnorePlacement(false),
-            PropertyFactory.textOptional(true)
-        ).apply { minZoom = 13.5f }
-
-        fun makePinIconLayer(layerId: String, srcId: String) = SymbolLayer(layerId, srcId).withProperties(
-            PropertyFactory.iconImage(Expression.get("icon")),
-            PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
-            PropertyFactory.iconOffset(arrayOf(0f, MapBitmaps.BOOKMARK_PIN_TIP_BOTTOM_PAD_DP)),
-            PropertyFactory.iconSize(1.0f),
-            PropertyFactory.iconAllowOverlap(true),
-            PropertyFactory.iconIgnorePlacement(true)
-        )
-
-        val labelLayer = makePinLabelLayer(PINS_LABELS_LAYER, PINS_SOURCE)
-        val clusterLabelLayer = makePinLabelLayer(PINS_CLUSTER_LABELS_LAYER, PINS_CLUSTER_SOURCE).apply {
-            setFilter(Expression.not(Expression.has("point_count")))
-        }
-        val pinLayer = makePinIconLayer(PINS_LAYER, PINS_SOURCE)
-        val clusterPinLayer = makePinIconLayer(PINS_CLUSTER_UNCLUSTERED_LAYER, PINS_CLUSTER_SOURCE).apply {
-            setFilter(Expression.not(Expression.has("point_count")))
-        }
-        val clusterCircleLayer = CircleLayer(PINS_CLUSTER_CIRCLE_LAYER, PINS_CLUSTER_SOURCE).apply {
-            setFilter(Expression.has("point_count"))
-            setProperties(
-                PropertyFactory.circleColor(Color.parseColor("#18794E")),
-                PropertyFactory.circleRadius(
-                    Expression.switchCase(
-                        Expression.gte(Expression.toNumber(Expression.get("point_count")), Expression.literal(250)),
-                        Expression.literal(25f),
-                        Expression.gte(Expression.toNumber(Expression.get("point_count")), Expression.literal(50)),
-                        Expression.literal(21f),
-                        Expression.literal(17f)
-                    )
-                ),
-                PropertyFactory.circleStrokeColor(Color.WHITE),
-                PropertyFactory.circleStrokeWidth(2.5f),
-                PropertyFactory.circleOpacity(0.95f)
-            )
-        }
-        val clusterCountLayer = SymbolLayer(PINS_CLUSTER_COUNT_LAYER, PINS_CLUSTER_SOURCE).apply {
-            setFilter(Expression.has("point_count"))
-            setProperties(
-                PropertyFactory.textField(
-                    Expression.coalesce(
-                        Expression.get("point_count_abbreviated"),
-                        Expression.toString(Expression.get("point_count"))
-                    )
-                ),
-                PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                PropertyFactory.textSize(12.5f),
-                PropertyFactory.textColor(Color.WHITE),
-                PropertyFactory.textAllowOverlap(true),
-                PropertyFactory.textIgnorePlacement(true)
-            )
-        }
-
-        if (style.getLayer(SELECTED_HALO_LAYER) != null) {
-            style.addLayerBelow(labelLayer, SELECTED_HALO_LAYER)
-            style.addLayerBelow(clusterLabelLayer, SELECTED_HALO_LAYER)
-            style.addLayerAbove(pinLayer, SELECTED_HALO_LAYER)
-        } else {
-            style.addLayer(labelLayer)
-            style.addLayer(clusterLabelLayer)
-            style.addLayer(pinLayer)
-        }
-        style.addLayerAbove(clusterPinLayer, PINS_LAYER)
-        style.addLayerAbove(clusterCircleLayer, PINS_CLUSTER_UNCLUSTERED_LAYER)
-        style.addLayerAbove(clusterCountLayer, PINS_CLUSTER_CIRCLE_LAYER)
-
-        applyPinClusterModeVisibility(style, clustered, showTitles)
-    }
-
-    private fun applyPinClusterModeVisibility(style: Style, clustered: Boolean, showTitles: Boolean) {
-        val visUnclustered = if (!clustered) Property.VISIBLE else Property.NONE
-        val visUnclusteredLabels = if (!clustered && showTitles) Property.VISIBLE else Property.NONE
-        val visClustered = if (clustered) Property.VISIBLE else Property.NONE
-        val visClusteredLabels = if (clustered && showTitles) Property.VISIBLE else Property.NONE
-        style.getLayer(PINS_LAYER)?.setProperties(PropertyFactory.visibility(visUnclustered))
-        style.getLayer(PINS_LABELS_LAYER)?.setProperties(PropertyFactory.visibility(visUnclusteredLabels))
-        style.getLayer(PINS_CLUSTER_UNCLUSTERED_LAYER)?.setProperties(PropertyFactory.visibility(visClustered))
-        style.getLayer(PINS_CLUSTER_LABELS_LAYER)?.setProperties(PropertyFactory.visibility(visClusteredLabels))
-        style.getLayer(PINS_CLUSTER_CIRCLE_LAYER)?.setProperties(PropertyFactory.visibility(visClustered))
-        style.getLayer(PINS_CLUSTER_COUNT_LAYER)?.setProperties(PropertyFactory.visibility(visClustered))
-    }
-
-    private fun getVisiblePins(): List<PinItem> {
-        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
-        val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
-        return pins.filter { p ->
-            val normStatus = PinStatus.fromRaw(p.status).key
-            p.layerId !in hiddenLayerIds && normStatus in visibleStatuses && p.id !in sentIds
-        }
-    }
-
-    private fun findExactStackedPins(pin: PinItem): List<PinItem> {
-        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
-        val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
-        return findExactStackedPinsFromSnapshot(
-            snapshot = viewModel.folderSnapshot,
-            pin = pin,
-            hiddenLayerIds = hiddenLayerIds,
-            visibleStatuses = visibleStatuses,
-            sentIds = sentIds
-        )
-    }
-
-    private fun parseTrackPointsCached(t: TrackItem): List<Point> = synchronized(trackPointCache) {
-        val cached = trackPointCache[t.id]
-        if (cached != null && cached.first == t.updatedAt) return cached.second
-        val pts = ArrayList<Point>()
-        val raw = t.coords
-        var start = 0
-        val len = raw.length
-        while (start < len) {
-            val semi = raw.indexOf(';', start).let { if (it < 0) len else it }
-            val comma = raw.indexOf(',', start)
-            if (comma in (start + 1) until semi) {
-                val lng = raw.substring(start, comma).trim().toDoubleOrNull()
-                val lat = raw.substring(comma + 1, semi).trim().toDoubleOrNull()
-                if (lng != null && lat != null && lat.isFinite() && lng.isFinite()) {
-                    pts.add(Point.fromLngLat(lng, lat))
-                }
-            }
-            start = semi + 1
-        }
-        trackPointCache[t.id] = t.updatedAt to pts
-        pts
-    }
-
-    private fun renderPinsAndTracks(style: Style) {
-        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
-        val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
-        val statusesSnap = visibleStatuses.toSet()
-        val clustered = DevicePrefs.isClusterDensePins(this)
-        val showTitles = DevicePrefs.isShowBookmarkTitles(this)
-
-        applyPinClusterModeVisibility(style, clustered, showTitles)
-
-        val pinsKey = "$dataVersion|$clustered|${statusesSnap.hashCode()}|${statusesSnap.size}|${hiddenLayerIds.hashCode()}|${hiddenLayerIds.size}|$hideSentPins|${sentIds.hashCode()}|${sentIds.size}"
-        if (pinsKey != lastPinsRenderKey) {
-            lastPinsRenderKey = pinsKey
-            val seq = ++pinRenderSeq
-            val pinsSnap = pins
-            RoutingEngine.ioExecutor.execute {
-                val doneFeatures = ArrayList<Feature>(pinsSnap.size / 2)
-                val issueFeatures = ArrayList<Feature>(pinsSnap.size / 4)
-                val pendingFeatures = ArrayList<Feature>(pinsSnap.size / 4)
-
-                fun toPinFeature(pin: PinItem, st: PinStatus): Feature {
-                    val trimmed = pin.name.trim()
-                    val shortLabel = if (trimmed.length > 22) trimmed.take(21).trimEnd() + "…" else trimmed
-                    return Feature.fromGeometry(Point.fromLngLat(pin.lng, pin.lat)).apply {
-                        addStringProperty("id", pin.id)
-                        addStringProperty("name", pin.name)
-                        addStringProperty("label", shortLabel)
-                        addStringProperty("icon", st.iconId)
-                    }
-                }
-
-                for (pin in pinsSnap) {
-                    if (pin.layerId in hiddenLayerIds || pin.id in sentIds) continue
-                    val st = PinStatus.fromRaw(pin.status)
-                    if (st.key !in statusesSnap) continue
-                    val f = toPinFeature(pin, st)
-                    when (st) {
-                        PinStatus.DONE -> doneFeatures.add(f)
-                        PinStatus.ISSUE -> issueFeatures.add(f)
-                        PinStatus.PENDING -> pendingFeatures.add(f)
-                    }
-                }
-
-                val pinFeatures = ArrayList<Feature>(
-                    doneFeatures.size + issueFeatures.size + pendingFeatures.size
-                )
-                pinFeatures.addAll(doneFeatures)
-                pinFeatures.addAll(issueFeatures)
-                pinFeatures.addAll(pendingFeatures)
-                val fc = FeatureCollection.fromFeatures(pinFeatures)
-                val emptyFc = FeatureCollection.fromFeatures(emptyList<Feature>())
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed && seq == pinRenderSeq && map?.style === style && style.isFullyLoaded) {
-                        applyPinClusterModeVisibility(style, clustered, showTitles)
-                        if (clustered) {
-                            style.getSourceAs<GeoJsonSource>(PINS_CLUSTER_SOURCE)?.setGeoJson(fc)
-                            style.getSourceAs<GeoJsonSource>(PINS_SOURCE)?.setGeoJson(emptyFc)
-                        } else {
-                            style.getSourceAs<GeoJsonSource>(PINS_SOURCE)?.setGeoJson(fc)
-                            style.getSourceAs<GeoJsonSource>(PINS_CLUSTER_SOURCE)?.setGeoJson(emptyFc)
-                        }
-                    }
-                }
-            }
-        }
-
-        val tracksKey = "$dataVersion|${hiddenLayerIds.hashCode()}|${hiddenLayerIds.size}"
-        if (tracksKey != lastTracksRenderKey) {
-            lastTracksRenderKey = tracksKey
-            val seqT = ++trackRenderSeq
-            val tracksSnap = tracks
-            RoutingEngine.ioExecutor.execute {
-                val trackFeatures = ArrayList<Feature>(tracksSnap.size)
-                for (t in tracksSnap) {
-                    if (t.layerId in hiddenLayerIds) continue
-                    val pts = parseTrackPointsCached(t)
-                    if (pts.size >= 2) trackFeatures.add(Feature.fromGeometry(LineString.fromLngLats(pts)))
-                }
-                val fcT = FeatureCollection.fromFeatures(trackFeatures)
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed && seqT == trackRenderSeq && map?.style === style && style.isFullyLoaded) {
-                        style.getSourceAs<GeoJsonSource>(TRACKS_SOURCE)?.setGeoJson(fcT)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun renderRouteOverlay(styleArg: Style? = null) {
-        val style = styleArg ?: map?.style ?: return
-        if (!style.isFullyLoaded) return
-        val routeToShow = activeNavRoute ?: previewRoute
-        val displayGeom = if (activeNavRoute != null && (activeNavTrimmedGeom?.size ?: 0) >= 2) {
-            activeNavTrimmedGeom!!
-        } else {
-            routeToShow?.geometry ?: emptyList()
-        }
-        val routeFeatures = if (routeToShow != null && displayGeom.size >= 2) {
-            listOf(Feature.fromGeometry(LineString.fromLngLats(displayGeom.map { Point.fromLngLat(it.first, it.second) })))
-        } else emptyList()
-        style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(routeFeatures))
-        if (routeToShow != null) {
-            val isWalk = routeToShow.mode == TravelMode.WALKING
-            style.getLayerAs<LineLayer>(ROUTE_CASING_LAYER)?.setProperties(
-                PropertyFactory.lineWidth(9.5f),
-                PropertyFactory.lineOpacity(1.0f),
-                PropertyFactory.visibility(if (isWalk) Property.NONE else Property.VISIBLE)
-            )
-            style.getLayerAs<LineLayer>(ROUTE_LAYER)?.setProperties(
-                PropertyFactory.lineColor(routeToShow.mode.routeColorHex),
-                PropertyFactory.visibility(if (isWalk) Property.NONE else Property.VISIBLE)
-            )
-            style.getLayerAs<LineLayer>(ROUTE_WALK_CASING_LAYER)?.setProperties(
-                PropertyFactory.visibility(if (isWalk) Property.VISIBLE else Property.NONE)
-            )
-            style.getLayerAs<LineLayer>(ROUTE_WALK_LAYER)?.setProperties(
-                PropertyFactory.lineColor(routeToShow.mode.routeColorHex),
-                PropertyFactory.visibility(if (isWalk) Property.VISIBLE else Property.NONE)
-            )
-        }
-
-        val pillRoute = if (activeNavRoute == null) previewRoute else null
-        val pillFeatures = if (pillRoute != null && pillRoute.geometry.size >= 2) {
-            val pillLabel = formatEtaDuration(pillRoute.totalDurationSeconds)
-            val pillKey = "$pillLabel|${pillRoute.mode.routeColorHex}"
-            if (lastRoutePillKey != pillKey) {
-                val pillBmp = MapBitmaps.createRoutePill(this, pillLabel, pillRoute.mode.routeColorHex)
-                try {
-                    style.addImage(ROUTE_PILL_ICON, pillBmp)
-                } finally {
-                    if (!pillBmp.isRecycled) pillBmp.recycle()
-                }
-                lastRoutePillKey = pillKey
-            }
-            val (midLng, midLat) = routeMidpoint(pillRoute.geometry)
-            listOf(Feature.fromGeometry(Point.fromLngLat(midLng, midLat)))
-        } else emptyList()
-        style.getSourceAs<GeoJsonSource>(ROUTE_PILL_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(pillFeatures))
-    }
-
-    private fun renderRulerOverlay(styleArg: Style? = null) {
-        val style = styleArg ?: map?.style ?: return
-        if (!style.isFullyLoaded) return
-        val rulerLineFeatures = if (rulerPoints.size >= 2) {
-            listOf(Feature.fromGeometry(LineString.fromLngLats(rulerPoints.map { Point.fromLngLat(it.longitude, it.latitude) })))
-        } else emptyList()
-        style.getSourceAs<GeoJsonSource>(RULER_LINE_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(rulerLineFeatures))
-
-        val rulerPointFeatures = rulerPoints.mapIndexed { idx, pt ->
-            Feature.fromGeometry(Point.fromLngLat(pt.longitude, pt.latitude)).apply {
-                addStringProperty("num", "${idx + 1}")
-            }
-        }
-        style.getSourceAs<GeoJsonSource>(RULER_POINTS_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(rulerPointFeatures))
-    }
-
-    private fun renderSelectedMarker(styleArg: Style? = null) {
-        val style = styleArg ?: map?.style ?: return
-        if (!style.isFullyLoaded) return
-        val selId = selectedPinId
-        val selPin = selId?.let { pinById[it] }?.takeIf { pin ->
-            val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
-            val st = PinStatus.fromRaw(pin.status)
-            pin.layerId !in hiddenLayerIds &&
-                st.key in visibleStatuses &&
-                (!hideSentPins || !DevicePrefs.isPinLocalSent(this, pin.id))
-        }
-        val haloFeatures: List<Feature>
-        val topPinFeatures: List<Feature>
-        val coordFeatures: List<Feature>
-        if (selPin != null) {
-            val pt = Point.fromLngLat(selPin.lng, selPin.lat)
-            haloFeatures = listOf(Feature.fromGeometry(pt))
-            topPinFeatures = listOf(
-                Feature.fromGeometry(pt).apply {
-                    addStringProperty("id", selPin.id)
-                    addStringProperty("name", selPin.name)
-                    addStringProperty("icon", PinStatus.fromRaw(selPin.status).iconId)
-                }
-            )
-            coordFeatures = emptyList()
-        } else {
-            val selLoc = selectedMarkerLatLng
-            haloFeatures = emptyList()
-            topPinFeatures = emptyList()
-            coordFeatures = if (selLoc != null) {
-                listOf(Feature.fromGeometry(Point.fromLngLat(selLoc.longitude, selLoc.latitude)))
-            } else emptyList()
-        }
-        style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(haloFeatures))
-        style.getSourceAs<GeoJsonSource>(SELECTED_PIN_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(topPinFeatures))
-        style.getSourceAs<GeoJsonSource>(SELECTED_COORD_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(coordFeatures))
-    }
+    internal fun loadMapStyle() = mapRenderer.loadMapStyle()
+    internal fun apply3dBuildingsToggle(style: Style) = mapRenderer.apply3dBuildingsToggle(style)
+    internal fun applyHillshadeSettings(style: Style) = mapRenderer.applyHillshadeSettings(style)
+    private fun findExactStackedPins(pin: PinItem): List<PinItem> = mapToolsController.findExactStackedPins(pin)
 
     internal fun updateSyncStatusBadge() {
         if (!::btnSyncStatus.isInitialized || !::tvSyncPendingBadge.isInitialized) return
@@ -2913,534 +2016,61 @@ class MainActivity : AppCompatActivity() {
     }
 
     internal fun renderMapData() {
-        updateSyncStatusBadge()
-
-        val style = map?.style ?: return
-        if (!style.isFullyLoaded) return
-
-        renderPinsAndTracks(style)
-        renderRouteOverlay(style)
-        renderRulerOverlay(style)
-        renderSelectedMarker(style)
-
-        if (currentLocation != null) {
-            updateGpsLayerFeature(displayedLat, displayedLng, displayedBearing)
-        }
+        if (::mapRenderer.isInitialized) mapRenderer.renderMapData() else updateSyncStatusBadge()
     }
 
-    private fun routeMidpoint(geom: List<Pair<Double, Double>>): Pair<Double, Double> {
-        if (geom.size <= 2) return geom.first()
-        var total = 0.0
-        val segs = DoubleArray(geom.size - 1)
-        for (i in 0 until geom.size - 1) {
-            val d = RoutingEngine.haversineMeters(geom[i].second, geom[i].first, geom[i + 1].second, geom[i + 1].first)
-            segs[i] = d
-            total += d
-        }
-        val half = total * 0.5
-        var acc = 0.0
-        for (i in segs.indices) {
-            if (acc + segs[i] >= half && segs[i] > 0.0) {
-                val t = ((half - acc) / segs[i]).coerceIn(0.0, 1.0)
-                val lng = geom[i].first + (geom[i + 1].first - geom[i].first) * t
-                val lat = geom[i].second + (geom[i + 1].second - geom[i].second) * t
-                return lng to lat
-            }
-            acc += segs[i]
-        }
-        return geom[geom.size / 2]
-    }
-
-    private fun updateActiveRouteLine(geom: List<Pair<Double, Double>>) {
-        if (!isActivityStarted) return
-        val style = map?.style ?: return
-        if (!style.isFullyLoaded || geom.size < 2) return
-        val feature = Feature.fromGeometry(LineString.fromLngLats(geom.map { Point.fromLngLat(it.first, it.second) }))
-        style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(listOf(feature)))
-    }
-
-    private fun updateGpsLayerFeature(lat: Double, lng: Double, bearing: Float) {
-        if (!isActivityStarted) return
-        val style = map?.style ?: return
-        if (!style.isFullyLoaded) return
-        val f = Feature.fromGeometry(Point.fromLngLat(lng, lat)).apply {
-            addNumberProperty("bearing", bearing)
-        }
-        style.getSourceAs<GeoJsonSource>(USER_LOC_SOURCE)
-            ?.setGeoJson(FeatureCollection.fromFeatures(listOf(f)))
+    private fun renderRouteOverlay(styleArg: Style? = null) {
+        if (::mapRenderer.isInitialized) mapRenderer.renderRouteOverlay(styleArg)
     }
 
     private fun fireStatusPulse(lat: Double, lng: Double, statusHex: String) {
-        if (!isActivityResumed || UiAnimations.isReducedMotion(this)) return
-        val style = map?.style ?: return
-        if (!style.isFullyLoaded) return
-        val f = Feature.fromGeometry(Point.fromLngLat(lng, lat)).apply {
-            addStringProperty("color", statusHex)
-        }
-        style.getSourceAs<GeoJsonSource>(PULSE_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(listOf(f)))
-        if (style.getLayerAs<CircleLayer>(PULSE_LAYER) == null) return
-
-        pulseAnimator?.cancel()
-        pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 520L
-            interpolator = UiAnimations.EMPHASIZED_DECELERATE
-            addUpdateListener { anim ->
-                val curStyle = map?.style
-                if (!isActivityStarted || curStyle !== style || !curStyle.isFullyLoaded) {
-                    anim.cancel()
-                    return@addUpdateListener
-                }
-                val v = anim.animatedValue as Float
-                val fade = 1f - v
-                runCatching {
-                    curStyle.getLayerAs<CircleLayer>(PULSE_LAYER)?.setProperties(
-                        PropertyFactory.circleRadius(8f + 30f * v),
-                        PropertyFactory.circleOpacity(0.42f * fade),
-                        PropertyFactory.circleStrokeWidth(2.4f - 1.6f * v),
-                        PropertyFactory.circleStrokeOpacity(0.85f * fade)
-                    )
-                }
-            }
-            start()
-        }
+        if (::mapRenderer.isInitialized) mapRenderer.fireStatusPulse(lat, lng, statusHex)
     }
-
-    // --- Multi-Point Distance Ruler Tool ---
-
-    // --- Local-Only Sent Pin Tracking & Draw-a-Circle (Lasso) Selection ---
 
     internal fun updateSentToggleUi() {
-        if (!::btnSentToggle.isInitialized) return
-        val p = currentPalette()
-        val hasStatusFilter = !visibleStatuses.containsAll(ALL_STATUSES)
-        val hasAnyFilter = hasStatusFilter || hideSentPins
-        if (!hasAnyFilter) {
-            lastSentTogglePillText = ""
-            UiAnimations.animateSpeedBadgeVisibility(btnSentToggle, false)
-            updateFilterIconTint()
-            return
-        }
-        val parts = mutableListOf<String>()
-        if (hasStatusFilter) {
-            if (visibleStatuses.isEmpty()) {
-                parts.add("Hidden")
-            } else {
-                if ("pending" in visibleStatuses) parts.add(AppStrings.pending(this))
-                if ("done" in visibleStatuses) parts.add(AppStrings.done(this))
-                if ("issue" in visibleStatuses) parts.add(AppStrings.issue(this))
-            }
-        }
-        if (hideSentPins) parts.add("Unsent")
-        val pillColor = when {
-            visibleStatuses == setOf("pending") && !hideSentPins -> p.amber
-            visibleStatuses == setOf("done") && !hideSentPins -> p.green
-            visibleStatuses == setOf("issue") && !hideSentPins -> p.red
-            else -> p.accentPrimary
-        }
-        val nextText = "${parts.joinToString(" • ")} ×"
-        val wasVisible = btnSentToggle.visibility == View.VISIBLE
-        btnSentToggle.text = nextText
-        btnSentToggle.setTextColor(Color.WHITE)
-        DesignSystem.applyFloatingControl(this, btnSentToggle, p, 22f, 6f, activeFillColor = pillColor)
-        if (!wasVisible) {
-            lastSentTogglePillText = nextText
-            UiAnimations.animateSpeedBadgeVisibility(btnSentToggle, true)
-        } else if (nextText != lastSentTogglePillText) {
-            lastSentTogglePillText = nextText
-            UiAnimations.animateScalePop(btnSentToggle, 0.90f, 150L)
-        }
-        updateFilterIconTint()
+        if (::btnSentToggle.isInitialized && ::mapToolsController.isInitialized) mapToolsController.updateSentToggleUi()
     }
 
-    internal fun activeLocalSentCount(): Int {
-        val sentIds = DevicePrefs.getLocalSentPinIds(this)
-        if (sentIds.isEmpty()) return 0
-        return pins.count { it.id in sentIds }
-    }
+    internal fun activeLocalSentCount(): Int =
+        if (::mapToolsController.isInitialized) mapToolsController.activeLocalSentCount() else 0
 
     private fun toggleLassoMode(enabled: Boolean) {
-        if (enabled && isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
-        if (enabled && isRulerMode) toggleRulerMode(false)
-        isLassoMode = enabled
-        lassoMoveMapMode = false
-        if (enabled) {
-            undoController.dismiss(animate = false)
-            hideInScreenSheet()
-            UiAnimations.fadeShow(bottomDock, 160L)
-            UiAnimations.hideSlideBottom(bottomNavDock, 115L)
-            UiAnimations.showSlideBottom(lassoCard)
-            lassoOverlay.visibility = View.VISIBLE
-            lassoOverlay.clearLoop()
-            lassoPendingPinIds = emptyList()
-            updateLassoUi()
-        } else {
-            lassoPendingPinIds = emptyList()
-            lassoOverlay.clearLoop()
-            lassoOverlay.visibility = View.GONE
-            UiAnimations.hideSlideBottom(lassoCard)
-            if (activeNavRoute == null && !isRulerMode) UiAnimations.showSlideBottom(bottomNavDock)
-        }
-        applyMapChromeTheme()
-    }
-
-    private fun toggleLassoMoveMapMode() {
-        if (!isLassoMode) return
-        lassoMoveMapMode = !lassoMoveMapMode
-        if (lassoMoveMapMode) {
-            lassoPendingPinIds = emptyList()
-            lassoOverlay.clearLoop()
-            lassoOverlay.visibility = View.GONE
-        } else {
-            lassoOverlay.visibility = View.VISIBLE
-        }
-        updateLassoUi()
-    }
-
-    private fun clearLassoSelection() {
-        lassoPendingPinIds = emptyList()
-        lassoOverlay.clearLoop()
-        updateLassoUi()
-    }
-
-    private fun handleLassoLoopCompleted(poly: List<PointF>) {
-        val m = map ?: return
-        val inside = getVisiblePins().filter { p ->
-            val pt = m.projection.toScreenLocation(LatLng(p.lat, p.lng))
-            LassoOverlayView.isPointInPolygon(pt.x, pt.y, poly)
-        }
-        if (inside.isEmpty()) {
-            lassoPendingPinIds = emptyList()
-            lassoOverlay.clearLoop()
-            updateLassoUi()
-            Toast.makeText(this, "No visible pins inside circle", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val unsentInside = inside.filter { !DevicePrefs.isPinLocalSent(this, it.id) }
-        if (unsentInside.isEmpty()) {
-            lassoPendingPinIds = emptyList()
-            lassoOverlay.clearLoop()
-            updateLassoUi()
-            Toast.makeText(this, "All ${inside.size} pins inside are already marked sent", Toast.LENGTH_SHORT).show()
-            return
-        }
-        lassoPendingPinIds = unsentInside.map { it.id }
-        UiAnimations.hapticConfirm(lassoCard)
-        updateLassoUi()
-    }
-
-    private fun confirmLassoMarkSent() {
-        if (lassoPendingPinIds.isEmpty()) {
-            Toast.makeText(this, "Draw a circle around pins first", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val batch = lassoPendingPinIds.toList()
-        DevicePrefs.addLocalSentPinIds(this, batch)
-        sentUndoStack.add(batch)
-        lassoPendingPinIds = emptyList()
-        lassoOverlay.clearLoop()
-        updateSentToggleUi()
-        updateLassoUi()
-        renderMapData()
-        Toast.makeText(this, "Marked ${batch.size} pin${if (batch.size == 1) "" else "s"} as sent (local only)", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun undoLastLassoMark() {
-        if (sentUndoStack.isEmpty()) return
-        val lastBatch = sentUndoStack.removeAt(sentUndoStack.lastIndex)
-        DevicePrefs.removeLocalSentPinIds(this, lastBatch)
-        updateSentToggleUi()
-        updateLassoUi()
-        renderMapData()
-        Toast.makeText(this, "Undid ${lastBatch.size} sent pin${if (lastBatch.size == 1) "" else "s"}", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun confirmResetAllSentPins() {
-        val active = activeLocalSentCount()
-        val stored = DevicePrefs.getLocalSentPinIds(this).size
-        if (active == 0 && stored == 0) {
-            Toast.makeText(this, "No sent pins to reset", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (active == 0) {
-            DevicePrefs.clearLocalSentPins(this)
-            sentUndoStack.clear()
-            updateLassoUi()
-            Toast.makeText(this, "Cleared old sent marks", Toast.LENGTH_SHORT).show()
-            return
-        }
-        showThemedDialog(
-            themedDialogBuilder("Reset Sent Marks?")
-                .setMessage("Clear all $active local sent marks on this phone? All pins remain safely in your folders.")
-                .setPositiveButton("Reset") { _, _ ->
-                    DevicePrefs.clearLocalSentPins(this)
-                    sentUndoStack.clear()
-                    lassoPendingPinIds = emptyList()
-                    lassoOverlay.clearLoop()
-                    updateSentToggleUi()
-                    updateLassoUi()
-                    renderMapData()
-                    Toast.makeText(this, "Cleared all local sent marks", Toast.LENGTH_SHORT).show()
-                }
-                .setNegativeButton("Cancel", null)
-                .create(),
-            destructivePositive = true
-        )
+        if (::mapToolsController.isInitialized) mapToolsController.toggleLassoMode(enabled)
     }
 
     private fun updateLassoUi() {
-        val p = currentPalette()
-        val sel = lassoPendingPinIds.size
-        val totalSent = activeLocalSentCount()
-        if (lassoMoveMapMode) {
-            btnLassoModeToggle.text = "Draw"
-            btnLassoModeToggle.setTextColor(Color.WHITE)
-            UiAnimations.applyRoundedRipple(this, btnLassoModeToggle, p.green, 10f, isDark = true)
-            tvLassoTitle.text = "Move or zoom the map"
-            tvLassoSubtitle.text = "Tap Draw when ready to circle pins"
-            btnLassoMarkSent.text = "Mark Sent"
-            btnLassoMarkSent.alpha = 0.45f
-            btnLassoRedraw.alpha = 0.45f
-        } else {
-            btnLassoModeToggle.text = "Move Map"
-            btnLassoModeToggle.setTextColor(p.accent)
-            UiAnimations.applyRoundedRipple(this, btnLassoModeToggle, p.accentSoft, 10f, p.isDark)
-            if (sel > 0) {
-                tvLassoTitle.text = "$sel pin${if (sel == 1) "" else "s"} selected"
-                tvLassoSubtitle.text = "Tap Mark Sent (local only • $totalSent sent total)"
-                btnLassoMarkSent.text = "Mark Sent ($sel)"
-                btnLassoMarkSent.alpha = 1f
-                btnLassoRedraw.alpha = 1f
-            } else {
-                tvLassoTitle.text = "Draw circle around sent pins"
-                tvLassoSubtitle.text = if (totalSent > 0) "$totalSent marked sent on this phone" else "Local to this phone only"
-                btnLassoMarkSent.text = "Mark Sent"
-                btnLassoMarkSent.alpha = 0.45f
-                btnLassoRedraw.alpha = 0.45f
-            }
-        }
-        btnLassoUndo.alpha = if (sentUndoStack.isNotEmpty()) 1f else 0.4f
-        btnLassoReset.alpha = if (totalSent > 0) 1f else 0.4f
+        if (::mapToolsController.isInitialized) mapToolsController.updateLassoUi()
     }
 
     private fun toggleRulerMode(enabled: Boolean) {
-        if (enabled && isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
-        if (enabled && isLassoMode) toggleLassoMode(false)
-        isRulerMode = enabled
-        if (enabled) {
-            undoController.dismiss(animate = false)
-            hideInScreenSheet()
-            UiAnimations.fadeShow(bottomDock, 160L)
-            UiAnimations.hideSlideBottom(bottomNavDock, 115L)
-            UiAnimations.showSlideBottom(rulerCard)
-            updateRulerUi()
-        } else {
-            rulerPoints.clear()
-            UiAnimations.hideSlideBottom(rulerCard)
-            if (activeNavRoute == null && !isLassoMode) UiAnimations.showSlideBottom(bottomNavDock)
-        }
-        applyMapChromeTheme()
-        renderRulerOverlay()
-    }
-
-    private fun addRulerPoint(latLng: LatLng) {
-        rulerPoints.add(latLng)
-        UiAnimations.hapticTick(rulerCard)
-        fireStatusPulse(latLng.latitude, latLng.longitude, "#F0651F")
-        updateRulerUi()
-        renderRulerOverlay()
-    }
-
-    private fun undoRulerPoint() {
-        if (rulerPoints.isNotEmpty()) {
-            rulerPoints.removeAt(rulerPoints.lastIndex)
-            updateRulerUi()
-            renderRulerOverlay()
-        }
-    }
-
-    private fun resetRulerPoints() {
-        rulerPoints.clear()
-        updateRulerUi()
-        renderRulerOverlay()
+        if (::mapToolsController.isInitialized) mapToolsController.toggleRulerMode(enabled)
     }
 
     internal fun updateRulerUi() {
-        var totalMeters = 0.0
-        for (i in 0 until rulerPoints.size - 1) {
-            val a = rulerPoints[i]
-            val b = rulerPoints[i + 1]
-            totalMeters += RoutingEngine.haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude)
-        }
-        val unit = DevicePrefs.getSpeedUnit(this)
-        tvRulerDistance.text = when {
-            rulerPoints.size < 2 -> if (unit == SpeedUnit.IMPERIAL) "0 ft" else "0 m"
-            unit == SpeedUnit.IMPERIAL -> {
-                val ft = totalMeters * 3.28084
-                val mi = totalMeters / 1609.344
-                when {
-                    ft < 1000.0 -> "${ft.roundToInt()} ft"
-                    mi < 10.0 -> "${"%.2f".format(Locale.US, mi)} mi"
-                    else -> "${"%.1f".format(Locale.US, mi)} mi"
-                }
-            }
-            totalMeters < 1000.0 -> "${totalMeters.roundToInt()} m"
-            totalMeters < 10000.0 -> "${"%.2f".format(Locale.US, totalMeters / 1000.0)} km"
-            else -> "${"%.1f".format(Locale.US, totalMeters / 1000.0)} km"
-        }
-        tvRulerSubtitle.text = when (rulerPoints.size) {
-            0 -> AppStrings.rulerTapPoint1(this)
-            1 -> AppStrings.rulerTapNext(this)
-            else -> AppStrings.rulerTotalPoints(this, rulerPoints.size)
-        }
-        btnRulerUndo.alpha = if (rulerPoints.isNotEmpty()) 1.0f else 0.35f
-        btnRulerReset.visibility = if (rulerPoints.isNotEmpty()) View.VISIBLE else View.GONE
+        if (::mapToolsController.isInitialized) mapToolsController.updateRulerUi()
     }
 
-    // --- Route From Origin Helpers ---
-
     private fun setRouteOrigin(lat: Double, lng: Double, label: String) {
-        routeOriginLatLng = LatLng(lat, lng)
-        routeOriginName = label.ifBlank { "${"%.5f".format(Locale.US, lat)}, ${"%.5f".format(Locale.US, lng)}" }
-        tvRouteFromText.text = "From: $routeOriginName"
-        UiAnimations.showSlideTop(routeFromBanner)
-        hideInScreenSheet()
-        Toast.makeText(this, "Start set: $routeOriginName — tap any pin or place & choose Route To", Toast.LENGTH_LONG).show()
+        if (::navigationController.isInitialized) navigationController.setRouteOrigin(lat, lng, label)
     }
 
     private fun clearRouteOrigin() {
-        routeOriginLatLng = null
-        routeOriginName = ""
-        UiAnimations.hideSlideTop(routeFromBanner)
-    }
-
-    // --- Map Tap Handling (Zero Auto-Zoom) ---
-
-    private fun handleMapTap(m: MapLibreMap, latLng: LatLng) {
-        val screenPt = m.projection.toScreenLocation(latLng)
-        val hitBox = RectF(
-            screenPt.x - dp(24).toFloat(),
-            screenPt.y - dp(36).toFloat(),
-            screenPt.x + dp(24).toFloat(),
-            screenPt.y + dp(14).toFloat()
-        )
-
-        val clustered = DevicePrefs.isClusterDensePins(this)
-        if (clustered) {
-            val clusterHits = m.queryRenderedFeatures(hitBox, PINS_CLUSTER_CIRCLE_LAYER)
-            val clusterPt = clusterHits.firstOrNull()?.geometry() as? Point
-            if (clusterPt != null) {
-                val targetZoom = (m.cameraPosition.zoom + 2.2).coerceAtMost(16.0)
-                m.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(
-                        LatLng(clusterPt.latitude(), clusterPt.longitude()),
-                        targetZoom
-                    ),
-                    350
-                )
-                return
-            }
-        }
-
-        val pinHits = if (clustered) {
-            m.queryRenderedFeatures(hitBox, SELECTED_PIN_LAYER, PINS_CLUSTER_UNCLUSTERED_LAYER, PINS_CLUSTER_LABELS_LAYER)
-        } else {
-            m.queryRenderedFeatures(hitBox, SELECTED_PIN_LAYER, PINS_LAYER, PINS_LABELS_LAYER)
-        }
-        val pin = pinHits
-            .mapNotNull { hit -> hit.getStringProperty("id")?.let { id -> pinById[id] } }
-            .distinctBy { it.id }
-            .minByOrNull { candidate ->
-                val pt = m.projection.toScreenLocation(LatLng(candidate.lat, candidate.lng))
-                val dx = pt.x - screenPt.x
-                val dy = (pt.y - dp(12)) - screenPt.y
-                dx * dx + dy * dy
-            }
-        if (pin != null) {
-            selectPinAndOpenCard(pin, zoomIfFar = false)
-            return
-        }
-
-        // In Full-Screen Clean Map Mode, tapping empty map restores controls cleanly without dropping a dot
-        if (isFullScreenMapMode) {
-            setFullScreenMapMode(false)
-            return
-        }
-
-        val smallBox = RectF(
-            screenPt.x - dp(14).toFloat(),
-            screenPt.y - dp(14).toFloat(),
-            screenPt.x + dp(14).toFloat(),
-            screenPt.y + dp(14).toFloat()
-        )
-        val vectorFeatures = m.queryRenderedFeatures(smallBox)
-        var detectedTitle = ""
-        var detectedSub = ""
-        val mapLang = DevicePrefs.getMapLabelLanguage(this)
-        for (f in vectorFeatures) {
-            val props = f.properties() ?: continue
-            val name = MapCartography.resolveFeatureDisplayName(props, mapLang)
-            if (name != null) {
-                detectedTitle = name
-                val cls = if (props.has("class") && !props.get("class").isJsonNull) props.get("class").asString else ""
-                if (cls.isNotBlank()) detectedSub = cls.replace("_", " ").replaceFirstChar { it.uppercase() }
-                break
-            }
-        }
-
-        selectCoordinateOnMap(
-            latLng = latLng,
-            explicitTitle = detectedTitle.ifBlank { null },
-            fallbackSub = detectedSub,
-            zoomTo = null
-        )
+        if (::navigationController.isInitialized) navigationController.clearRouteOrigin()
     }
 
     internal fun selectPinAndOpenCard(pin: PinItem, zoomIfFar: Boolean = false) {
-        selectedPinId = pin.id
-        selectedMarkerLatLng = LatLng(pin.lat, pin.lng)
-        renderSelectedMarker()
-        val stackedCount = findExactStackedPins(pin).size
-        val currentZoom = map?.cameraPosition?.zoom ?: 15.0
-        val targetZoom = if (zoomIfFar) currentZoom.coerceAtLeast(15.8) else currentZoom
-        centerUpperHalf(
-            LatLng(pin.lat, pin.lng),
-            targetZoom,
-            bottomPadDp = if (stackedCount > 1) 340 else 285
-        )
-        showPinCard(pin, animateSwap = false)
+        if (::mapToolsController.isInitialized) mapToolsController.selectPinAndOpenCard(pin, zoomIfFar)
     }
 
     private fun clearSelectedMarker() {
-        val hadSelection = selectedPinId != null || selectedMarkerLatLng != null
-        selectedPinId = null
-        selectedMarkerLatLng = null
-        activeSharedPinId = null
-        activeTappedLatLng = null
         tappedTitleView = null
         tappedSubView = null
         tappedDistView = null
-        if (hadSelection) renderSelectedMarker()
-    }
-
-    private fun centerUpperHalf(target: LatLng, zoom: Double, bottomPadDp: Int = 270) {
-        val m = map ?: return
-        val cam = CameraPosition.Builder()
-            .target(target)
-            .zoom(zoom)
-            .padding(0.0, 0.0, 0.0, dp(bottomPadDp).toDouble())
-            .build()
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 420)
+        if (::mapToolsController.isInitialized) mapToolsController.clearSelectedMarker()
     }
 
     private fun resetMapPadding() {
-        val m = map ?: return
-        val cam = CameraPosition.Builder()
-            .target(m.cameraPosition.target)
-            .zoom(m.cameraPosition.zoom)
-            .padding(0.0, 0.0, 0.0, 0.0)
-            .build()
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 240)
+        if (::mapToolsController.isInitialized) mapToolsController.resetMapPadding()
     }
 
     internal fun showInScreenSheet(
@@ -3519,14 +2149,9 @@ class MainActivity : AppCompatActivity() {
         sheetOpenSeq++
         if (wasPending && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
             sheetQuickSelectPinId = null
-            pendingRouteReq = null
             clearSheetStickyHeader()
             clearSelectedMarker()
-            if (previewRoute != null && activeNavRoute == null) {
-                routeRequestSeq++
-                previewRoute = null
-                renderRouteOverlay()
-            }
+            if (::navigationController.isInitialized) navigationController.cancelPreviewOnSheetClosed()
             if (activeNavRoute == null) {
                 resetMapPadding()
             }
@@ -4337,9 +2962,10 @@ class MainActivity : AppCompatActivity() {
         val txtPrimary = p.textPrimary
         val txtSub = p.textSecondary
 
-        activeTappedLatLng = LatLng(lat, lng)
-        tappedResolvedTitle = title
-        tappedResolvedSub = subtitle
+        val prevTapped = viewModel.tappedLocation
+        viewModel.tappedLocation = TappedLocationState(title, subtitle, lat, lng)
+        val tappedResolvedTitle = title
+        val tappedResolvedSub = subtitle
         clearSheetStickyHeader()
         sheetContent.removeAllViews()
 
@@ -4395,7 +3021,8 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (subTv != null) {
                         subTv.maxWidth = subMaxW
-                        val fitted = fitCleanSubtitle(tappedResolvedSub, subTv, subMaxW)
+                        val latestSub = viewModel.tappedLocation?.subtitle ?: tappedResolvedSub
+                        val fitted = fitCleanSubtitle(latestSub, subTv, subMaxW)
                         if (subTv.text.toString() != fitted) subTv.text = fitted
                     }
                 }
@@ -4491,7 +3118,8 @@ class MainActivity : AppCompatActivity() {
             UiAnimations.applyRowRipple(this@MainActivity, this, night)
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
-                val msg = makePinShareMessage(tappedResolvedTitle, lat, lng)
+                val titleNow = viewModel.tappedLocation?.title ?: tappedResolvedTitle
+                val msg = makePinShareMessage(titleNow, lat, lng)
                 safeStartActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
                     putExtra(Intent.EXTRA_TEXT, msg)
@@ -4527,7 +3155,7 @@ class MainActivity : AppCompatActivity() {
             DesignSystem.applyPrimaryCtaButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
-            setOnClickListener { openRoutePreview(lat, lng, tappedResolvedTitle) }
+            setOnClickListener { openRoutePreview(lat, lng, viewModel.tappedLocation?.title ?: tappedResolvedTitle) }
         })
         routeRow.addView(MaterialButton(this).apply {
             text = AppStrings.routeFrom(this@MainActivity)
@@ -4547,7 +3175,7 @@ class MainActivity : AppCompatActivity() {
             DesignSystem.applySecondaryTonalButton(this, p)
             layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
             UiAnimations.attachSnappyPress(this)
-            setOnClickListener { setRouteOrigin(lat, lng, tappedResolvedTitle) }
+            setOnClickListener { setRouteOrigin(lat, lng, viewModel.tappedLocation?.title ?: tappedResolvedTitle) }
         })
         sheetContent.addView(routeRow)
 
@@ -4575,8 +3203,10 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
             UiAnimations.attachSnappyPress(this)
             setOnClickListener {
-                val preName = if (tappedResolvedTitle == "Selected Location" || tappedResolvedTitle == "Shared Location") "" else tappedResolvedTitle
-                showAddPinDialog(LatLng(lat, lng), prefillName = preName, prefillDesc = tappedResolvedSub)
+                val curTitle = viewModel.tappedLocation?.title ?: tappedResolvedTitle
+                val curSub = viewModel.tappedLocation?.subtitle ?: tappedResolvedSub
+                val preName = if (curTitle == "Selected Location" || curTitle == "Shared Location") "" else curTitle
+                showAddPinDialog(LatLng(lat, lng), prefillName = preName, prefillDesc = curSub)
             }
         })
         btnRow.addView(MaterialButton(this).apply {
@@ -4608,803 +3238,24 @@ class MainActivity : AppCompatActivity() {
     // --- Route Preview (Route From + Car / Bicycle / Walk Modes) & Active Navigation ---
 
     private fun openRoutePreview(destLat: Double, destLng: Double, destTitle: String, modeOverride: TravelMode = travelMode) {
-        val customStart = routeOriginLatLng
-        val startLat: Double
-        val startLng: Double
-        val startLabel: String
-
-        var startBearing: Float? = null
-        if (customStart != null) {
-            startLat = customStart.latitude
-            startLng = customStart.longitude
-            startLabel = routeOriginName
-        } else {
-            if (!hasLocationPermission()) {
-                pendingRouteReq = PendingRouteReq(destLat, destLng, destTitle, modeOverride, System.currentTimeMillis())
-                locPermLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-                return
-            }
-            if (!ensureLocationServiceOn()) return
-            val staleStream = System.currentTimeMillis() - lastLiveLocationFixMs > 10_000L
-            startLiveGpsUpdates(forceRestart = staleStream)
-            val loc = currentLocation
-            if (loc == null || locationAgeMs(loc) > 120_000L) {
-                pendingRouteReq = PendingRouteReq(destLat, destLng, destTitle, modeOverride, System.currentTimeMillis())
-                syncGpsPollingProfile()
-                Toast.makeText(this, "Acquiring fresh GPS fix — route will build automatically...", Toast.LENGTH_SHORT).show()
-                return
-            }
-            pendingRouteReq = null
-            startLat = loc.latitude
-            startLng = loc.longitude
-            startLabel = "My Location"
-            if (loc.hasBearing() && loc.speed > 1.5f) startBearing = loc.bearing
-        }
-
-        travelMode = modeOverride
-        DevicePrefs.setTravelMode(this, modeOverride)
-        val reqId = ++routeRequestSeq
-        Toast.makeText(this, "Building ${modeOverride.label.lowercase()} route...", Toast.LENGTH_SHORT).show()
-
-        RoutingEngine.fetchRoute(
-            startLat, startLng, destLat, destLng, modeOverride, startBearing,
-            isCancelled = { reqId != routeRequestSeq }
-        ) { route, err ->
-            runOnUiThread {
-                if (isFinishing || isDestroyed || reqId != routeRequestSeq) return@runOnUiThread
-                if (route == null) {
-                    Toast.makeText(this, err ?: "Route failed", Toast.LENGTH_LONG).show()
-                    return@runOnUiThread
-                }
-                previewRoute = route
-                navDestLatLng = LatLng(destLat, destLng)
-                navDestName = destTitle
-                renderRouteOverlay()
-
-                val pts = route.geometry.map { LatLng(it.second, it.first) }
-                if (pts.size >= 2) {
-                    runCatching {
-                        val b = LatLngBounds.Builder()
-                        pts.forEach { b.include(it) }
-                        map?.animateCamera(CameraUpdateFactory.newLatLngBounds(b.build(), dp(72), dp(96), dp(72), dp(310)), 600)
-                    }
-                }
-                showRoutePreviewCard(route, startLabel, destLat, destLng, destTitle)
-            }
-        }
-    }
-
-    private fun travelModeIconRes(mode: TravelMode): Int = when (mode) {
-        TravelMode.CAR -> R.drawable.ic_mode_car
-        TravelMode.WALKING -> R.drawable.ic_mode_walk
-        TravelMode.BICYCLE -> R.drawable.ic_mode_bike
-    }
-
-    private fun showRoutePreviewCard(route: NavRoute, startLabel: String, destLat: Double, destLng: Double, destTitle: String) {
-        sheetQuickSelectPinId = null
-        val p = currentPalette()
-        val txtPrimary = p.textPrimary
-        val txtSub = p.textSecondary
-
-        clearSheetStickyHeader()
-        sheetContent.removeAllViews()
-
-        val etaText = formatEtaDuration(route.totalDurationSeconds)
-        val distStr = formatDistanceShort(route.totalDistanceMeters, DevicePrefs.getSpeedUnit(this))
-
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(2)
-            }
-        }
-        val titleCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        }
-        val metaRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val etaBadge = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(11), dp(5), dp(12), dp(5))
-            background = GradientDrawable().apply {
-                setColor(p.accentPrimary)
-                cornerRadius = dp(18).toFloat()
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(10) }
-        }
-        etaBadge.addView(ImageView(this).apply {
-            setImageResource(travelModeIconRes(route.mode))
-            setColorFilter(Color.WHITE)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(17), dp(17)).apply { marginEnd = dp(6) }
-        })
-        etaBadge.addView(TextView(this).apply {
-            text = etaText
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            setTypeface(null, Typeface.BOLD)
-            DesignSystem.applyTabularNumerals(this)
-        })
-        metaRow.addView(etaBadge)
-        metaRow.addView(TextView(this).apply {
-            text = distStr
-            textSize = 15.5f
-            setTextColor(txtPrimary)
-            setTypeface(null, Typeface.BOLD)
-            DesignSystem.applyTabularNumerals(this)
-        })
-        val isOfflineRoute = route.engineLabel.contains("Offline", true)
-        val engTextColor = if (isOfflineRoute) p.amber else p.accentPrimary
-        val engBgColor = if (isOfflineRoute) p.amberSoft else p.accentPrimarySoft
-        metaRow.addView(TextView(this).apply {
-            text = if (isOfflineRoute) "● Offline Roads" else "● Online"
-            textSize = 11f
-            setTextColor(engTextColor)
-            setTypeface(null, Typeface.BOLD)
-            setPadding(dp(9), dp(3), dp(9), dp(3))
-            background = GradientDrawable().apply {
-                setColor(engBgColor)
-                cornerRadius = dp(10).toFloat()
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = dp(8) }
-        })
-        titleCol.addView(metaRow)
-        titleCol.addView(TextView(this).apply {
-            text = "$startLabel → $destTitle"
-            textSize = 13f
-            setTextColor(txtSub)
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(6), 0, 0)
-        })
-        header.addView(titleCol)
-
-        header.addView(DesignSystem.createSheetCloseButton(this, p) {
-            routeRequestSeq++
-            previewRoute = null
-            renderRouteOverlay()
-            hideInScreenSheet()
-        })
-        sheetContent.addView(header)
-
-        // Travel Mode Switcher (Car / Walk / Bicycle) — warm espresso/stone pills with crisp outlined vectors
-        val modeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            isBaselineAligned = false
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(14)
-                bottomMargin = dp(12)
-            }
-        }
-        TravelMode.entries.forEachIndexed { idx, mode ->
-            val active = mode == route.mode
-            val fgColor = if (active) p.onActionDark else p.textPrimary
-            val bgColor = if (active) p.actionDark else p.surfaceTonal
-            modeRow.addView(MaterialButton(this).apply {
-                text = mode.label
-                textSize = 13f
-                setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
-                isAllCaps = false
-                setSingleLine(true)
-                ellipsize = TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER
-                insetTop = 0
-                insetBottom = 0
-                minWidth = 0
-                minimumWidth = 0
-                minHeight = 0
-                minimumHeight = 0
-                elevation = 0f
-                stateListAnimator = null
-                setPadding(dp(8), 0, dp(10), 0)
-                setIconResource(travelModeIconRes(mode))
-                iconSize = dp(18)
-                iconPadding = dp(6)
-                iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
-                iconTint = android.content.res.ColorStateList.valueOf(fgColor)
-                setTextColor(fgColor)
-                backgroundTintList = android.content.res.ColorStateList.valueOf(bgColor)
-                strokeWidth = if (active) 0 else dp(1)
-                strokeColor = android.content.res.ColorStateList.valueOf(if (active) Color.TRANSPARENT else p.borderSubtle)
-                cornerRadius = dp(22)
-                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
-                    if (idx < TravelMode.entries.lastIndex) marginEnd = dp(8)
-                }
-                UiAnimations.attachSnappyPress(this)
-                setOnClickListener {
-                    if (mode != route.mode) openRoutePreview(destLat, destLng, destTitle, mode)
-                }
-            })
-        }
-        sheetContent.addView(modeRow)
-
-        val btnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            isBaselineAligned = false
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = dp(4)
-            }
-        }
-        btnRow.addView(MaterialButton(this).apply {
-            text = if (routeOriginLatLng != null) "Navigate from GPS" else "Start Navigation"
-            textSize = 14f
-            isAllCaps = false
-            setSingleLine(true)
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
-            insetTop = 0
-            insetBottom = 0
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(24)
-            DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1.4f).apply { marginEnd = dp(8) }
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                if (routeOriginLatLng != null) {
-                    clearRouteOrigin()
-                    openRoutePreview(destLat, destLng, destTitle, route.mode)
-                } else {
-                    confirmStartNavigation(route, destLat, destLng, destTitle)
-                }
-            }
-        })
-        btnRow.addView(MaterialButton(this).apply {
-            text = "External"
-            textSize = 14f
-            isAllCaps = false
-            setSingleLine(true)
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
-            insetTop = 0
-            insetBottom = 0
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(dp(12), 0, dp(12), 0)
-            cornerRadius = dp(24)
-            DesignSystem.applySecondaryTonalButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(0, dp(48), 0.8f)
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener {
-                val label = Uri.encode(destTitle)
-                val geoUri = Uri.parse("geo:$destLat,$destLng?q=$destLat,$destLng($label)")
-                safeStartActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, geoUri), "Open in"), "No external map app installed")
-            }
-        })
-        sheetContent.addView(btnRow)
-
-        UiAnimations.animateSheetContentReveal(sheetContent)
-        showInScreenSheet(peekDp = 310, inPlace = true, expandToFit = true)
+        navigationController.openRoutePreview(destLat, destLng, destTitle, modeOverride)
     }
 
     private fun moveCameraForNavigation(loc: Location, durationMs: Int = 500) {
-        if (!isActivityResumed) return
-        val m = map ?: return
-        val speedKmh = if (loc.hasSpeed()) loc.speed * 3.6f else 0f
-        val targetZoom = when {
-            speedKmh >= 75f -> 15.6
-            speedKmh >= 45f -> 16.3
-            else -> 17.0
-        }
-        val camBearing = when {
-            loc.hasBearing() && loc.speed > 1.0f -> loc.bearing.toDouble()
-            displayedBearing != 0f -> displayedBearing.toDouble()
-            else -> m.cameraPosition.bearing
-        }
-        val cam = CameraPosition.Builder()
-            .target(LatLng(loc.latitude, loc.longitude))
-            .zoom(targetZoom)
-            .tilt(45.0)
-            .bearing(camBearing)
-            .padding(0.0, dp(165).toDouble(), 0.0, dp(75).toDouble())
-            .build()
-        m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), durationMs)
-    }
-
-    private fun formatNavInstructionBidi(raw: String): String {
-        val markers = arrayOf(" onto ", " towards ", " toward ", " on ", " at ")
-        for (marker in markers) {
-            val idx = raw.indexOf(marker, ignoreCase = true)
-            if (idx >= 0) {
-                val splitPos = idx + marker.length
-                val head = raw.substring(0, splitPos)
-                val tail = raw.substring(splitPos).trim()
-                if (tail.isNotEmpty()) return "$head\u2068$tail\u2069"
-            }
-        }
-        return raw
-    }
-
-    private fun confirmStartNavigation(route: NavRoute, destLat: Double, destLng: Double, destTitle: String) {
-        if (!ensureLocationServiceOn()) return
-        startLiveGpsUpdates(forceRestart = true)
-        val loc = currentLocation
-        if (loc == null) {
-            Toast.makeText(this, "Waiting for GPS fix before starting navigation...", Toast.LENGTH_SHORT).show()
-            return
-        }
-        activeNavRoute = route
-        activeNavTrimmedGeom = route.geometry
-        navLastSegIdx = 0
-        isRerouting = false
-        previewRoute = null
-        navDestLatLng = LatLng(destLat, destLng)
-        navDestName = destTitle
-        navCurrentStepIdx = if (route.steps.size > 1) 1 else 0
-        lastSpokenStepIdx = -1
-
-        hideInScreenSheet()
-        applyNavigationChrome(true)
-        applyKeepAwakeFlag()
-        isFollowingGps = true
-        updateLocationIconTint()
-        syncGpsPollingProfile(forceRestart = true)
-        updateSpeedBadge(loc)
-        renderRouteOverlay()
-        updateNavigationProgress(loc, route, LatLng(destLat, destLng))
-        moveCameraForNavigation(loc, 650)
-    }
-
-    private fun updateNavigationProgress(loc: Location, route: NavRoute, dest: LatLng) {
-        val directToDest = RoutingEngine.haversineMeters(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
-        if (directToDest < 28.0) {
-            speakPrompt("You have arrived at $navDestName")
-            Toast.makeText(this, "Arrived at $navDestName", Toast.LENGTH_LONG).show()
-            stopNavigation()
-            return
-        }
-
-        val prog = RoutingEngine.trackRouteProgress(loc.latitude, loc.longitude, route, navLastSegIdx)
-        navLastSegIdx = prog.segmentIndex
-        activeNavTrimmedGeom = prog.remainingGeometry
-        updateActiveRouteLine(prog.remainingGeometry)
-
-        val remainingRoadMeters = prog.remainingMeters
-        if (route.steps.isNotEmpty()) {
-            val nextIdx = route.steps.indexOfFirst { it.routeDistMeters > prog.traveledMeters + 18.0 }
-            navCurrentStepIdx = when {
-                nextIdx >= 0 -> nextIdx.coerceAtLeast(if (route.steps.size > 1) 1 else 0)
-                else -> route.steps.lastIndex
-            }
-        }
-
-        val step = route.steps.getOrElse(navCurrentStepIdx) {
-            NavStep("Continue to destination", "↑", remainingRoadMeters, dest.latitude, dest.longitude, prog.traveledMeters + remainingRoadMeters)
-        }
-        val distToStep = if (step.routeDistMeters > 0.0) {
-            (step.routeDistMeters - prog.traveledMeters).coerceAtLeast(0.0)
-        } else {
-            RoutingEngine.haversineMeters(loc.latitude, loc.longitude, step.lat, step.lng)
-        }
-
-        val etaSec = if (route.totalDistanceMeters > 10.0 && route.totalDurationSeconds > 0.0) {
-            (remainingRoadMeters / route.totalDistanceMeters) * route.totalDurationSeconds
-        } else {
-            (remainingRoadMeters / 1000.0) / 45.0 * 3600.0
-        }
-
-        val unit = cachedSpeedUnit
-        val nextInstr = if (isRerouting) "Recalculating route..." else step.instruction
-        UiAnimations.animateCrossfadeText(tvNavArrow, step.arrow, slideDp = 4f)
-        tvNavStepDist.text = if (isRerouting) "Rerouting" else formatDistanceShort(distToStep, unit)
-        UiAnimations.animateCrossfadeText(tvNavInstruction, formatNavInstructionBidi(nextInstr), slideDp = 4f)
-        tvNavEta.text = formatEtaDuration(etaSec)
-        val modeTag = if (route.engineLabel.contains("Offline", ignoreCase = true)) "Offline" else "Online"
-        tvNavMeta.text = "${formatDistanceShort(remainingRoadMeters, unit)} • $modeTag"
-
-        val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
-        if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
-            lastSpokenStepIdx = navCurrentStepIdx
-            speakPrompt("In ${formatDistanceShort(distToStep, unit)}, ${step.instruction}")
-        }
-
-        if (isFollowingGps) {
-            moveCameraForNavigation(loc, 450)
-        }
-
-        val now = System.currentTimeMillis()
-        val rerouteThreshold = if (loc.hasAccuracy() && loc.accuracy > 20f) {
-            (45.0 + loc.accuracy * 0.5).coerceAtMost(75.0)
-        } else 45.0
-        if (prog.offRouteMeters > rerouteThreshold && !isRerouting && now - lastRerouteTime > 7000L) {
-            isRerouting = true
-            lastRerouteTime = now
-            tvNavStepDist.text = "Rerouting"
-            tvNavInstruction.text = "Recalculating route..."
-            speakPrompt("Recalculating route")
-            val heading = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
-            val navReqId = ++routeRequestSeq
-            RoutingEngine.fetchRoute(
-                loc.latitude, loc.longitude, dest.latitude, dest.longitude, route.mode, heading,
-                isCancelled = { activeNavRoute == null || navReqId != routeRequestSeq }
-            ) { newRoute, _ ->
-                runOnUiThread {
-                    if (isFinishing || isDestroyed || navReqId != routeRequestSeq) return@runOnUiThread
-                    isRerouting = false
-                    val active = activeNavRoute ?: return@runOnUiThread
-                    if (newRoute == null) {
-                        val fallbackStep = active.steps.getOrNull(navCurrentStepIdx)
-                        tvNavInstruction.text = formatNavInstructionBidi(fallbackStep?.instruction ?: "Continue to destination")
-                        return@runOnUiThread
-                    }
-                    activeNavRoute = newRoute
-                    activeNavTrimmedGeom = newRoute.geometry
-                    navLastSegIdx = 0
-                    navCurrentStepIdx = if (newRoute.steps.size > 1) 1 else 0
-                    lastSpokenStepIdx = -1
-                    renderRouteOverlay()
-                    currentLocation?.let { latest ->
-                        updateNavigationProgress(latest, newRoute, dest)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun applyNavigationChrome(inNav: Boolean) {
-        if (inNav) {
-            if (isFullScreenMapMode) setFullScreenMapMode(false, animate = false)
-            if (isLassoMode) toggleLassoMode(false)
-            if (isRulerMode) toggleRulerMode(false)
-            undoController.dismiss(animate = false)
-            UiAnimations.hideSlideTop(topCluster)
-            UiAnimations.showSlideTop(navBanner)
-            UiAnimations.hideSlideBottom(bottomNavDock, 110L)
-            UiAnimations.animateSpeedBadgeVisibility(btnRuler, false)
-            UiAnimations.animateSpeedBadgeVisibility(btnLasso, false)
-            UiAnimations.showSlideBottom(navBottomBar)
-            UiAnimations.fadeShow(bottomDock, 180L)
-        } else {
-            UiAnimations.hideSlideTop(navBanner)
-            UiAnimations.hideSlideBottom(navBottomBar, 135L)
-            UiAnimations.showSlideTop(topCluster)
-            UiAnimations.animateSpeedBadgeVisibility(btnRuler, true)
-            applyExtraMapToolsVisibility()
-            applyZoomButtonsVisibility()
-            if (!isRulerMode && !isLassoMode && sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) {
-                UiAnimations.showSlideBottom(bottomNavDock)
-            }
-        }
+        navigationController.moveCameraForNavigation(loc, durationMs)
     }
 
     private fun stopNavigation() {
-        routeRequestSeq++
-        activeNavRoute = null
-        activeNavTrimmedGeom = null
-        navLastSegIdx = 0
-        isRerouting = false
-        previewRoute = null
-        navDestLatLng = null
-        navCurrentStepIdx = 0
-        applyKeepAwakeFlag()
-        applyNavigationChrome(false)
-        syncGpsPollingProfile()
-        updateSpeedBadge(currentLocation)
-        renderRouteOverlay()
-        map?.let { m ->
-            val cam = CameraPosition.Builder()
-                .target(m.cameraPosition.target)
-                .zoom(m.cameraPosition.zoom)
-                .tilt(0.0)
-                .bearing(0.0)
-                .padding(0.0, 0.0, 0.0, 0.0)
-                .build()
-            m.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 400)
-        }
+        navigationController.stopNavigation()
     }
 
-    private fun speakPrompt(text: String) {
-        if (ttsReady && DevicePrefs.isVoiceNav(this)) {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nav_prompt")
-        }
-    }
-
-    // --- Live GPS, Location-Off Prompt & Driving Speed Indicator ---
-
-    private fun hasLocationPermission(): Boolean {
-        val f = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-        val c = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-        return f == PackageManager.PERMISSION_GRANTED || c == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun ensureLocationServiceOn(): Boolean {
-        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        if (LocationManagerCompat.isLocationEnabled(lm)) return true
-
-        showThemedDialog(
-            themedDialogBuilder("Location is turned off")
-                .setMessage("Turn on your phone's Location / GPS to find your position, measure speed, and start navigation.")
-                .setPositiveButton("Turn On") { _, _ ->
-                    runCatching { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
-                }
-                .setNegativeButton("Cancel", null)
-                .create()
-        )
-        return false
-    }
-
-    private fun locationAgeMs(loc: Location): Long {
-        return if (loc.elapsedRealtimeNanos > 0L) {
-            ((android.os.SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000L).coerceAtLeast(0L)
-        } else {
-            (System.currentTimeMillis() - loc.time).coerceAtLeast(0L)
-        }
-    }
-
-    private fun desiredGpsProfile(): GpsPollProfile {
-        if (activeNavRoute != null) return GpsPollProfile.NAVIGATION
-        if (!isActivityResumed) return GpsPollProfile.OFF
-        val overlayVisible = ::pageOverlayContainer.isInitialized && pageOverlayContainer.visibility == View.VISIBLE
-        if (overlayVisible) return GpsPollProfile.OFF
-        if (isFollowingGps || pendingRouteReq != null) return GpsPollProfile.FOLLOW_LOCATING
-        return GpsPollProfile.ACTIVE_MAP
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun syncGpsPollingProfile(forceRestart: Boolean = false) {
-        val desired = desiredGpsProfile()
-        if (desired == GpsPollProfile.OFF) {
-            stopLiveGpsUpdates()
-            return
-        }
-        if (!hasLocationPermission()) return
-        if (gpsTrackingActive && activeGpsProfile == desired && !forceRestart) return
-
-        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val specs = when (desired) {
-            GpsPollProfile.NAVIGATION -> buildList {
-                add(Triple(LocationManager.GPS_PROVIDER, 600L, 0f))
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    add(Triple(LocationManager.FUSED_PROVIDER, 1200L, 0f))
-                }
-            }
-            GpsPollProfile.FOLLOW_LOCATING -> buildList {
-                add(Triple(LocationManager.GPS_PROVIDER, 1000L, 0f))
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    add(Triple(LocationManager.FUSED_PROVIDER, 1500L, 0f))
-                }
-                add(Triple(LocationManager.NETWORK_PROVIDER, 5000L, 5f))
-            }
-            GpsPollProfile.ACTIVE_MAP -> buildList {
-                add(Triple(LocationManager.GPS_PROVIDER, 2500L, 2f))
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    add(Triple(LocationManager.FUSED_PROVIDER, 3000L, 3f))
-                }
-                add(Triple(LocationManager.NETWORK_PROVIDER, 15_000L, 15f))
-            }
-            GpsPollProfile.OFF -> emptyList()
-        }
-
-        val wasTracking = gpsTrackingActive
-        if (!wasTracking) {
-            val bestLast = specs
-                .mapNotNull { (p, _, _) -> runCatching { lm.getLastKnownLocation(p) }.getOrNull() }
-                .filter { locationAgeMs(it) <= 120_000L }
-                .minByOrNull { locationAgeMs(it) }
-            if (bestLast != null && (currentLocation == null || locationAgeMs(bestLast) < locationAgeMs(currentLocation!!))) {
-                currentLocation = bestLast
-                displayedLat = bestLast.latitude
-                displayedLng = bestLast.longitude
-                if (bestLast.hasBearing()) displayedBearing = bestLast.bearing
-                updateGpsLayerFeature(displayedLat, displayedLng, displayedBearing)
-                updateSpeedBadge(bestLast)
-            }
-        } else {
-            runCatching { lm.removeUpdates(gpsListener) }
-        }
-
-        var registeredAny = false
-        specs.forEach { (provider, minTimeMs, minDistM) ->
-            runCatching {
-                if (lm.isProviderEnabled(provider)) {
-                    lm.requestLocationUpdates(provider, minTimeMs, minDistM, gpsListener)
-                    registeredAny = true
-                }
-            }
-        }
-        gpsTrackingActive = registeredAny
-        activeGpsProfile = if (registeredAny) desired else GpsPollProfile.OFF
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startLiveGpsUpdates(forceRestart: Boolean = false) {
-        syncGpsPollingProfile(forceRestart)
-    }
-
-    private fun stopLiveGpsUpdates() {
-        speedSampleState = SpeedFallbackEstimator.SpeedSampleState()
-        activeGpsProfile = GpsPollProfile.OFF
-        if (!gpsTrackingActive) return
-        runCatching {
-            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            lm.removeUpdates(gpsListener)
-        }
-        gpsTrackingActive = false
-    }
-
-    private fun isBetterLocation(candidate: Location, current: Location?): Boolean {
-        val now = System.currentTimeMillis()
-        val isGps = candidate.provider == LocationManager.GPS_PROVIDER
-        val isFused = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
-            candidate.provider == LocationManager.FUSED_PROVIDER
-        if (isGps) {
-            lastGpsFixTimeMs = now
-        } else if (!isFused && now - lastGpsFixTimeMs < 10_000L) {
-            return false
-        } else if (isFused && now - lastGpsFixTimeMs < 3_000L && candidate.hasAccuracy() && candidate.accuracy > 25f) {
-            return false
-        }
-        if (current == null) return true
-        val candAge = locationAgeMs(candidate)
-        val currAge = locationAgeMs(current)
-        if (candAge > currAge + 3_000L) return false
-        val isSignificantlyNewer = currAge - candAge > 5_000L
-        if (!isSignificantlyNewer && candidate.hasAccuracy() && current.hasAccuracy()) {
-            if (!isGps && !isFused && candidate.accuracy > current.accuracy + 25f) return false
-            if ((isGps || isFused) && candidate.accuracy > 80f && current.accuracy < 25f) return false
-        }
-        return true
-    }
-
-    internal fun updateSpeedBadge(loc: Location?) {
-        if (!DevicePrefs.isSpeedIndicatorEnabled(this)) {
-            UiAnimations.animateSpeedBadgeVisibility(speedBadge, false)
-            return
-        }
-        val unit = cachedSpeedUnit
-        val accurateFix = loc != null &&
-            loc.provider != LocationManager.NETWORK_PROVIDER &&
-            (!loc.hasAccuracy() || loc.accuracy <= 35f)
-        val rawMps = when {
-            accurateFix && loc!!.hasSpeed() && loc.speed > 0.1f -> loc.speed
-            accurateFix && speedSampleState.derivedSpeedMps > 0f -> speedSampleState.derivedSpeedMps
-            else -> 0f
-        }
-        val rawKmh = (rawMps * 3.6f).roundToInt().coerceAtLeast(0)
-        val kmh = if (rawKmh < 2) 0 else rawKmh
-        val displayVal = if (unit == SpeedUnit.IMPERIAL) (kmh * 0.621371f).roundToInt() else kmh
-        val shouldShow = activeNavRoute != null || kmh >= 4
-        if (shouldShow) {
-            tvSpeedValue.text = "$displayVal"
-            tvSpeedUnit.text = unit.speedSuffix
-        }
-        UiAnimations.animateSpeedBadgeVisibility(speedBadge, shouldShow)
-    }
-
-    private fun onNewLocation(loc: Location) {
-        if (!isBetterLocation(loc, currentLocation)) return
-        lastLiveLocationFixMs = System.currentTimeMillis()
-        speedSampleState = SpeedFallbackEstimator.update(
-            prev = speedSampleState,
-            lat = loc.latitude,
-            lng = loc.longitude,
-            provider = loc.provider.orEmpty(),
-            hasSpeed = loc.hasSpeed(),
-            speedMps = loc.speed,
-            accurate = !loc.hasAccuracy() || loc.accuracy <= 35f,
-            elapsedMs = android.os.SystemClock.elapsedRealtime()
-        )
-        val prevLoc = currentLocation
-        val prevLat = if (prevLoc == null) loc.latitude else displayedLat
-        val prevLng = if (prevLoc == null) loc.longitude else displayedLng
-        val prevBearing = displayedBearing
-        val targetBearing = when {
-            loc.hasBearing() && loc.speed > 0.8f -> loc.bearing
-            prevLoc != null && prevLoc.distanceTo(loc) > 3.5f -> (prevLoc.bearingTo(loc) + 360f) % 360f
-            else -> prevBearing
-        }
-        var deltaBearing = (targetBearing - prevBearing) % 360f
-        if (deltaBearing > 180f) deltaBearing -= 360f
-        if (deltaBearing < -180f) deltaBearing += 360f
-
-        currentLocation = loc
-        updateSpeedBadge(loc)
-
-        // Automatically fulfill a queued Route To request once a fresh GPS fix arrives
-        val queuedRoute = pendingRouteReq
-        if (queuedRoute != null && locationAgeMs(loc) <= 120_000L) {
-            pendingRouteReq = null
-            if (System.currentTimeMillis() - queuedRoute.requestedAtMs <= 20_000L && activeNavRoute == null) {
-                openRoutePreview(queuedRoute.destLat, queuedRoute.destLng, queuedRoute.destTitle, queuedRoute.mode)
-            }
-        }
-
-        gpsAnim?.cancel()
-        val nowElapsed = android.os.SystemClock.elapsedRealtime()
-        val fixDeltaMs = if (prevLocationElapsedMs > 0L) (nowElapsed - prevLocationElapsedMs) else 450L
-        prevLocationElapsedMs = nowElapsed
-        val movedMeters = if (prevLoc == null) Double.MAX_VALUE else {
-            RoutingEngine.haversineMeters(prevLat, prevLng, loc.latitude, loc.longitude)
-        }
-        val shouldAnimateGps = isActivityResumed &&
-            !UiAnimations.isReducedMotion(this) &&
-            (movedMeters >= 0.35 || kotlin.math.abs(deltaBearing) >= 1.5f)
-        if (shouldAnimateGps) {
-            val continuousMotion = (loc.hasSpeed() && loc.speed >= 1.5f) || movedMeters >= 2.5
-            gpsAnim = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = if (continuousMotion) fixDeltaMs.coerceIn(420L, 1100L) else 450L
-                interpolator = if (continuousMotion) LinearInterpolator() else DecelerateInterpolator()
-                addUpdateListener { anim ->
-                    if (!isActivityStarted) {
-                        anim.cancel()
-                        return@addUpdateListener
-                    }
-                    val t = anim.animatedValue as Float
-                    displayedLat = prevLat + (loc.latitude - prevLat) * t
-                    displayedLng = prevLng + (loc.longitude - prevLng) * t
-                    displayedBearing = (prevBearing + deltaBearing * t + 360f) % 360f
-                    updateGpsLayerFeature(displayedLat, displayedLng, displayedBearing)
-                }
-                start()
-            }
-        } else {
-            displayedLat = loc.latitude
-            displayedLng = loc.longitude
-            displayedBearing = targetBearing
-            if (prevLoc == null || movedMeters >= 0.1 || kotlin.math.abs(deltaBearing) >= 0.5f) {
-                updateGpsLayerFeature(displayedLat, displayedLng, displayedBearing)
-            }
-        }
-
-        val activeRoute = activeNavRoute
-        val dest = navDestLatLng
-        if (activeRoute != null && dest != null) {
-            updateNavigationProgress(loc, activeRoute, dest)
-        } else if (isActivityResumed && isFollowingGps && DevicePrefs.isAutoFollow(this)) {
-            map?.animateCamera(CameraUpdateFactory.newLatLng(LatLng(loc.latitude, loc.longitude)), 600)
-        }
-    }
-
-    private fun updateLocationIconTint() {
-        val p = currentPalette()
-        if (isFollowingGps) {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 10f, activeFillColor = p.accentPrimary)
-            btnLocate.setColorFilter(Color.WHITE)
-        } else if (p.isDark) {
-            DesignSystem.applyFloatingControl(
-                this,
-                btnLocate,
-                p,
-                33f,
-                10f,
-                activeFillColor = Color.parseColor("#242926")
-            )
-            btnLocate.setColorFilter(p.accentPrimary)
-        } else {
-            DesignSystem.applyFloatingControl(this, btnLocate, p, 33f, 10f, activeFillColor = p.actionDark)
-            btnLocate.setColorFilter(p.onActionDark)
-        }
-    }
+    private fun hasLocationPermission(): Boolean = gpsController.hasLocationPermission()
+    private fun ensureLocationServiceOn(): Boolean = gpsController.ensureLocationServiceOn()
+    private fun syncGpsPollingProfile(forceRestart: Boolean = false) = gpsController.syncGpsPollingProfile(forceRestart)
+    private fun startLiveGpsUpdates(forceRestart: Boolean = false) = gpsController.startLiveGpsUpdates(forceRestart)
+    private fun stopLiveGpsUpdates() = gpsController.stopLiveGpsUpdates()
+    internal fun updateSpeedBadge(loc: Location?) = gpsController.updateSpeedBadge(loc)
+    private fun updateLocationIconTint() = gpsController.updateLocationIconTint()
 
     internal fun updateFilterIconTint() {
         val p = currentPalette()
@@ -8522,9 +6373,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun onRepositorySnapshotUpdated(snap: FolderIndexSnapshot) {
         viewModel.updateFolderSnapshot(snap)
-        val activeTrackIds = snap.tracks.mapTo(HashSet(snap.tracks.size)) { it.id }
-        synchronized(trackPointCache) {
-            trackPointCache.keys.retainAll(activeTrackIds)
+        if (::mapRenderer.isInitialized) {
+            val activeTrackIds = snap.tracks.mapTo(HashSet(snap.tracks.size)) { it.id }
+            mapRenderer.retainTrackPointCache(activeTrackIds)
         }
         renderMapData()
         liveBookmarksRefresh?.invoke()
@@ -8540,20 +6391,8 @@ class MainActivity : AppCompatActivity() {
     internal fun refreshJoinedSync() {
         repository.refreshJoinedSync { snap ->
             if (isFinishing || isDestroyed) return@refreshJoinedSync
-            val waitingId = activeSharedPinId
-            if (waitingId != null) {
-                val matched = snap.pinById[waitingId]
-                if (matched != null) {
-                    activeSharedPinId = null
-                    hasAutoZoomedInitial = true
-                    ensurePinVisibleOnMap(matched)
-                    selectPinAndOpenCard(matched, zoomIfFar = true)
-                    return@refreshJoinedSync
-                }
-            }
-            if (!hasAutoZoomedInitial && (snap.pins.isNotEmpty() || snap.tracks.isNotEmpty())) {
-                hasAutoZoomedInitial = true
-                zoomToKmlBounds(collectLayerLatLngs(snap.pins, snap.tracks))
+            if (::mapToolsController.isInitialized) {
+                mapToolsController.handleSyncedSnapshotForDeepLinkAndAutoZoom(snap)
             }
         }
     }
@@ -8593,112 +6432,14 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "$label copied", Toast.LENGTH_SHORT).show()
     }
 
-    private fun collectLayerLatLngs(layerPins: List<PinItem>, layerTracks: List<TrackItem>): List<LatLng> {
-        val out = ArrayList<LatLng>(layerPins.size + layerTracks.size * 4)
-        layerPins.forEach { p ->
-            if (p.lat.isFinite() && p.lng.isFinite() && p.lat in -90.0..90.0 && p.lng in -180.0..180.0) {
-                out.add(LatLng(p.lat, p.lng))
-            }
-        }
-        layerTracks.forEach { t ->
-            t.coords.split(";").forEach { pair ->
-                val parts = pair.split(",")
-                if (parts.size >= 2) {
-                    val lng = parts[0].trim().toDoubleOrNull()
-                    val lat = parts[1].trim().toDoubleOrNull()
-                    if (lat != null && lng != null && lat.isFinite() && lng.isFinite() &&
-                        lat in -90.0..90.0 && lng in -180.0..180.0
-                    ) {
-                        out.add(LatLng(lat, lng))
-                    }
-                }
-            }
-        }
-        return out
-    }
+    private fun collectLayerLatLngs(layerPins: List<PinItem>, layerTracks: List<TrackItem>): List<LatLng> =
+        mapToolsController.collectLayerLatLngs(layerPins, layerTracks)
 
-    private fun zoomToKmlBounds(pts: List<LatLng>, layerIdToReveal: String? = null) {
-        if (layerIdToReveal != null && !DevicePrefs.isLayerVisible(this, layerIdToReveal)) {
-            DevicePrefs.setLayerVisible(this, layerIdToReveal, true)
-            renderMapData()
-        }
-        val valid = pts.filter {
-            it.latitude.isFinite() && it.longitude.isFinite() &&
-                it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0
-        }
-        if (valid.isEmpty()) {
-            if (layerIdToReveal != null) {
-                Toast.makeText(this, "No coordinates found in this KML folder", Toast.LENGTH_SHORT).show()
-            }
-            return
-        }
-        hasAutoZoomedInitial = true
-        if (isFollowingGps) {
-            isFollowingGps = false
-            updateLocationIconTint()
-        }
-        pendingZoomPoints = valid
-        flushPendingZoomIfReady()
-    }
+    private fun zoomToKmlBounds(pts: List<LatLng>, layerIdToReveal: String? = null) =
+        mapToolsController.zoomToKmlBounds(pts, layerIdToReveal)
 
-    private fun flushPendingZoomIfReady() {
-        val pts = pendingZoomPoints ?: return
-        val m = map ?: return
-        val style = m.style
-        if (style == null || !style.isFullyLoaded) return
-        if (mapView.width <= 0 || mapView.height <= 0) {
-            mapView.post { flushPendingZoomIfReady() }
-            return
-        }
-        pendingZoomPoints = null
-        mapView.post {
-            if (isFinishing || isDestroyed) return@post
-            val curMap = map ?: return@post
-            var minLat = Double.POSITIVE_INFINITY
-            var maxLat = Double.NEGATIVE_INFINITY
-            var minLng = Double.POSITIVE_INFINITY
-            var maxLng = Double.NEGATIVE_INFINITY
-            pts.forEach { p ->
-                if (p.latitude < minLat) minLat = p.latitude
-                if (p.latitude > maxLat) maxLat = p.latitude
-                if (p.longitude < minLng) minLng = p.longitude
-                if (p.longitude > maxLng) maxLng = p.longitude
-            }
-            val center = LatLng((minLat + maxLat) / 2.0, (minLng + maxLng) / 2.0)
-            val isSingleOrTight = pts.size == 1 || (maxLat - minLat < 1e-5 && maxLng - minLng < 1e-5)
-            if (isSingleOrTight) {
-                val cam = CameraPosition.Builder()
-                    .target(center)
-                    .zoom(16.5)
-                    .padding(0.0, 0.0, 0.0, 0.0)
-                    .build()
-                curMap.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 550)
-                return@post
-            }
-            val maxPadH = (mapView.width / 3).coerceAtLeast(16)
-            val maxPadV = (mapView.height / 3).coerceAtLeast(16)
-            val padLeft = dp(48).coerceAtMost(maxPadH)
-            val padRight = dp(60).coerceAtMost(maxPadH)
-            val padTop = (statusBarInsetTop + dp(84)).coerceAtMost(maxPadV)
-            val padBottom = (navBarInsetBottom + dp(112)).coerceAtMost(maxPadV)
-            runCatching {
-                val bounds = LatLngBounds.Builder()
-                    .include(LatLng(minLat, minLng))
-                    .include(LatLng(maxLat, maxLng))
-                    .build()
-                curMap.animateCamera(
-                    CameraUpdateFactory.newLatLngBounds(bounds, padLeft, padTop, padRight, padBottom),
-                    650
-                )
-            }.onFailure {
-                curMap.animateCamera(CameraUpdateFactory.newLatLngZoom(center, 15.5), 550)
-            }
-        }
-    }
-
-    private fun zoomToPoints(pts: List<LatLng>) {
-        zoomToKmlBounds(pts)
-    }
+    private fun zoomToPoints(pts: List<LatLng>) =
+        mapToolsController.zoomToKmlBounds(pts)
 
     private fun getDisplayName(uri: Uri): String {
         contentResolver.query(uri, null, null, null, null)?.use { c ->
@@ -8743,10 +6484,8 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onPause() {
         isActivityResumed = false
-        pulseAnimator?.cancel()
-        gpsAnim?.cancel()
-        contourManager.cancelPending()
-        if (activeNavRoute == null) stopLiveGpsUpdates()
+        if (::mapRenderer.isInitialized) mapRenderer.pause()
+        if (::gpsController.isInitialized) gpsController.pause()
         mapView.onPause()
         super.onPause()
     }
@@ -8757,26 +6496,20 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
     override fun onDestroy() {
-        routeRequestSeq++
         webSearchSeq++
-        pendingSharedPin = null
-        pendingRouteReq = null
-        pendingZoomPoints = null
         liveBookmarksRefresh = null
         livePinListRefresh = null
         liveEditHistoryRefresh = null
-        stopLiveGpsUpdates()
         activePageCleanup?.invoke()
         activePageCleanup = null
         pageOverlayContainer.animate().cancel()
-        pulseAnimator?.cancel()
-        gpsAnim?.cancel()
         if (::undoController.isInitialized) undoController.dismiss(animate = false)
         contourManager.destroy()
         offlineMaps.setStateListener(null)
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
+        if (::mapToolsController.isInitialized) mapToolsController.destroy()
+        if (::navigationController.isInitialized) navigationController.destroy()
+        if (::gpsController.isInitialized) gpsController.destroy()
+        if (::mapRenderer.isInitialized) mapRenderer.destroy()
         if (::repository.isInitialized) repository.stop()
         mapView.onDestroy()
         super.onDestroy()
@@ -8839,12 +6572,12 @@ class MainActivity : AppCompatActivity() {
                 pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
             }
             val curPinId = selectedPinId
-            val curTapped = activeTappedLatLng
+            val curTapped = viewModel.tappedLocation
             if (sheetBehavior.state != BottomSheetBehavior.STATE_HIDDEN) {
                 if (curPinId != null) {
                     pinById[curPinId]?.let { showPinCard(it, animateSwap = false) }
                 } else if (curTapped != null) {
-                    showTappedPlaceCard(tappedResolvedTitle, tappedResolvedSub, curTapped.latitude, curTapped.longitude)
+                    showTappedPlaceCard(curTapped.title, curTapped.subtitle, curTapped.lat, curTapped.lng)
                 }
             }
         }
