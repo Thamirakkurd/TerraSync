@@ -339,8 +339,8 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
 
             addSegmentedBlock(
                 mapCard,
-                title = "Map Style",
-                subtitle = "Crisp vector street grid or satellite hybrid imagery",
+                title = AppStrings.mapStyleTitle(this),
+                subtitle = AppStrings.mapStyleSub(this),
                 options = MapStyleMode.entries.map { it.id.toString() to it.label },
                 selectedId = mapStyleMode.id.toString(),
                 activeColor = { p.accentPrimary }
@@ -357,14 +357,18 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
             mapCard.addView(DesignSystem.createHairlineDivider(this, p))
             addSegmentedBlock(
                 mapCard,
-                title = "Appearance Theme",
-                subtitle = "Automatically adapts map canvas and system bars",
-                options = listOf("day" to "Day", "night" to "Night", "auto" to "Auto"),
+                title = AppStrings.appearanceThemeTitle(this),
+                subtitle = AppStrings.appearanceThemeSub(this),
+                options = listOf(
+                    "day" to AppStrings.themeDay(this),
+                    "night" to AppStrings.themeNight(this),
+                    "auto" to AppStrings.themeAuto(this)
+                ),
                 selectedId = DevicePrefs.getThemeMode(this)
             ) { key ->
                 if (DevicePrefs.getThemeMode(this) != key) {
                     DevicePrefs.setThemeMode(this, key)
-                    applyMapChromeTheme()
+                    refreshLocalizedChrome()
                     if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
                     reopenSettingsSection(SettingsSection.MAP_SHADERS)
                 }
@@ -383,8 +387,8 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
             mapCard.addView(DesignSystem.createHairlineDivider(this, p))
             addSegmentedBlock(
                 mapCard,
-                title = "Hillshading Intensity",
-                subtitle = "Adjust relief depth for sunlight readability",
+                title = AppStrings.hillshadeIntensityTitle(this),
+                subtitle = AppStrings.hillshadeIntensitySub(this),
                 options = HillshadeIntensity.entries.map { it.id to it.label },
                 selectedId = DevicePrefs.getHillshadeIntensity(this).id,
                 activeColor = { p.accentPrimary }
@@ -422,14 +426,14 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
 
             mapCard.addView(DesignSystem.createHairlineDivider(this, p))
             mapCard.addView(TextView(this).apply {
-                text = "Map Pin Style"
+                text = AppStrings.mapPinStyleTitle(this@buildSettingsSubPage)
                 textSize = 14.5f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(txtPrimary)
                 setPadding(0, dp(8), 0, dp(2))
             })
             mapCard.addView(TextView(this).apply {
-                text = "Switch instantly between white Concept Droplet rings and Classic Teardrop pins"
+                text = AppStrings.mapPinStyleSub(this@buildSettingsSubPage)
                 textSize = 12f
                 setTextColor(txtSub)
                 setPadding(0, 0, 0, dp(8))
@@ -540,8 +544,8 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
 
             addCardSwitch(
                 mapCard,
-                title = "Show Zoom Buttons",
-                subtitle = "Show slim frosted + / − pill above the right-side map arc (pinch zoom always active)",
+                title = AppStrings.showZoomButtonsTitle(this),
+                subtitle = AppStrings.showZoomButtonsSub(this),
                 checked = DevicePrefs.isShowZoomButtons(this)
             ) { enabled ->
                 DevicePrefs.setShowZoomButtons(this, enabled)
@@ -550,8 +554,8 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
 
             addCardSwitch(
                 mapCard,
-                title = "Map Scale Bar",
-                subtitle = "Metric (m / km) or imperial distance reference on canvas",
+                title = AppStrings.mapScaleBarTitle(this),
+                subtitle = AppStrings.mapScaleBarSub(this),
                 checked = DevicePrefs.isScaleBarEnabled(this)
             ) { enabled ->
                 DevicePrefs.setScaleBarEnabled(this, enabled)
@@ -563,8 +567,8 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
 
             addCardSwitch(
                 mapCard,
-                title = "Cluster Dense Pins",
-                subtitle = "Group nearby pins into count badges when zoomed out for clearer overview panning",
+                title = AppStrings.clusterDensePinsTitle(this),
+                subtitle = AppStrings.clusterDensePinsSub(this),
                 checked = DevicePrefs.isClusterDensePins(this)
             ) { enabled ->
                 DevicePrefs.setClusterDensePins(this, enabled)
@@ -626,6 +630,7 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
                             if (DevicePrefs.getAppLanguage(this@buildSettingsSubPage) != langOption) {
                                 UiAnimations.hapticTick(this)
                                 DevicePrefs.setAppLanguage(this@buildSettingsSubPage, langOption)
+                                refreshLocalizedChrome()
                                 reopenSettingsSection(SettingsSection.LANGUAGE_LABELS)
                             }
                         }

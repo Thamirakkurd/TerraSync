@@ -14,7 +14,28 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
+
+private sealed interface HistoryRowItem {
+    val stableId: String
+    data class EmptyState(val msg: String) : HistoryRowItem {
+        override val stableId: String = "empty:$msg"
+    }
+    data class DateHeader(val title: String) : HistoryRowItem {
+        override val stableId: String = "hdr:$title"
+    }
+    data class EntryRow(
+        val entry: PinEditEntry,
+        val isFirstInDay: Boolean,
+        val isLastInDay: Boolean
+    ) : HistoryRowItem {
+        override val stableId: String = "entry:${entry.pin.id}:${entry.historyLineIndex}:${entry.sortEpochMs}"
+    }
+}
 
 internal fun MainActivity.showWorkingHoursDialog(onSaved: () -> Unit) {
     val p = currentPalette()
@@ -257,18 +278,271 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
 
     val (outer, body) = makePageFrame(AppStrings.editHistory(this), {
         if (pageBackStack.isNotEmpty()) pageBackStack.removeAt(pageBackStack.lastIndex).invoke() else closeFullPage()
-    }, btnShareAudit)
+    }, btnShareAudit, scrollable = false)
 
     var timeFilter = "all" // "all", "after_hours", "in_hours"
     var operatorFilter: String? = null
-    var displayLimit = 120
     var auditSeq = 0
 
-    val contentRoot = LinearLayout(this).apply {
+    val headerHost = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
-    body.addView(contentRoot)
+    body.addView(headerHost)
+
+    val recycler = RecyclerView(this).apply {
+        layoutManager = LinearLayoutManager(this@buildEditHistoryPage)
+        itemAnimator = null
+        clipToPadding = false
+        setPadding(0, 0, 0, dp(16))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+    }
+    body.addView(recycler)
+
+    lateinit var renderAuditRef: (Boolean) -> Unit
+
+    val timelineAdapter = object : ListAdapter<HistoryRowItem, RecyclerView.ViewHolder>(
+        object : DiffUtil.ItemCallback<HistoryRowItem>() {
+            override fun areItemsTheSame(o: HistoryRowItem, n: HistoryRowItem) = o.stableId == n.stableId
+            override fun areContentsTheSame(o: HistoryRowItem, n: HistoryRowItem) = o == n
+        }
+    ) {
+        inner class SimpleVH(val view: View) : RecyclerView.ViewHolder(view)
+        inner class EntryVH(
+            val cardWrap: LinearLayout,
+            val divider: View,
+            val clickRow: LinearLayout,
+            val tvClock: TextView,
+            val railTop: View,
+            val railDot: View,
+            val railBot: View,
+            val tvPinTitle: TextView,
+            val tvAfterBadge: TextView,
+            val tvAction: TextView,
+            val btnDel: TextView
+        ) : RecyclerView.ViewHolder(cardWrap)
+
+        override fun getItemViewType(position: Int): Int = when (getItem(position)) {
+            is HistoryRowItem.EmptyState -> 0
+            is HistoryRowItem.DateHeader -> 1
+            is HistoryRowItem.EntryRow -> 2
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val ctx = this@buildEditHistoryPage
+            return when (viewType) {
+                0 -> {
+                    val emptyCard = DesignSystem.createGroupedCard(ctx, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 18)
+                    emptyCard.addView(TextView(ctx).apply {
+                        tag = "msg"
+                        textSize = 13.5f
+                        setLineSpacing(dp(2).toFloat(), 1.05f)
+                        setTextColor(txtSub)
+                    })
+                    SimpleVH(emptyCard)
+                }
+                1 -> {
+                    val hdr = DesignSystem.createSectionHeader(ctx, "", p)
+                    hdr.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    SimpleVH(hdr)
+                }
+                else -> {
+                    val cardWrap = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        clipToOutline = true
+                    }
+                    val divider = DesignSystem.createHairlineDivider(ctx, p, 84, 14)
+                    val row = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        minimumHeight = dp(58)
+                        setPadding(dp(12), 0, dp(10), 0)
+                    }
+                    val timeCol = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        setPadding(0, dp(12), 0, dp(12))
+                        layoutParams = LinearLayout.LayoutParams(dp(46), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            marginEnd = dp(6)
+                        }
+                    }
+                    val tvClock = TextView(ctx).apply {
+                        textSize = 13.5f
+                        setTypeface(null, Typeface.BOLD)
+                        DesignSystem.applyTabularNumerals(this)
+                    }
+                    timeCol.addView(tvClock)
+                    row.addView(timeCol)
+
+                    val railCol = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(dp(16), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                            marginEnd = dp(8)
+                        }
+                    }
+                    val railTop = View(ctx).apply { layoutParams = LinearLayout.LayoutParams(dp(2), 0, 1f) }
+                    val railDot = View(ctx).apply {
+                        layoutParams = LinearLayout.LayoutParams(dp(9), dp(9)).apply {
+                            topMargin = dp(3)
+                            bottomMargin = dp(3)
+                        }
+                    }
+                    val railBot = View(ctx).apply { layoutParams = LinearLayout.LayoutParams(dp(2), 0, 1f) }
+                    railCol.addView(railTop)
+                    railCol.addView(railDot)
+                    railCol.addView(railBot)
+                    row.addView(railCol)
+
+                    val infoCol = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, dp(10), 0, dp(10))
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginEnd = dp(6)
+                        }
+                    }
+                    val titleRow = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val tvPinTitle = TextView(ctx).apply {
+                        textSize = 14.5f
+                        textDirection = View.TEXT_DIRECTION_LOCALE
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(txtPrimary)
+                        setLineSpacing(dp(1).toFloat(), 1.05f)
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    val tvAfterBadge = TextView(ctx).apply {
+                        text = "AFTER HOURS"
+                        textSize = 9.5f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(Color.WHITE)
+                        setPadding(dp(6), dp(2), dp(6), dp(2))
+                        background = GradientDrawable().apply {
+                            setColor(p.red)
+                            cornerRadius = dp(6).toFloat()
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { marginStart = dp(6) }
+                    }
+                    titleRow.addView(tvPinTitle)
+                    titleRow.addView(tvAfterBadge)
+                    val tvAction = TextView(ctx).apply {
+                        textSize = 12.5f
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
+                        setPadding(0, dp(2), 0, 0)
+                    }
+                    infoCol.addView(titleRow)
+                    infoCol.addView(tvAction)
+                    row.addView(infoCol)
+
+                    val btnDel = TextView(ctx).apply {
+                        text = "✕"
+                        textSize = 13f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(p.red)
+                        gravity = Gravity.CENTER
+                        layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginStart = dp(6) }
+                        UiAnimations.attachSnappyPress(this)
+                    }
+                    row.addView(btnDel)
+                    cardWrap.addView(divider)
+                    cardWrap.addView(row)
+                    EntryVH(cardWrap, divider, row, tvClock, railTop, railDot, railBot, tvPinTitle, tvAfterBadge, tvAction, btnDel)
+                }
+            }
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            val ctx = this@buildEditHistoryPage
+            when (val item = getItem(position)) {
+                is HistoryRowItem.EmptyState -> {
+                    (holder as SimpleVH).view.findViewWithTag<TextView>("msg")?.text = item.msg
+                }
+                is HistoryRowItem.DateHeader -> {
+                    ((holder as SimpleVH).view as TextView).text = item.title
+                }
+                is HistoryRowItem.EntryRow -> {
+                    val vh = holder as EntryVH
+                    val entry = item.entry
+                    vh.divider.visibility = if (item.isFirstInDay) View.GONE else View.VISIBLE
+                    vh.cardWrap.background = DesignSystem.createGroupedRowBackground(
+                        ctx = ctx,
+                        palette = p,
+                        isFirst = item.isFirstInDay,
+                        isLast = item.isLastInDay,
+                        radiusDp = 16f
+                    )
+                    if (entry.isOutsideWorkHours) {
+                        vh.clickRow.setBackgroundColor(p.redSoft)
+                    } else {
+                        UiAnimations.applyRowRipple(ctx, vh.clickRow, night)
+                    }
+                    vh.clickRow.setOnClickListener {
+                        ensurePinVisibleOnMap(entry.pin)
+                        closeFullPage()
+                        selectPinAndOpenCard(entry.pin, zoomIfFar = true)
+                    }
+                    vh.tvClock.text = entry.clockTime
+                    vh.tvClock.setTextColor(if (entry.isOutsideWorkHours) p.red else txtPrimary)
+                    val dotColor = when (entry.actionStatus) {
+                        "done" -> p.green
+                        "issue" -> p.red
+                        "pending" -> p.amber
+                        else -> p.accent
+                    }
+                    vh.railTop.setBackgroundColor(if (!item.isFirstInDay) p.borderSubtle else Color.TRANSPARENT)
+                    vh.railBot.setBackgroundColor(if (!item.isLastInDay) p.borderSubtle else Color.TRANSPARENT)
+                    vh.railDot.background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(dotColor)
+                    }
+                    vh.tvPinTitle.text = DesignSystem.isolateBidi(entry.pin.name)
+                    vh.tvAfterBadge.visibility = if (entry.isOutsideWorkHours) View.VISIBLE else View.GONE
+                    vh.tvAction.text = DesignSystem.joinBidi(entry.operatorShort, entry.actionSummary)
+                    vh.tvAction.setTextColor(
+                        when {
+                            entry.actionStatus == "issue" -> p.red
+                            entry.actionStatus == "done" -> p.green
+                            else -> txtSub
+                        }
+                    )
+                    if (isOwner && entry.historyLineIndex >= 0) {
+                        vh.btnDel.visibility = View.VISIBLE
+                        vh.btnDel.background = GradientDrawable().apply {
+                            setColor(if (entry.isOutsideWorkHours) Color.parseColor(if (night) "#452328" else "#FCE3E1") else p.chipSurface)
+                            cornerRadius = dp(10).toFloat()
+                        }
+                        vh.btnDel.setOnClickListener {
+                            showThemedDialog(
+                                themedDialogBuilder("Remove this submission?")
+                                    .setMessage("[${entry.fullTimeLabel}] ${entry.operatorShort}\n${entry.pin.name} → ${entry.actionSummary}\n\nOnly this edit will be removed. The pin remains on the map.")
+                                    .setPositiveButton("Delete Edit") { _, _ ->
+                                        deletePinHistoryEntryUnified(entry.pin, entry.historyLineIndex)
+                                        Toast.makeText(ctx, "Submission removed", Toast.LENGTH_SHORT).show()
+                                        renderAuditRef(false)
+                                    }
+                                    .setNegativeButton(AppStrings.cancel(ctx), null)
+                                    .create(),
+                                destructivePositive = true
+                            )
+                        }
+                    } else {
+                        vh.btnDel.visibility = View.GONE
+                        vh.btnDel.setOnClickListener(null)
+                    }
+                }
+            }
+        }
+    }
+    recycler.adapter = timelineAdapter
 
     fun renderAudit(animateReload: Boolean = false) {
         val mySeq = ++auditSeq
@@ -280,18 +554,12 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
         val aliasesSnap = buildLocalDeviceAliasMap()
         val curTimeFilter = timeFilter
         val curOpFilter = operatorFilter
-        val curDisplayLimit = displayLimit
 
-        if (contentRoot.childCount == 0) {
-            contentRoot.addView(TextView(this).apply {
-                text = "Loading edit history..."
-                textSize = 13.5f
-                setTextColor(txtSub)
-                setPadding(dp(4), dp(14), dp(4), dp(14))
-            })
+        if (headerHost.childCount == 0) {
+            timelineAdapter.submitList(listOf(HistoryRowItem.EmptyState(AppStrings.loadingEditHistory(this))))
         }
 
-        RoutingEngine.ioExecutor.execute {
+        RoutingEngine.uiQueryExecutor.execute {
             val deviceMap = DailyReportGenerator.buildDeviceToTeamMap(allPinsSnap, aliasesSnap)
             val allEntries = PinEditHistoryAudit.collectFolderHistory(layerPinsSnap, workStart, workEnd, deviceMap)
             val afterHoursCnt = allEntries.count { it.isOutsideWorkHours }
@@ -307,13 +575,31 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
                 val opOk = curOpFilter == null || e.operatorShort == curOpFilter
                 timeOk && opOk
             }
-            val pageItems = filtered.take(curDisplayLimit)
-            val groupedByDate = pageItems.groupBy { it.dateGroup }
+            val groupedByDate = filtered.groupBy { it.dateGroup }
+
+            val rows = ArrayList<HistoryRowItem>(filtered.size + groupedByDate.size + 1)
+            if (filtered.isEmpty()) {
+                val emptyMsg = when {
+                    allEntries.isEmpty() -> "No edits recorded yet in this folder. Whenever team members update a pin, each timestamped submission appears here."
+                    curTimeFilter == "after_hours" -> "✓ Great — zero submissions were made outside working hours ($windowStr)."
+                    else -> "No matching submissions for this filter."
+                }
+                rows.add(HistoryRowItem.EmptyState(emptyMsg))
+            } else {
+                groupedByDate.forEach { (dateLabel, dayEntries) ->
+                    val dayLate = dayEntries.count { it.isOutsideWorkHours }
+                    val headerTxt = if (dayLate > 0) "$dateLabel  •  $dayLate after hours" else "$dateLabel  •  ${dayEntries.size} edit${if (dayEntries.size == 1) "" else "s"}"
+                    rows.add(HistoryRowItem.DateHeader(headerTxt))
+                    dayEntries.forEachIndexed { idx, entry ->
+                        rows.add(HistoryRowItem.EntryRow(entry, isFirstInDay = idx == 0, isLastInDay = idx == dayEntries.lastIndex))
+                    }
+                }
+            }
 
             runOnUiThread {
                 if (isFinishing || isDestroyed || mySeq != auditSeq) return@runOnUiThread
                 currentEntries = allEntries
-                contentRoot.removeAllViews()
+                headerHost.removeAllViews()
 
                 // 1. Summary & Working-Hours Control Card
                 val summaryCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12, bottomMarginDp = 10)
@@ -324,7 +610,7 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
                     setPadding(0, 0, 0, dp(8))
                 }
                 folderRow.addView(TextView(this).apply {
-                    text = layer.name
+                    text = DesignSystem.isolateBidi(layer.name)
                     textSize = 15.5f
                     setTypeface(null, Typeface.BOLD)
                     setTextColor(txtPrimary)
@@ -424,7 +710,7 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
                 addStat(AppStrings.inHours(this), inHoursCnt, p.green)
                 addStat(AppStrings.afterHours(this), afterHoursCnt, if (afterHoursCnt > 0) p.red else txtSub)
                 summaryCard.addView(statsRow)
-                contentRoot.addView(summaryCard)
+                headerHost.addView(summaryCard)
 
                 // 2. Time Filter Pills (All / After Hours / In Hours)
                 val filterScroll = android.widget.HorizontalScrollView(this).apply {
@@ -471,14 +757,13 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
                         setOnClickListener {
                             if (timeFilter != key) {
                                 timeFilter = key
-                                displayLimit = 120
                                 renderAudit(animateReload = true)
                             }
                         }
                     })
                 }
                 filterScroll.addView(filterRow)
-                contentRoot.addView(filterScroll)
+                headerHost.addView(filterScroll)
 
                 // 3. Operator Filter Pills
                 if (operatorCounts.size > 1) {
@@ -510,7 +795,6 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
                             setOnClickListener {
                                 if (operatorFilter != opKey) {
                                     operatorFilter = opKey
-                                    displayLimit = 120
                                     renderAudit(animateReload = true)
                                 }
                             }
@@ -521,223 +805,17 @@ internal fun MainActivity.buildEditHistoryPage(layer: LayerItem): View {
                         addOpChip("$opName ($cnt)", opName)
                     }
                     opScroll.addView(opRow)
-                    contentRoot.addView(opScroll)
+                    headerHost.addView(opScroll)
                 }
 
-                // 4. Filtered Chronological Timeline Grouped by Date
-                if (filtered.isEmpty()) {
-                    val emptyCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 18)
-                    emptyCard.addView(TextView(this).apply {
-                        text = when {
-                            allEntries.isEmpty() -> "No edits recorded yet in this folder. Whenever team members update a pin, each timestamped submission appears here."
-                            curTimeFilter == "after_hours" -> "✓ Great — zero submissions were made outside working hours ($windowStr)."
-                            else -> "No matching submissions for this filter."
-                        }
-                        textSize = 13.5f
-                        setLineSpacing(dp(2).toFloat(), 1.05f)
-                        setTextColor(txtSub)
-                    })
-                    contentRoot.addView(emptyCard)
-                    if (animateReload) UiAnimations.staggerRevealChildren(contentRoot, maxAnimated = 4)
-                    return@runOnUiThread
+                timelineAdapter.submitList(rows)
+                if (animateReload) {
+                    UiAnimations.animateResultReveal(recycler)
                 }
-
-        groupedByDate.forEach { (dateLabel, dayEntries) ->
-            val dayLate = dayEntries.count { it.isOutsideWorkHours }
-            val headerTxt = if (dayLate > 0) "$dateLabel  •  $dayLate after hours" else "$dateLabel  •  ${dayEntries.size} edit${if (dayEntries.size == 1) "" else "s"}"
-            contentRoot.addView(DesignSystem.createSectionHeader(this, headerTxt, p))
-
-            val dayCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 8)
-            dayEntries.forEachIndexed { idx, entry ->
-                if (idx > 0) {
-                    dayCard.addView(DesignSystem.createHairlineDivider(this, p, 84, 14))
-                }
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    minimumHeight = dp(58)
-                    setPadding(dp(12), 0, dp(10), 0)
-                    if (entry.isOutsideWorkHours) {
-                        setBackgroundColor(p.redSoft)
-                    } else {
-                        UiAnimations.applyRowRipple(this@buildEditHistoryPage, this, night)
-                    }
-                    setOnClickListener {
-                        ensurePinVisibleOnMap(entry.pin)
-                        closeFullPage()
-                        selectPinAndOpenCard(entry.pin, zoomIfFar = true)
-                    }
-                }
-
-                val timeCol = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    setPadding(0, dp(12), 0, dp(12))
-                    layoutParams = LinearLayout.LayoutParams(dp(46), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                        marginEnd = dp(6)
-                    }
-                }
-                timeCol.addView(TextView(this).apply {
-                    text = entry.clockTime
-                    textSize = 13.5f
-                    setTypeface(null, Typeface.BOLD)
-                    setTextColor(if (entry.isOutsideWorkHours) p.red else txtPrimary)
-                    DesignSystem.applyTabularNumerals(this)
-                })
-                row.addView(timeCol)
-
-                val dotColor = when (entry.actionStatus) {
-                    "done" -> p.green
-                    "issue" -> p.red
-                    "pending" -> p.amber
-                    else -> p.accent
-                }
-                val railCol = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    layoutParams = LinearLayout.LayoutParams(dp(16), ViewGroup.LayoutParams.MATCH_PARENT).apply {
-                        marginEnd = dp(8)
-                    }
-                }
-                railCol.addView(View(this).apply {
-                    setBackgroundColor(if (idx > 0) p.borderSubtle else Color.TRANSPARENT)
-                    layoutParams = LinearLayout.LayoutParams(dp(2), 0, 1f)
-                })
-                railCol.addView(View(this).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(dotColor)
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(9), dp(9)).apply {
-                        topMargin = dp(3)
-                        bottomMargin = dp(3)
-                    }
-                })
-                railCol.addView(View(this).apply {
-                    setBackgroundColor(if (idx < dayEntries.lastIndex) p.borderSubtle else Color.TRANSPARENT)
-                    layoutParams = LinearLayout.LayoutParams(dp(2), 0, 1f)
-                })
-                row.addView(railCol)
-
-                val infoCol = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(0, dp(10), 0, dp(10))
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                        marginEnd = dp(6)
-                    }
-                }
-                val titleRow = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                }
-                titleRow.addView(TextView(this).apply {
-                    text = entry.pin.name
-                    textSize = 14.5f
-                    textDirection = View.TEXT_DIRECTION_LOCALE
-                    setTypeface(null, Typeface.BOLD)
-                    setTextColor(txtPrimary)
-                    setLineSpacing(dp(1).toFloat(), 1.05f)
-                    maxLines = 2
-                    ellipsize = TextUtils.TruncateAt.END
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                })
-                if (entry.isOutsideWorkHours) {
-                    titleRow.addView(TextView(this).apply {
-                        text = "AFTER HOURS"
-                        textSize = 9.5f
-                        setTypeface(null, Typeface.BOLD)
-                        setTextColor(Color.WHITE)
-                        setPadding(dp(6), dp(2), dp(6), dp(2))
-                        background = GradientDrawable().apply {
-                            setColor(p.red)
-                            cornerRadius = dp(6).toFloat()
-                        }
-                        layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT
-                        ).apply { marginStart = dp(6) }
-                    })
-                }
-                infoCol.addView(titleRow)
-
-                infoCol.addView(TextView(this).apply {
-                    text = "${entry.operatorShort} • ${entry.actionSummary}"
-                    textSize = 12.5f
-                    setTextColor(
-                        when {
-                            entry.actionStatus == "issue" -> p.red
-                            entry.actionStatus == "done" -> p.green
-                            else -> txtSub
-                        }
-                    )
-                    maxLines = 2
-                    ellipsize = TextUtils.TruncateAt.END
-                    setPadding(0, dp(2), 0, 0)
-                })
-                row.addView(infoCol)
-
-                if (isOwner && entry.historyLineIndex >= 0) {
-                    row.addView(TextView(this).apply {
-                        text = "✕"
-                        textSize = 13f
-                        setTypeface(null, Typeface.BOLD)
-                        setTextColor(p.red)
-                        gravity = Gravity.CENTER
-                        background = GradientDrawable().apply {
-                            setColor(if (entry.isOutsideWorkHours) Color.parseColor(if (night) "#452328" else "#FCE3E1") else p.chipSurface)
-                            cornerRadius = dp(10).toFloat()
-                        }
-                        layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
-                            marginStart = dp(6)
-                        }
-                        UiAnimations.attachSnappyPress(this)
-                        setOnClickListener {
-                            showThemedDialog(
-                                themedDialogBuilder("Remove this submission?")
-                                    .setMessage("[${entry.fullTimeLabel}] ${entry.operatorShort}\n${entry.pin.name} → ${entry.actionSummary}\n\nOnly this edit will be removed. The pin remains on the map.")
-                                    .setPositiveButton("Delete Edit") { _, _ ->
-                                        deletePinHistoryEntryUnified(entry.pin, entry.historyLineIndex)
-                                        Toast.makeText(this@buildEditHistoryPage, "Submission removed", Toast.LENGTH_SHORT).show()
-                                        renderAudit(false)
-                                    }
-                                    .setNegativeButton(AppStrings.cancel(this@buildEditHistoryPage), null)
-                                    .create(),
-                                destructivePositive = true
-                            )
-                        }
-                    })
-                }
-                dayCard.addView(row)
-            }
-            contentRoot.addView(dayCard)
-        }
-
-        val remaining = filtered.size - pageItems.size
-        if (remaining > 0) {
-            contentRoot.addView(MaterialButton(this).apply {
-                text = "Show more ($remaining remaining)"
-                textSize = 13f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                cornerRadius = dp(12)
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
-                    topMargin = dp(4)
-                }
-                DesignSystem.styleSegmentedButton(this, false, p)
-                setOnClickListener {
-                    displayLimit += 120
-                    renderAudit(false)
-                }
-            })
-        }
-
-        if (animateReload) {
-            UiAnimations.staggerRevealChildren(contentRoot, maxAnimated = 4)
-        }
             }
         }
     }
+    renderAuditRef = ::renderAudit
 
     liveEditHistoryRefresh = { renderAudit(false) }
     renderAudit(false)

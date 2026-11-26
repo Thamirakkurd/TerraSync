@@ -48,6 +48,10 @@ import androidx.core.location.LocationManagerCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
@@ -76,8 +80,6 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -374,130 +376,345 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun appendPaginatedSearchCard(
-        container: LinearLayout,
-        p: ThemePalette,
-        matches: List<Pair<SearchIndexEntry, String?>>,
-        showFolderInSub: Boolean,
-        pageSize: Int = 60
-    ) {
-        val resultsCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 16f)
+    private sealed interface SearchRowItem {
+        val stableId: String
+        data class HintAndChips(val langKey: String) : SearchRowItem {
+            override val stableId: String = "hint_chips"
         }
-        var rendered = 0
+        data class WebStatus(val message: String, val showRetry: Boolean) : SearchRowItem {
+            override val stableId: String = "web_status"
+        }
+        data class Header(val title: String) : SearchRowItem {
+            override val stableId: String = "hdr:$title"
+        }
+        data class WebPlace(val place: PlaceResult, val isFirst: Boolean, val isLast: Boolean) : SearchRowItem {
+            override val stableId: String = "web:${place.lat},${place.lng}:${place.title}"
+        }
+        data class CoordJump(val lat: Double, val lng: Double) : SearchRowItem {
+            override val stableId: String = "coord:$lat,$lng"
+        }
+        data class BookmarkMatch(
+            val entry: SearchIndexEntry,
+            val distText: String?,
+            val showFolderInSub: Boolean,
+            val isFirst: Boolean,
+            val isLast: Boolean
+        ) : SearchRowItem {
+            override val stableId: String = "pin:${entry.pin.id}"
+        }
+    }
 
-        fun appendSlice(toIdx: Int) {
-            val end = minOf(toIdx, matches.size)
-            for (idx in rendered until end) {
-                val (entry, distText) = matches[idx]
-                val pin = entry.pin
-                if (idx > 0) {
-                    resultsCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
+    private sealed interface PinListRowItem {
+        val stableId: String
+        data class MessageRow(val text: String) : PinListRowItem {
+            override val stableId: String = "msg:$text"
+        }
+        data class PinRow(
+            val pin: PinItem,
+            val isFirst: Boolean,
+            val isLast: Boolean,
+            val selectionMode: Boolean,
+            val isSelected: Boolean,
+            val sameCount: Int,
+            val distLabel: String?
+        ) : PinListRowItem {
+            override val stableId: String = "pin:${pin.id}"
+        }
+        data class ShareCodeRow(val shareCode: String) : PinListRowItem {
+            override val stableId: String = "share:$shareCode"
+        }
+    }
+
+    private inner class BookmarkSearchAdapter(
+        private val palette: ThemePalette,
+        private val onQuickFilter: ((String) -> Unit)? = null,
+        private val onRetryWebSearch: (() -> Unit)? = null
+    ) : ListAdapter<SearchRowItem, RecyclerView.ViewHolder>(
+        object : DiffUtil.ItemCallback<SearchRowItem>() {
+            override fun areItemsTheSame(oldItem: SearchRowItem, newItem: SearchRowItem) =
+                oldItem.stableId == newItem.stableId
+            override fun areContentsTheSame(oldItem: SearchRowItem, newItem: SearchRowItem) =
+                oldItem == newItem
+        }
+    ) {
+        private inner class SimpleVH(val view: View) : RecyclerView.ViewHolder(view)
+
+        private inner class BookmarkVH(
+            val cardWrap: LinearLayout,
+            val topDivider: View,
+            val clickRow: LinearLayout,
+            val dot: View,
+            val tvTitle: TextView,
+            val tvSub: TextView,
+            val tvDist: TextView
+        ) : RecyclerView.ViewHolder(cardWrap)
+
+        private inner class WebPlaceVH(
+            val cardWrap: LinearLayout,
+            val topDivider: View,
+            val clickRow: LinearLayout,
+            val tvTitle: TextView,
+            val tvSub: TextView
+        ) : RecyclerView.ViewHolder(cardWrap)
+
+        override fun getItemViewType(position: Int): Int = when (getItem(position)) {
+            is SearchRowItem.HintAndChips -> 0
+            is SearchRowItem.WebStatus -> 1
+            is SearchRowItem.Header -> 2
+            is SearchRowItem.WebPlace -> 3
+            is SearchRowItem.CoordJump -> 4
+            is SearchRowItem.BookmarkMatch -> 5
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val ctx = this@MainActivity
+            return when (viewType) {
+                0 -> {
+                    val card = DesignSystem.createGroupedCard(ctx, palette, radiusDp = 16f, paddingHDp = 14, paddingVDp = 14)
+                    card.addView(TextView(ctx).apply {
+                        text = AppStrings.searchHintPrompt(ctx)
+                        textSize = 13.5f
+                        setLineSpacing(dp(2).toFloat(), 1.05f)
+                        setTextColor(palette.textBody)
+                    })
+                    val chipRow = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, dp(10), 0, 0)
+                    }
+                    fun makeChip(label: String, actionKey: String, accent: Int, marginEndDp: Int): MaterialButton = MaterialButton(ctx).apply {
+                        text = label
+                        textSize = 12f
+                        isAllCaps = false
+                        setSingleLine(true)
+                        ellipsize = TextUtils.TruncateAt.END
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        minHeight = 0
+                        minimumHeight = 0
+                        setPadding(dp(10), 0, dp(10), 0)
+                        cornerRadius = dp(12)
+                        DesignSystem.styleSegmentedButton(this, false, palette, accent, onTonalCard = true)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
+                            if (marginEndDp > 0) marginEnd = dp(marginEndDp)
+                        }
+                        UiAnimations.attachSnappyPress(this)
+                        setOnClickListener { onQuickFilter?.invoke(actionKey) }
+                    }
+                    chipRow.addView(makeChip(AppStrings.pending(ctx), "pending", palette.amber, 6))
+                    chipRow.addView(makeChip(AppStrings.issue(ctx), "issue", palette.red, 6))
+                    chipRow.addView(makeChip(AppStrings.nearestPending(ctx), "nearest", palette.accentPrimary, 0))
+                    card.addView(chipRow)
+                    SimpleVH(card)
                 }
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    minimumHeight = dp(52)
-                    setPadding(dp(14), dp(11), dp(14), dp(11))
-                    UiAnimations.applyRowRipple(this@MainActivity, this, p.isDark)
-                    setOnClickListener {
+                1 -> {
+                    val card = DesignSystem.createGroupedCard(ctx, palette, radiusDp = 16f, paddingHDp = 14, paddingVDp = 14, bottomMarginDp = 10)
+                    card.orientation = LinearLayout.HORIZONTAL
+                    card.gravity = Gravity.CENTER_VERTICAL
+                    val tvMsg = TextView(ctx).apply {
+                        tag = "msg"
+                        textSize = 13.5f
+                        setTextColor(palette.textBody)
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginEnd = dp(8)
+                        }
+                    }
+                    val btnRetry = MaterialButton(ctx).apply {
+                        tag = "retry"
+                        text = AppStrings.retry(ctx)
+                        textSize = 12f
+                        isAllCaps = false
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        minHeight = 0
+                        minimumHeight = 0
+                        setPadding(dp(12), 0, dp(12), 0)
+                        cornerRadius = dp(12)
+                        DesignSystem.applyPrimaryCtaButton(this, palette)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34))
+                        UiAnimations.attachSnappyPress(this)
+                        setOnClickListener { onRetryWebSearch?.invoke() }
+                    }
+                    card.addView(tvMsg)
+                    card.addView(btnRetry)
+                    SimpleVH(card)
+                }
+                2 -> {
+                    val tv = DesignSystem.createSectionHeader(ctx, "", palette)
+                    tv.layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    SimpleVH(tv)
+                }
+                3 -> {
+                    val cardWrap = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        clipToOutline = true
+                    }
+                    val topDivider = DesignSystem.createHairlineDivider(ctx, palette, 16, 16)
+                    val row = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(14), dp(12), dp(14), dp(12))
+                        UiAnimations.applyRowRipple(ctx, this, palette.isDark)
+                    }
+                    val tvTitle = TextView(ctx).apply {
+                        textSize = 14.5f
+                        setTextColor(palette.textPrimary)
+                        setTypeface(null, Typeface.BOLD)
+                    }
+                    val tvSub = TextView(ctx).apply {
+                        textSize = 12f
+                        setTextColor(palette.textSecondary)
+                    }
+                    row.addView(tvTitle)
+                    row.addView(tvSub)
+                    cardWrap.addView(topDivider)
+                    cardWrap.addView(row)
+                    WebPlaceVH(cardWrap, topDivider, row, tvTitle, tvSub)
+                }
+                4 -> {
+                    val card = DesignSystem.createGroupedCard(ctx, palette, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12, bottomMarginDp = 8)
+                    val tv = TextView(ctx).apply {
+                        tag = "coord"
+                        textSize = 14.5f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(palette.accentPrimary)
+                        DesignSystem.applyTabularNumerals(this)
+                        UiAnimations.applyRowRipple(ctx, this, palette.isDark)
+                    }
+                    card.addView(tv)
+                    SimpleVH(card)
+                }
+                else -> {
+                    val cardWrap = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        clipToOutline = true
+                    }
+                    val topDivider = DesignSystem.createHairlineDivider(ctx, palette, 16, 16)
+                    val row = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        minimumHeight = dp(52)
+                        setPadding(dp(14), dp(11), dp(14), dp(11))
+                        UiAnimations.applyRowRipple(ctx, this, palette.isDark)
+                    }
+                    val dot = View(ctx).apply {
+                        layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+                    }
+                    val col = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginEnd = dp(8)
+                        }
+                    }
+                    val tvTitle = TextView(ctx).apply {
+                        textSize = 14.5f
+                        setTextColor(palette.textPrimary)
+                        setTypeface(null, Typeface.BOLD)
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+                    val tvSub = TextView(ctx).apply {
+                        textSize = 12f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+                    col.addView(tvTitle)
+                    col.addView(tvSub)
+                    val tvDist = TextView(ctx).apply {
+                        textSize = 12f
+                        setTextColor(palette.accentPrimary)
+                        setTypeface(null, Typeface.BOLD)
+                        setSingleLine(true)
+                        DesignSystem.applyTabularNumerals(this)
+                    }
+                    row.addView(dot)
+                    row.addView(col)
+                    row.addView(tvDist)
+                    cardWrap.addView(topDivider)
+                    cardWrap.addView(row)
+                    BookmarkVH(cardWrap, topDivider, row, dot, tvTitle, tvSub, tvDist)
+                }
+            }
+        }
+
+        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+            val ctx = this@MainActivity
+            when (val item = getItem(position)) {
+                is SearchRowItem.HintAndChips -> Unit
+                is SearchRowItem.WebStatus -> {
+                    val v = (holder as SimpleVH).view
+                    v.findViewWithTag<TextView>("msg")?.text = item.message
+                    v.findViewWithTag<MaterialButton>("retry")?.visibility = if (item.showRetry) View.VISIBLE else View.GONE
+                }
+                is SearchRowItem.Header -> {
+                    ((holder as SimpleVH).view as TextView).text = item.title
+                }
+                is SearchRowItem.WebPlace -> {
+                    val vh = holder as WebPlaceVH
+                    vh.topDivider.visibility = if (item.isFirst) View.GONE else View.VISIBLE
+                    vh.cardWrap.background = DesignSystem.createGroupedRowBackground(ctx, palette, item.isFirst, item.isLast, 18f)
+                    vh.tvTitle.text = "🌐 ${DesignSystem.isolateBidi(item.place.title)}"
+                    if (item.place.subtitle.isNotBlank()) {
+                        vh.tvSub.text = DesignSystem.isolateBidi(item.place.subtitle)
+                        vh.tvSub.visibility = View.VISIBLE
+                    } else {
+                        vh.tvSub.text = ""
+                        vh.tvSub.visibility = View.GONE
+                    }
+                    vh.clickRow.setOnClickListener {
+                        closeFullPage()
+                        selectCoordinateOnMap(LatLng(item.place.lat, item.place.lng), explicitTitle = item.place.title, fallbackSub = item.place.subtitle, zoomTo = 16.0)
+                    }
+                }
+                is SearchRowItem.CoordJump -> {
+                    val tv = (holder as SimpleVH).view.findViewWithTag<TextView>("coord") ?: return
+                    tv.text = "📍 ${AppStrings.goToCoordinates(ctx)}: ${"%.6f".format(Locale.US, item.lat)}, ${"%.6f".format(Locale.US, item.lng)}"
+                    tv.setOnClickListener {
+                        closeFullPage()
+                        selectCoordinateOnMap(LatLng(item.lat, item.lng), explicitTitle = "Coordinates", fallbackSub = "", zoomTo = 16.5)
+                    }
+                }
+                is SearchRowItem.BookmarkMatch -> {
+                    val vh = holder as BookmarkVH
+                    val pin = item.entry.pin
+                    vh.topDivider.visibility = if (item.isFirst) View.GONE else View.VISIBLE
+                    vh.cardWrap.background = DesignSystem.createGroupedRowBackground(ctx, palette, item.isFirst, item.isLast, 16f)
+                    vh.dot.background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(item.entry.dotColor)
+                    }
+                    vh.tvTitle.text = DesignSystem.isolateBidi(pin.name)
+                    val st = PinStatus.fromRaw(pin.status)
+                    vh.tvSub.text = if (item.showFolderInSub && item.entry.folderName.isNotBlank()) {
+                        DesignSystem.joinBidi(item.entry.folderName, item.entry.statusTag)
+                    } else {
+                        item.entry.statusTag
+                    }
+                    vh.tvSub.setTextColor(
+                        when {
+                            st == PinStatus.ISSUE -> palette.red
+                            st == PinStatus.DONE && pin.issueReason.isNotBlank() -> palette.green
+                            else -> palette.textSecondary
+                        }
+                    )
+                    if (item.distText != null) {
+                        vh.tvDist.text = item.distText
+                        vh.tvDist.visibility = View.VISIBLE
+                    } else {
+                        vh.tvDist.text = ""
+                        vh.tvDist.visibility = View.GONE
+                    }
+                    vh.clickRow.setOnClickListener {
                         ensurePinVisibleOnMap(pin)
                         closeFullPage()
                         selectPinAndOpenCard(pin, zoomIfFar = true)
                     }
                 }
-                row.addView(View(this).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(entry.dotColor)
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
-                })
-                val col = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                        marginEnd = dp(8)
-                    }
-                }
-                col.addView(TextView(this).apply {
-                    text = pin.name
-                    textSize = 14.5f
-                    setTextColor(p.textPrimary)
-                    setTypeface(null, Typeface.BOLD)
-                    maxLines = 2
-                    ellipsize = TextUtils.TruncateAt.END
-                })
-                val st = PinStatus.fromRaw(pin.status)
-                val subText = if (showFolderInSub && entry.folderName.isNotBlank()) {
-                    "${entry.folderName} • ${entry.statusTag}"
-                } else {
-                    entry.statusTag
-                }
-                col.addView(TextView(this).apply {
-                    text = subText
-                    textSize = 12f
-                    setTextColor(
-                        when {
-                            st == PinStatus.ISSUE -> p.red
-                            st == PinStatus.DONE && pin.issueReason.isNotBlank() -> p.green
-                            else -> p.textSecondary
-                        }
-                    )
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                })
-                row.addView(col)
-                if (distText != null) {
-                    row.addView(TextView(this).apply {
-                        text = distText
-                        textSize = 12f
-                        setTextColor(p.accentPrimary)
-                        setTypeface(null, Typeface.BOLD)
-                        setSingleLine(true)
-                        DesignSystem.applyTabularNumerals(this)
-                    })
-                }
-                resultsCard.addView(row)
             }
-            rendered = end
-        }
-
-        appendSlice(pageSize)
-        container.addView(resultsCard)
-        UiAnimations.animateResultReveal(resultsCard)
-
-        if (rendered < matches.size) {
-            lateinit var btnMore: MaterialButton
-            btnMore = MaterialButton(this).apply {
-                text = "Show more (${matches.size - rendered} remaining)"
-                textSize = 13f
-                isAllCaps = false
-                insetTop = 0
-                insetBottom = 0
-                setTextColor(p.accentPrimary)
-                backgroundTintList = android.content.res.ColorStateList.valueOf(p.chipSurface)
-                strokeWidth = dp(1)
-                strokeColor = android.content.res.ColorStateList.valueOf(p.borderSubtle)
-                cornerRadius = dp(12)
-                elevation = 0f
-                stateListAnimator = null
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(42)
-                ).apply { topMargin = dp(8) }
-                UiAnimations.attachSnappyPress(this)
-                setOnClickListener {
-                    appendSlice(rendered + pageSize)
-                    val left = matches.size - rendered
-                    if (left <= 0) {
-                        btnMore.visibility = View.GONE
-                    } else {
-                        btnMore.text = "Show more ($left remaining)"
-                    }
-                }
-            }
-            container.addView(btnMore)
         }
     }
 
@@ -543,6 +760,8 @@ class MainActivity : AppCompatActivity() {
     private var tappedDistView: TextView? = null
     private var tappedResolvedTitle: String = ""
     private var tappedResolvedSub: String = ""
+    private var reverseGeocodeSeq: Int = 0
+    private var pendingReverseGeocodeRunnable: Runnable? = null
     private var sheetOpenSeq: Int = 0
     private var isSheetPendingOpen: Boolean = false
     private var lastGpsFixTimeMs: Long = 0L
@@ -685,11 +904,12 @@ class MainActivity : AppCompatActivity() {
 
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(RoutingEngine.sharedOkHttpClient)
+        contourManager.initDiskCache(cacheDir)
         offlineMaps = OfflineMapManager.getInstance(this).apply { refreshAll() }
         repo = SyncRepo(applicationContext)
         RoutingEngine.appContext = applicationContext
         LocalFolderStore.preloadAsync(applicationContext)
-        RoutingEngine.ioExecutor.execute { OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext) }
+        RoutingEngine.batchIoExecutor.execute { OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext) }
         setContentView(R.layout.activity_main)
 
         visibleStatuses = DevicePrefs.getVisibleStatuses(this).toMutableSet()
@@ -701,6 +921,7 @@ class MainActivity : AppCompatActivity() {
 
         bindViews()
         applyMapChromeTheme()
+        refreshLocalizedChrome()
         applyKeepAwakeFlag()
 
         tts = TextToSpeech(this) { status ->
@@ -1556,6 +1777,18 @@ class MainActivity : AppCompatActivity() {
         if (isLassoMode) updateLassoUi()
     }
 
+    internal fun refreshLocalizedChrome() {
+        if (::btnTabSearch.isInitialized) {
+            btnTabSearch.contentDescription = AppStrings.search(this)
+            btnTabBookmarks.contentDescription = AppStrings.bookmarks(this)
+            btnTabSettings.contentDescription = AppStrings.settings(this)
+            btnTabAbout.contentDescription = AppStrings.about(this)
+        }
+        applyMapChromeTheme()
+        updateFilterIconTint()
+        if (isRulerMode) updateRulerUi()
+    }
+
     private fun setupClickListeners() {
         btnSyncStatus.setOnClickListener {
             UiAnimations.hapticTick(btnSyncStatus)
@@ -1936,30 +2169,42 @@ class MainActivity : AppCompatActivity() {
         val initialTitle = cleanExplicit.ifBlank { "Selected Location" }
         showTappedPlaceCard(initialTitle, fallbackSub, latLng.latitude, latLng.longitude)
 
-        RoutingEngine.reverseGeocode(latLng.latitude, latLng.longitude) { place ->
-            if (place != null) {
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    if (activeTappedLatLng != latLng || selectedPinId != null) return@runOnUiThread
-                    if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
-                    val bestTitle = if (cleanExplicit.isNotBlank()) cleanExplicit else place.title
-                    val bestSub = place.subtitle.ifBlank { fallbackSub }
-                    tappedResolvedTitle = bestTitle
-                    tappedResolvedSub = bestSub
-                    tappedTitleView?.text = bestTitle
-                    val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
-                    val distText = currentLocation?.let {
-                        "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)} away"
-                    } ?: ""
-                    tappedSubView?.text = bestSub
-                    tappedSubView?.visibility = if (bestSub.isNotBlank()) View.VISIBLE else View.GONE
-                    tappedDistView?.text = if (distText.isNotBlank()) {
-                        if (bestSub.isNotBlank()) " • $distText" else distText
-                    } else ""
-                    tappedDistView?.visibility = if (distText.isNotBlank()) View.VISIBLE else View.GONE
+        pendingReverseGeocodeRunnable?.let { mapView.removeCallbacks(it) }
+        RoutingEngine.cancelPendingReverseGeocode()
+        val geoSeq = ++reverseGeocodeSeq
+        val r = Runnable {
+            if (isFinishing || isDestroyed || geoSeq != reverseGeocodeSeq) return@Runnable
+            RoutingEngine.reverseGeocode(latLng.latitude, latLng.longitude) { place ->
+                if (place != null) {
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed || geoSeq != reverseGeocodeSeq) return@runOnUiThread
+                        if (activeTappedLatLng != latLng || selectedPinId != null) return@runOnUiThread
+                        if (sheetBehavior.state == BottomSheetBehavior.STATE_HIDDEN) return@runOnUiThread
+                        val bestTitle = if (cleanExplicit.isNotBlank()) cleanExplicit else place.title
+                        val bestSub = place.subtitle.ifBlank { fallbackSub }
+                        tappedResolvedTitle = bestTitle
+                        tappedResolvedSub = bestSub
+                        tappedTitleView?.text = bestTitle
+                        val unit = DevicePrefs.getSpeedUnit(this@MainActivity)
+                        val distShort = currentLocation?.let {
+                            AppStrings.distanceAway(
+                                this@MainActivity,
+                                formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, latLng.latitude, latLng.longitude), unit)
+                            )
+                        } ?: ""
+                        val isolatedSub = DesignSystem.isolateBidi(bestSub)
+                        tappedSubView?.text = isolatedSub
+                        tappedSubView?.visibility = if (bestSub.isNotBlank()) View.VISIBLE else View.GONE
+                        tappedDistView?.text = if (distShort.isNotBlank()) {
+                            if (bestSub.isNotBlank()) " • $distShort" else distShort
+                        } else ""
+                        tappedDistView?.visibility = if (distShort.isNotBlank()) View.VISIBLE else View.GONE
+                    }
                 }
             }
         }
+        pendingReverseGeocodeRunnable = r
+        mapView.postDelayed(r, 180L)
     }
 
     // --- Map Style, Optional 3D Buildings, Hillshading & Overlay Layers ---
@@ -1997,12 +2242,8 @@ class MainActivity : AppCompatActivity() {
     internal fun apply3dBuildingsToggle(style: Style) {
         val show3d = DevicePrefs.is3dBuildingsEnabled(this)
         val vis = if (show3d) Property.VISIBLE else Property.NONE
-        for (layer in style.layers) {
-            if (layer is FillExtrusionLayer ||
-                (layer.id.contains("building", ignoreCase = true) && layer.id.contains("3d", ignoreCase = true))
-            ) {
-                layer.setProperties(PropertyFactory.visibility(vis))
-            }
+        for (layer in MapCartography.getBuilding3dLayers(style)) {
+            layer.setProperties(PropertyFactory.visibility(vis))
         }
     }
 
@@ -3320,7 +3561,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             stackRow.addView(TextView(this).apply {
-                text = "${stackedPins.size} stacked • ${currentIdx + 1}/${stackedPins.size}"
+                text = AppStrings.stackedSummary(this@MainActivity, stackedPins.size, currentIdx + 1, stackedPins.size)
                 textSize = 13f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(p.accent)
@@ -3363,7 +3604,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             stackRow.addView(MaterialButton(this).apply {
-                text = "Next →"
+                text = AppStrings.nextShort(this@MainActivity)
                 textSize = 12.5f
                 isAllCaps = false
                 insetTop = 0
@@ -3420,7 +3661,7 @@ class MainActivity : AppCompatActivity() {
         val layerName = layer?.name ?: "Field Pin"
         val speedUnit = DevicePrefs.getSpeedUnit(this)
         val distText = currentLocation?.let {
-            " • ${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, pin.lat, pin.lng), speedUnit)} away"
+            " • ${AppStrings.distanceAway(this, formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, pin.lat, pin.lng), speedUnit))}"
         } ?: ""
 
         val titleCol = LinearLayout(this).apply {
@@ -3463,7 +3704,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         subRow.addView(TextView(this).apply {
-            text = layerName
+            text = DesignSystem.isolateBidi(layerName)
             textSize = 12.5f
             setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
@@ -3814,7 +4055,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (pin.isEdited && pin.editedBy.isNotBlank()) {
-            val stampTime = if (pin.editedAt > 0L) SimpleDateFormat("dd MMM HH:mm", Locale.US).format(Date(pin.editedAt)) else ""
+            val stampTime = if (pin.editedAt > 0L) TimeFormatters.canonicalHistory(pin.editedAt) else ""
             val tealText = Color.parseColor(if (night) "#2DD4BF" else "#0F766E")
             val tealBg = Color.parseColor(if (night) "#222DD4BF" else "#180F766E")
             sheetContent.addView(TextView(this).apply {
@@ -4101,7 +4342,7 @@ class MainActivity : AppCompatActivity() {
         )
         val unit = DevicePrefs.getSpeedUnit(this)
         val distText = currentLocation?.let {
-            "${formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, lat, lng), unit)} away"
+            AppStrings.distanceAway(this, formatDistanceShort(RoutingEngine.haversineMeters(it.latitude, it.longitude, lat, lng), unit))
         } ?: ""
 
         val titleCol = LinearLayout(this).apply {
@@ -4151,7 +4392,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         tappedSubView = TextView(this).apply {
-            text = subtitle
+            text = DesignSystem.isolateBidi(subtitle)
             textSize = 12.5f
             setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
@@ -5291,7 +5532,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    internal fun makePageFrame(title: String, onBack: () -> Unit, rightAction: View? = null): Pair<LinearLayout, LinearLayout> {
+    internal fun makePageFrame(
+        title: String,
+        onBack: () -> Unit,
+        rightAction: View? = null,
+        scrollable: Boolean = true
+    ): Pair<LinearLayout, LinearLayout> {
         val p = currentPalette()
         val night = p.isDark
 
@@ -5335,16 +5581,25 @@ class MainActivity : AppCompatActivity() {
 
         outer.addView(DesignSystem.createHairlineDivider(this, p))
 
-        val scroll = ScrollView(this).apply {
-            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        if (scrollable) {
+            val scroll = ScrollView(this).apply {
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            }
+            val body = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(12), dp(16), dp(28))
+            }
+            scroll.addView(body)
+            outer.addView(scroll)
+            return outer to body
         }
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(28))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            setPadding(dp(16), dp(10), dp(16), dp(10))
         }
-        scroll.addView(body)
-        outer.addView(scroll)
+        outer.addView(body)
         return outer to body
     }
 
@@ -5497,6 +5752,18 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(body)
         outer.addView(scroll)
 
+        val bmSearchAdapter = BookmarkSearchAdapter(p)
+        val searchRecycler = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            adapter = bmSearchAdapter
+            itemAnimator = null
+            clipToPadding = false
+            setPadding(dp(16), dp(4), dp(16), dp(16))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        outer.addView(searchRecycler)
+
         outer.addView(View(this).apply {
             setBackgroundColor(dividerColor)
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
@@ -5591,36 +5858,39 @@ class MainActivity : AppCompatActivity() {
                 val hasDigits = trimmed.any { it.isDigit() }
                 val loc = currentLocation
                 val unit = cachedSpeedUnit
-                RoutingEngine.ioExecutor.execute {
+                RoutingEngine.uiQueryExecutor.execute {
                     val index = getOrBuildSearchIndex(ver, pinsSnap, folderNameById)
                     val matches = filterSearchEntries(index, tokens, hasDigits, loc, unit)
+                    val rows = ArrayList<SearchRowItem>(matches.size + 2).apply {
+                        add(SearchRowItem.Header("${matches.size} match${if (matches.size == 1) "" else "es"} across all folders"))
+                        if (matches.isEmpty()) {
+                            add(SearchRowItem.WebStatus("No bookmarks matched \"$trimmed\".", showRetry = false))
+                        } else {
+                            matches.forEachIndexed { idx, (entry, dist) ->
+                                add(
+                                    SearchRowItem.BookmarkMatch(
+                                        entry = entry,
+                                        distText = dist,
+                                        showFolderInSub = true,
+                                        isFirst = idx == 0,
+                                        isLast = idx == matches.lastIndex
+                                    )
+                                )
+                            }
+                        }
+                    }
                     runOnUiThread {
                         if (isFinishing || isDestroyed || mySeq != bookmarkSearchSeq) return@runOnUiThread
-                        body.removeAllViews()
-                        body.addView(TextView(this@MainActivity).apply {
-                            text = "${matches.size} match${if (matches.size == 1) "" else "es"} across all folders"
-                            textSize = 13f
-                            setTextColor(txtSub)
-                            setTypeface(null, Typeface.BOLD)
-                            setPadding(dp(4), dp(4), dp(4), dp(8))
-                        })
-
-                        if (matches.isEmpty()) {
-                            body.addView(TextView(this@MainActivity).apply {
-                                text = "No bookmarks matched \"$trimmed\"."
-                                textSize = 14f
-                                setTextColor(txtSub)
-                                setPadding(dp(4), dp(12), dp(4), dp(12))
-                            })
-                            return@runOnUiThread
-                        }
-
-                        appendPaginatedSearchCard(body, p, matches, showFolderInSub = true, pageSize = 60)
+                        scroll.visibility = View.GONE
+                        searchRecycler.visibility = View.VISIBLE
+                        bmSearchAdapter.submitList(rows)
                     }
                 }
                 return
             }
 
+            searchRecycler.visibility = View.GONE
+            scroll.visibility = View.VISIBLE
             body.removeAllViews()
 
             val bookmarkedIds = DevicePrefs.getBookmarks(this)
@@ -5983,7 +6253,9 @@ class MainActivity : AppCompatActivity() {
                                         if (isPinned) {
                                             Toast.makeText(this@MainActivity, "Folder is pinned. Unpin it first to leave.", Toast.LENGTH_LONG).show()
                                         } else {
+                                            val leftPinIds = pinsByLayerId[layer.id]?.map { it.id }.orEmpty()
                                             DevicePrefs.removeJoinedLayerId(this@MainActivity, layer.id)
+                                            DevicePrefs.removePinReferences(this@MainActivity, leftPinIds)
                                             refreshJoinedSync()
                                             Toast.makeText(this@MainActivity, "Left \"${layer.name}\"", Toast.LENGTH_SHORT).show()
                                         }
@@ -6431,7 +6703,7 @@ class MainActivity : AppCompatActivity() {
 
         val (outer, body) = makePageFrame(title, {
             if (pageBackStack.isNotEmpty()) pageBackStack.removeAt(pageBackStack.lastIndex).invoke() else closeFullPage()
-        }, topActions)
+        }, topActions, scrollable = false)
 
         var sortNearest = currentLocation != null
         var filterKey = "all"
@@ -6658,10 +6930,17 @@ class MainActivity : AppCompatActivity() {
         autoSelectScroll.addView(autoSelectRow)
         body.addView(autoSelectScroll)
 
-        val listCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        val listCard = FrameLayout(this).apply {
             DesignSystem.applyGroupedCardSurface(this@MainActivity, this, p, radiusDp = 16f)
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
+        val recycler = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            itemAnimator = null
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        listCard.addView(recycler)
         body.addView(listCard)
 
         // Bottom Selection Action Bar pinned at bottom of `outer`
@@ -6725,7 +7004,6 @@ class MainActivity : AppCompatActivity() {
         outer.addView(selectionDivider)
         outer.addView(selectionBar)
 
-        var displayLimit = 150
         var latestFiltered: List<PinItem> = emptyList()
         var cachedAnalysisKey: Pair<String, Long>? = null
         var cachedDupExtras: Set<String> = emptySet()
@@ -6733,6 +7011,8 @@ class MainActivity : AppCompatActivity() {
         var cachedClusterSizes: Map<String, Int> = emptyMap()
         var renderSeq = 0
         var analysisSeq = 0
+        lateinit var pinAdapter: ListAdapter<PinListRowItem, RecyclerView.ViewHolder>
+        lateinit var rebuildSubmittedRows: () -> Unit
 
         fun syncAutoSelectButtons() {
             btnAutoDuplicates.text = "Duplicates (${cachedDupExtras.size})"
@@ -6775,6 +7055,236 @@ class MainActivity : AppCompatActivity() {
             syncAutoSelectButtons()
         }
 
+        var latestSortedPins: List<PinItem> = emptyList()
+        var latestDistLabelById: Map<String, String> = emptyMap()
+
+        pinAdapter = object : ListAdapter<PinListRowItem, RecyclerView.ViewHolder>(
+            object : DiffUtil.ItemCallback<PinListRowItem>() {
+                override fun areItemsTheSame(o: PinListRowItem, n: PinListRowItem) = o.stableId == n.stableId
+                override fun areContentsTheSame(o: PinListRowItem, n: PinListRowItem) = o == n
+            }
+        ) {
+            inner class MsgVH(val tv: TextView) : RecyclerView.ViewHolder(tv)
+            inner class PinVH(
+                val wrap: LinearLayout,
+                val divider: View,
+                val clickRow: LinearLayout,
+                val checkBadge: TextView,
+                val dot: View,
+                val tvTitle: TextView,
+                val tvGpsBadge: TextView,
+                val tvSub: TextView,
+                val tvDist: TextView
+            ) : RecyclerView.ViewHolder(wrap)
+
+            override fun getItemViewType(position: Int): Int = when (getItem(position)) {
+                is PinListRowItem.MessageRow -> 0
+                is PinListRowItem.PinRow -> 1
+                is PinListRowItem.ShareCodeRow -> 2
+            }
+
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                return when (viewType) {
+                    0, 2 -> MsgVH(TextView(this@MainActivity).apply {
+                        layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        textSize = if (viewType == 0) 13f else 12.5f
+                        setTextColor(txtSub)
+                        setPadding(dp(16), dp(14), dp(16), dp(14))
+                    })
+                    else -> {
+                        val wrap = LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        }
+                        val divider = DesignSystem.createHairlineDivider(this@MainActivity, p, 16, 16)
+                        val row = LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            minimumHeight = dp(52)
+                            setPadding(dp(14), dp(11), dp(14), dp(11))
+                        }
+                        val badge = TextView(this@MainActivity).apply {
+                            textSize = 13f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(Color.WHITE)
+                            gravity = Gravity.CENTER
+                            layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(12) }
+                        }
+                        val dot = View(this@MainActivity).apply {
+                            layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
+                        }
+                        val col = LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                marginEnd = dp(8)
+                            }
+                        }
+                        val nameRow = LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                        }
+                        val tvTitle = TextView(this@MainActivity).apply {
+                            textSize = 15f
+                            setTextColor(txtPrimary)
+                            setTypeface(null, Typeface.BOLD)
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                        }
+                        val tvGps = TextView(this@MainActivity).apply {
+                            textSize = 10f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(p.amber)
+                            DesignSystem.applyTabularNumerals(this)
+                            setPadding(dp(6), dp(2), dp(6), dp(2))
+                            background = GradientDrawable().apply {
+                                setColor(p.amberSoft)
+                                cornerRadius = dp(6).toFloat()
+                            }
+                            layoutParams = LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            ).apply { marginStart = dp(6) }
+                        }
+                        nameRow.addView(tvTitle)
+                        nameRow.addView(tvGps)
+                        val tvSub = TextView(this@MainActivity).apply {
+                            textSize = 12f
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                        }
+                        col.addView(nameRow)
+                        col.addView(tvSub)
+                        val tvDist = TextView(this@MainActivity).apply {
+                            textSize = 12f
+                            setTextColor(p.accent)
+                            setTypeface(null, Typeface.BOLD)
+                            DesignSystem.applyTabularNumerals(this)
+                        }
+                        row.addView(badge)
+                        row.addView(dot)
+                        row.addView(col)
+                        row.addView(tvDist)
+                        wrap.addView(divider)
+                        wrap.addView(row)
+                        PinVH(wrap, divider, row, badge, dot, tvTitle, tvGps, tvSub, tvDist)
+                    }
+                }
+            }
+
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                when (val item = getItem(position)) {
+                    is PinListRowItem.MessageRow -> (holder as MsgVH).tv.text = item.text
+                    is PinListRowItem.ShareCodeRow -> (holder as MsgVH).tv.text = "Share Code: ${item.shareCode}"
+                    is PinListRowItem.PinRow -> {
+                        val vh = holder as PinVH
+                        val pin = item.pin
+                        vh.divider.visibility = if (item.isFirst) View.GONE else View.VISIBLE
+                        if (item.selectionMode && item.isSelected) {
+                            vh.clickRow.setBackgroundColor(p.accentSoft)
+                        } else {
+                            UiAnimations.applyRowRipple(this@MainActivity, vh.clickRow, night)
+                        }
+                        if (item.selectionMode) {
+                            vh.dot.visibility = View.GONE
+                            vh.checkBadge.visibility = View.VISIBLE
+                            vh.checkBadge.text = if (item.isSelected) "✓" else ""
+                            vh.checkBadge.background = GradientDrawable().apply {
+                                shape = GradientDrawable.OVAL
+                                if (item.isSelected) {
+                                    setColor(p.accent)
+                                } else {
+                                    setColor(Color.TRANSPARENT)
+                                    setStroke(dp(2), p.iconMuted)
+                                }
+                            }
+                        } else {
+                            vh.checkBadge.visibility = View.GONE
+                            vh.dot.visibility = View.VISIBLE
+                            vh.dot.background = GradientDrawable().apply {
+                                shape = GradientDrawable.OVAL
+                                setColor(Color.parseColor(statusColorHex(pin.status)))
+                            }
+                        }
+                        vh.tvTitle.text = DesignSystem.isolateBidi(pin.name)
+                        if (item.sameCount >= 2) {
+                            vh.tvGpsBadge.text = "${item.sameCount}× GPS"
+                            vh.tvGpsBadge.visibility = View.VISIBLE
+                        } else {
+                            vh.tvGpsBadge.visibility = View.GONE
+                        }
+                        val st = PinStatus.fromRaw(pin.status)
+                        val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
+                        val subParts = mutableListOf(st.label)
+                        if (st == PinStatus.ISSUE && cleanNote.isNotBlank()) subParts += "⚠ $cleanNote"
+                        else if (st == PinStatus.DONE && cleanNote.isNotBlank()) subParts += "✓ $cleanNote"
+                        if (pin.isEdited && pin.editedBy.isNotBlank()) subParts += "Edited by ${pin.editedBy}"
+                        vh.tvSub.text = DesignSystem.joinBidi(*subParts.toTypedArray())
+                        vh.tvSub.setTextColor(
+                            when {
+                                st == PinStatus.ISSUE -> p.red
+                                st == PinStatus.DONE && cleanNote.isNotBlank() -> p.green
+                                else -> txtSub
+                            }
+                        )
+                        if (item.distLabel != null) {
+                            vh.tvDist.text = item.distLabel
+                            vh.tvDist.visibility = View.VISIBLE
+                        } else {
+                            vh.tvDist.text = ""
+                            vh.tvDist.visibility = View.GONE
+                        }
+                        vh.clickRow.setOnClickListener {
+                            if (selectionMode) {
+                                if (!selectedPinIds.add(pin.id)) selectedPinIds.remove(pin.id)
+                                updateSelectionBarState()
+                                rebuildSubmittedRows()
+                            } else {
+                                ensurePinVisibleOnMap(pin)
+                                closeFullPage()
+                                selectPinAndOpenCard(pin, zoomIfFar = true)
+                            }
+                        }
+                        vh.clickRow.setOnLongClickListener {
+                            if (!selectionMode) {
+                                selectionMode = true
+                                selectedPinIds.add(pin.id)
+                                renderPinRows()
+                                true
+                            } else false
+                        }
+                    }
+                }
+            }
+        }
+        recycler.adapter = pinAdapter
+        pinAdapter.submitList(listOf(PinListRowItem.MessageRow(AppStrings.loadingBookmarks(this))))
+
+        rebuildSubmittedRows = {
+            if (latestSortedPins.isEmpty()) {
+                pinAdapter.submitList(listOf(PinListRowItem.MessageRow(AppStrings.noBookmarksMatchFilter(this@MainActivity))))
+            } else {
+                val rows = ArrayList<PinListRowItem>(latestSortedPins.size + 1)
+                latestSortedPins.forEachIndexed { idx, pin ->
+                    rows.add(
+                        PinListRowItem.PinRow(
+                            pin = pin,
+                            isFirst = idx == 0,
+                            isLast = idx == latestSortedPins.lastIndex,
+                            selectionMode = selectionMode,
+                            isSelected = pin.id in selectedPinIds,
+                            sameCount = cachedClusterSizes[pin.id] ?: 0,
+                            distLabel = latestDistLabelById[pin.id]
+                        )
+                    )
+                }
+                if (layer != null && layer.shareCode.isNotBlank()) {
+                    rows.add(PinListRowItem.ShareCodeRow(layer.shareCode))
+                }
+                pinAdapter.submitList(rows)
+            }
+        }
+
         fun renderPinRows() {
             val mySeq = ++renderSeq
             btnSort.text = if (sortNearest) "Nearest ↓" else "A–Z ↓"
@@ -6783,22 +7293,12 @@ class MainActivity : AppCompatActivity() {
                 DesignSystem.styleSegmentedButton(b, active, p)
             }
 
-            if (listCard.childCount == 0) {
-                listCard.addView(TextView(this).apply {
-                    text = "Loading bookmarks..."
-                    textSize = 13f
-                    setTextColor(txtSub)
-                    setPadding(dp(16), dp(16), dp(16), dp(16))
-                })
-            }
-
             val loc = currentLocation
             val unit = cachedSpeedUnit
             val curFilterKey = filterKey
             val curSortNearest = sortNearest
             val curSelectionMode = selectionMode
             val curSelectedSnap = if (curSelectionMode) selectedPinIds.toSet() else emptySet()
-            val curDisplayLimit = displayLimit
             val allInFolder = currentSourcePins().toList()
             val curKey = curFilterKey to dataVersion
             val prevCachedOk = cachedAnalysisKey == curKey
@@ -6806,7 +7306,7 @@ class MainActivity : AppCompatActivity() {
             val prevSameExtras = cachedSameCoordExtras
             val prevClusterSizes = cachedClusterSizes
 
-            RoutingEngine.ioExecutor.execute {
+            RoutingEngine.uiQueryExecutor.execute {
                 val filtered = if (curFilterKey == "all") {
                     allInFolder
                 } else {
@@ -6827,9 +7327,8 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val useNearest = curSortNearest && loc != null
-                val pageItems: List<PinItem>
+                val sortedPins: List<PinItem>
                 val distLabelById: Map<String, String>
-                val totalCount = filtered.size
                 if (loc != null) {
                     val uLat = loc.latitude
                     val uLng = loc.longitude
@@ -6850,224 +7349,34 @@ class MainActivity : AppCompatActivity() {
                             }.thenBy { it.first.name.lowercase(Locale.ROOT) }
                         )
                     }
-                    val pageScored = scored.take(curDisplayLimit)
-                    pageItems = pageScored.map { it.first }
-                    val dMap = HashMap<String, String>(pageScored.size)
-                    for ((pin, distM) in pageScored) {
+                    sortedPins = scored.map { it.first }
+                    val dMap = HashMap<String, String>(scored.size)
+                    for ((pin, distM) in scored) {
                         dMap[pin.id] = formatDistanceShort(distM, unit)
                     }
                     distLabelById = dMap
                 } else {
-                    val sorted = filtered.sortedWith(
+                    sortedPins = filtered.sortedWith(
                         compareBy<PinItem> {
                             if (curSelectionMode && curSelectedSnap.isNotEmpty() && it.id in curSelectedSnap) 0 else 1
                         }.thenBy { it.name.lowercase(Locale.ROOT) }
                     )
-                    pageItems = sorted.take(curDisplayLimit)
                     distLabelById = emptyMap()
                 }
-                val remainingCount = totalCount - pageItems.size
 
                 runOnUiThread {
                     if (isFinishing || isDestroyed || mySeq != renderSeq) return@runOnUiThread
                     latestFiltered = filtered
+                    latestSortedPins = sortedPins
+                    latestDistLabelById = distLabelById
                     if (!prevCachedOk) {
                         cachedAnalysisKey = curKey
                         cachedDupExtras = dupExtras
                         cachedSameCoordExtras = sameExtras
                         cachedClusterSizes = clusterSizes
                     }
-                    listCard.removeAllViews()
                     updateSelectionBarState()
-
-                    if (pageItems.isEmpty()) {
-                        listCard.addView(TextView(this).apply {
-                            text = "No bookmarks match this filter."
-                            textSize = 13f
-                            setTextColor(txtSub)
-                            setPadding(dp(16), dp(16), dp(16), dp(16))
-                        })
-                        return@runOnUiThread
-                    }
-
-                    pageItems.forEachIndexed { idx, pin ->
-                        if (idx > 0) {
-                            listCard.addView(DesignSystem.createHairlineDivider(this, p, 16, 16))
-                        }
-                        var isSelected = pin.id in selectedPinIds
-                        val sameCount = clusterSizes[pin.id] ?: 0
-                        var checkBadge: TextView? = null
-                        val row = LinearLayout(this).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            gravity = Gravity.CENTER_VERTICAL
-                            minimumHeight = dp(52)
-                            setPadding(dp(14), dp(11), dp(14), dp(11))
-                            if (selectionMode && isSelected) {
-                                setBackgroundColor(p.accentSoft)
-                            } else {
-                                UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                            }
-                            setOnClickListener {
-                                if (selectionMode) {
-                                    isSelected = if (selectedPinIds.add(pin.id)) true else {
-                                        selectedPinIds.remove(pin.id)
-                                        false
-                                    }
-                                    if (isSelected) {
-                                        setBackgroundColor(p.accentSoft)
-                                    } else {
-                                        UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                                    }
-                                    checkBadge?.let { badge ->
-                                        badge.text = if (isSelected) "✓" else ""
-                                        badge.background = GradientDrawable().apply {
-                                            shape = GradientDrawable.OVAL
-                                            if (isSelected) {
-                                                setColor(p.accent)
-                                            } else {
-                                                setColor(Color.TRANSPARENT)
-                                                setStroke(dp(2), p.iconMuted)
-                                            }
-                                        }
-                                        UiAnimations.animateScalePop(badge, 0.72f, 160L)
-                                    }
-                                    updateSelectionBarState()
-                                } else {
-                                    ensurePinVisibleOnMap(pin)
-                                    closeFullPage()
-                                    selectPinAndOpenCard(pin, zoomIfFar = true)
-                                }
-                            }
-                            setOnLongClickListener {
-                                if (!selectionMode) {
-                                    selectionMode = true
-                                    selectedPinIds.add(pin.id)
-                                    renderPinRows()
-                                    true
-                                } else false
-                            }
-                        }
-
-                        if (selectionMode) {
-                            val badge = TextView(this).apply {
-                                text = if (isSelected) "✓" else ""
-                                textSize = 13f
-                                setTypeface(null, Typeface.BOLD)
-                                setTextColor(Color.WHITE)
-                                gravity = Gravity.CENTER
-                                background = GradientDrawable().apply {
-                                    shape = GradientDrawable.OVAL
-                                    if (isSelected) {
-                                        setColor(p.accent)
-                                    } else {
-                                        setColor(Color.TRANSPARENT)
-                                        setStroke(dp(2), p.iconMuted)
-                                    }
-                                }
-                                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { marginEnd = dp(12) }
-                            }
-                            checkBadge = badge
-                            row.addView(badge)
-                        } else {
-                            row.addView(View(this).apply {
-                                background = GradientDrawable().apply {
-                                    shape = GradientDrawable.OVAL
-                                    setColor(Color.parseColor(statusColorHex(pin.status)))
-                                }
-                                layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { marginEnd = dp(12) }
-                            })
-                        }
-
-                        val col = LinearLayout(this).apply {
-                            orientation = LinearLayout.VERTICAL
-                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                                marginEnd = dp(8)
-                            }
-                        }
-                        val nameRow = LinearLayout(this).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            gravity = Gravity.CENTER_VERTICAL
-                        }
-                        nameRow.addView(TextView(this).apply {
-                            text = pin.name
-                            textSize = 15f
-                            setTextColor(txtPrimary)
-                            setTypeface(null, Typeface.BOLD)
-                            maxLines = 1
-                            ellipsize = TextUtils.TruncateAt.END
-                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                        })
-                        if (sameCount >= 2) {
-                            nameRow.addView(TextView(this).apply {
-                                text = "${sameCount}× GPS"
-                                textSize = 10f
-                                setTypeface(null, Typeface.BOLD)
-                                setTextColor(p.amber)
-                                DesignSystem.applyTabularNumerals(this)
-                                setPadding(dp(6), dp(2), dp(6), dp(2))
-                                background = GradientDrawable().apply {
-                                    setColor(p.amberSoft)
-                                    cornerRadius = dp(6).toFloat()
-                                }
-                                layoutParams = LinearLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                                    ViewGroup.LayoutParams.WRAP_CONTENT
-                                ).apply { marginStart = dp(6) }
-                            })
-                        }
-                        col.addView(nameRow)
-
-                        val st = PinStatus.fromRaw(pin.status)
-                        val cleanNote = DailyReportGenerator.flattenSingleLine(pin.issueReason)
-                        val subParts = mutableListOf(st.label)
-                        if (st == PinStatus.ISSUE && cleanNote.isNotBlank()) subParts += "⚠ $cleanNote"
-                        else if (st == PinStatus.DONE && cleanNote.isNotBlank()) subParts += "✓ $cleanNote"
-                        if (pin.isEdited && pin.editedBy.isNotBlank()) subParts += "Edited by ${pin.editedBy}"
-                        col.addView(TextView(this).apply {
-                            text = subParts.joinToString(" • ")
-                            textSize = 12f
-                            maxLines = 1
-                            ellipsize = TextUtils.TruncateAt.END
-                            setTextColor(
-                                when {
-                                    st == PinStatus.ISSUE -> p.red
-                                    st == PinStatus.DONE && cleanNote.isNotBlank() -> p.green
-                                    else -> txtSub
-                                }
-                            )
-                        })
-                        row.addView(col)
-
-                        val distLabel = distLabelById[pin.id]
-                        if (distLabel != null) {
-                            row.addView(TextView(this).apply {
-                                text = distLabel
-                                textSize = 12f
-                                setTextColor(p.accent)
-                                setTypeface(null, Typeface.BOLD)
-                                DesignSystem.applyTabularNumerals(this)
-                            })
-                        }
-                        listCard.addView(row)
-                    }
-
-                    if (remainingCount > 0) {
-                        listCard.addView(DesignSystem.createHairlineDivider(this, p))
-                        listCard.addView(TextView(this).apply {
-                            text = "Show more ($remainingCount remaining)"
-                            textSize = 13.5f
-                            setTypeface(null, Typeface.BOLD)
-                            setTextColor(p.accent)
-                            gravity = Gravity.CENTER
-                            minimumHeight = dp(48)
-                            setPadding(dp(16), dp(12), dp(16), dp(12))
-                            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                            setOnClickListener {
-                                displayLimit += 150
-                                renderPinRows()
-                            }
-                        })
-                    }
+                    rebuildSubmittedRows()
                 }
             }
         }
@@ -7100,7 +7409,7 @@ class MainActivity : AppCompatActivity() {
                     val fk = filterKey
                     currentSourcePins().filter { fk == "all" || PinStatus.fromRaw(it.status).key == fk }
                 }
-                RoutingEngine.ioExecutor.execute {
+                RoutingEngine.uiQueryExecutor.execute {
                     val dup = findDuplicateExtraIds(listSnap)
                     val (same, sizes) = analyzeSameCoordClusters(listSnap)
                     runOnUiThread {
@@ -7137,7 +7446,7 @@ class MainActivity : AppCompatActivity() {
                     val fk = filterKey
                     currentSourcePins().filter { fk == "all" || PinStatus.fromRaw(it.status).key == fk }
                 }
-                RoutingEngine.ioExecutor.execute {
+                RoutingEngine.uiQueryExecutor.execute {
                     val dup = findDuplicateExtraIds(listSnap)
                     val (same, sizes) = analyzeSameCoordClusters(listSnap)
                     runOnUiThread {
@@ -7240,20 +7549,10 @@ class MainActivity : AppCompatActivity() {
 
         btnSort.setOnClickListener {
             sortNearest = !sortNearest
-            displayLimit = 150
             renderPinRows()
         }
         filterBtns.forEach { (k, b) ->
-            b.setOnClickListener { filterKey = k; displayLimit = 150; renderPinRows() }
-        }
-
-        if (layer != null && layer.shareCode.isNotBlank()) {
-            body.addView(TextView(this).apply {
-                text = "Share Code: ${layer.shareCode}"
-                textSize = 12.5f
-                setTextColor(txtSub)
-                setPadding(dp(6), dp(10), dp(6), 0)
-            })
+            b.setOnClickListener { filterKey = k; renderPinRows() }
         }
 
         livePinListRefresh = { renderPinRows() }
@@ -7293,7 +7592,7 @@ class MainActivity : AppCompatActivity() {
         val txtPrimary = p.textPrimary
         val txtSub = p.textSecondary
 
-        val (outer, body) = makePageFrame(AppStrings.search(this), { closeFullPage() })
+        val (outer, body) = makePageFrame(AppStrings.search(this), { closeFullPage() }, scrollable = false)
 
         val searchBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -7315,7 +7614,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(10) }
         })
         val etQuery = EditText(this).apply {
-            hint = "Search pins, places, or coords..."
+            hint = AppStrings.searchPlaceholder(this@MainActivity)
             textSize = 14.5f
             setTextColor(txtPrimary)
             setHintTextColor(txtSub)
@@ -7339,7 +7638,7 @@ class MainActivity : AppCompatActivity() {
 
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(10), 0, dp(12))
+            setPadding(0, dp(10), 0, dp(10))
         }
         val btnWebSearch = MaterialButton(this).apply {
             text = AppStrings.searchMapPlaces(this@MainActivity)
@@ -7381,10 +7680,41 @@ class MainActivity : AppCompatActivity() {
         btnRow.addView(btnNearest)
         body.addView(btnRow)
 
-        val webResultsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val resultsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        body.addView(webResultsBox)
-        body.addView(resultsBox)
+        var latestWebItems: List<SearchRowItem> = emptyList()
+        var latestLocalItems: List<SearchRowItem> = emptyList()
+        lateinit var searchAdapter: BookmarkSearchAdapter
+        lateinit var triggerWebSearchRef: () -> Unit
+
+        val searchRecycler = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            itemAnimator = null
+            clipToPadding = false
+            setPadding(0, dp(2), 0, dp(16))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        searchAdapter = BookmarkSearchAdapter(
+            palette = p,
+            onQuickFilter = { key ->
+                if (key == "nearest") {
+                    jumpToNearestPendingPin()
+                } else {
+                    etQuery.setText(key)
+                    etQuery.setSelection(key.length)
+                }
+            },
+            onRetryWebSearch = { triggerWebSearchRef() }
+        )
+        searchRecycler.adapter = searchAdapter
+        body.addView(searchRecycler)
+
+        fun publishSearchList(scrollToTop: Boolean = false) {
+            val combined = ArrayList<SearchRowItem>(latestWebItems.size + latestLocalItems.size)
+            combined.addAll(latestWebItems)
+            combined.addAll(latestLocalItems)
+            searchAdapter.submitList(combined) {
+                if (scrollToTop && combined.isNotEmpty()) searchRecycler.scrollToPosition(0)
+            }
+        }
 
         var localSearchSeq = 0
 
@@ -7392,17 +7722,10 @@ class MainActivity : AppCompatActivity() {
             val mySeq = ++localSearchSeq
             val trimmed = q.trim()
             if (trimmed.isEmpty()) {
-                resultsBox.removeAllViews()
                 webSearchSeq++
-                webResultsBox.removeAllViews()
-                val hintCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 14)
-                hintCard.addView(TextView(this).apply {
-                    text = "Type a bookmark name, status, or lat, lng coordinates — or tap Search Map Places for online locations."
-                    textSize = 13.5f
-                    setLineSpacing(dp(2).toFloat(), 1.05f)
-                    setTextColor(p.textBody)
-                })
-                resultsBox.addView(hintCard)
+                latestWebItems = emptyList()
+                latestLocalItems = listOf(SearchRowItem.HintAndChips(DevicePrefs.getAppLanguage(this).name))
+                publishSearchList(scrollToTop = true)
                 return
             }
 
@@ -7413,7 +7736,7 @@ class MainActivity : AppCompatActivity() {
             val hasDigits = trimmed.any { it.isDigit() }
             val loc = currentLocation
             val unit = cachedSpeedUnit
-            RoutingEngine.ioExecutor.execute {
+            RoutingEngine.uiQueryExecutor.execute {
                 val coordParts = trimmed.split(",").map { it.trim().toDoubleOrNull() }
                 val parsedCoord: Pair<Double, Double>? = if (coordParts.size == 2 && coordParts[0] != null && coordParts[1] != null) {
                     val lat = coordParts[0]!!
@@ -7423,32 +7746,31 @@ class MainActivity : AppCompatActivity() {
 
                 val index = getOrBuildSearchIndex(ver, pinsSnapshot, folderNameById)
                 val matches = filterSearchEntries(index, tokens, hasDigits, loc, unit)
+                val nextLocal = ArrayList<SearchRowItem>(matches.size + 3)
+                if (parsedCoord != null) {
+                    nextLocal.add(SearchRowItem.CoordJump(parsedCoord.first, parsedCoord.second))
+                }
+                if (matches.isNotEmpty()) {
+                    nextLocal.add(SearchRowItem.Header(AppStrings.bookmarksCount(this@MainActivity, matches.size)))
+                    matches.forEachIndexed { idx, (entry, dist) ->
+                        nextLocal.add(
+                            SearchRowItem.BookmarkMatch(
+                                entry = entry,
+                                distText = dist,
+                                showFolderInSub = true,
+                                isFirst = idx == 0,
+                                isLast = idx == matches.lastIndex
+                            )
+                        )
+                    }
+                } else if (parsedCoord == null && latestWebItems.isEmpty()) {
+                    nextLocal.add(SearchRowItem.WebStatus(AppStrings.noBookmarksMatchFilter(this@MainActivity), showRetry = false))
+                }
 
                 runOnUiThread {
                     if (isFinishing || isDestroyed || mySeq != localSearchSeq) return@runOnUiThread
-                    resultsBox.removeAllViews()
-                    if (parsedCoord != null) {
-                        val (lat, lng) = parsedCoord
-                        val coordCard = DesignSystem.createGroupedCard(this@MainActivity, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12)
-                        coordCard.addView(TextView(this@MainActivity).apply {
-                            text = "📍 Go to coordinates: ${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)}"
-                            textSize = 14.5f
-                            setTypeface(null, Typeface.BOLD)
-                            setTextColor(p.accentPrimary)
-                            DesignSystem.applyTabularNumerals(this)
-                            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                            setOnClickListener {
-                                closeFullPage()
-                                selectCoordinateOnMap(LatLng(lat, lng), explicitTitle = "Coordinates", fallbackSub = "", zoomTo = 16.5)
-                            }
-                        })
-                        resultsBox.addView(coordCard)
-                    }
-
-                    if (matches.isNotEmpty()) {
-                        resultsBox.addView(DesignSystem.createSectionHeader(this@MainActivity, "Bookmarks (${matches.size})", p))
-                        appendPaginatedSearchCard(resultsBox, p, matches, showFolderInSub = true, pageSize = 60)
-                    }
+                    latestLocalItems = nextLocal
+                    publishSearchList()
                 }
             }
         }
@@ -7474,63 +7796,34 @@ class MainActivity : AppCompatActivity() {
             hideSoftKeyboard()
             val seq = ++webSearchSeq
             btnWebSearch.isEnabled = false
-            btnWebSearch.text = "Searching..."
+            btnWebSearch.text = AppStrings.searching(this)
             val center = map?.cameraPosition?.target
             RoutingEngine.searchPlaces(q, center?.latitude, center?.longitude) { places, err ->
                 runOnUiThread {
                     if (isFinishing || isDestroyed || seq != webSearchSeq) return@runOnUiThread
                     btnWebSearch.isEnabled = true
                     btnWebSearch.text = AppStrings.searchMapPlaces(this)
-                    webResultsBox.removeAllViews()
                     if (!err.isNullOrBlank()) {
-                        Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                        latestWebItems = listOf(SearchRowItem.WebStatus(err, showRetry = true))
+                        publishSearchList(scrollToTop = true)
                         return@runOnUiThread
                     }
                     if (places.isEmpty()) {
-                        Toast.makeText(this, "No places found", Toast.LENGTH_SHORT).show()
+                        latestWebItems = listOf(SearchRowItem.WebStatus(AppStrings.noPlacesFound(this), showRetry = true))
+                        publishSearchList(scrollToTop = true)
                         return@runOnUiThread
                     }
-                    webResultsBox.addView(DesignSystem.createSectionHeader(this, "Map Places (${places.size})", p))
-                    val webCard = DesignSystem.createGroupedCard(this, p, radiusDp = 18f, paddingHDp = 0, paddingVDp = 2)
-                    places.forEachIndexed { idx, place ->
-                        if (idx > 0) {
-                            webCard.addView(View(this).apply {
-                                setBackgroundColor(p.divider)
-                                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                                    marginStart = dp(16)
-                                    marginEnd = dp(16)
-                                }
-                            })
+                    latestWebItems = ArrayList<SearchRowItem>(places.size + 1).apply {
+                        add(SearchRowItem.Header(AppStrings.mapPlacesCount(this@MainActivity, places.size)))
+                        places.forEachIndexed { idx, place ->
+                            add(SearchRowItem.WebPlace(place, isFirst = idx == 0, isLast = idx == places.lastIndex))
                         }
-                        val row = LinearLayout(this).apply {
-                            orientation = LinearLayout.VERTICAL
-                            setPadding(dp(14), dp(12), dp(14), dp(12))
-                            UiAnimations.applyRowRipple(this@MainActivity, this, night)
-                            setOnClickListener {
-                                closeFullPage()
-                                selectCoordinateOnMap(LatLng(place.lat, place.lng), explicitTitle = place.title, fallbackSub = place.subtitle, zoomTo = 16.0)
-                            }
-                        }
-                        row.addView(TextView(this).apply {
-                            text = "🌐 ${place.title}"
-                            textSize = 14.5f
-                            setTextColor(txtPrimary)
-                            setTypeface(null, Typeface.BOLD)
-                        })
-                        if (place.subtitle.isNotBlank()) {
-                            row.addView(TextView(this).apply {
-                                text = place.subtitle
-                                textSize = 12f
-                                setTextColor(txtSub)
-                            })
-                        }
-                        webCard.addView(row)
                     }
-                    webResultsBox.addView(webCard)
-                    UiAnimations.animateResultReveal(webCard)
+                    publishSearchList(scrollToTop = true)
                 }
             }
         }
+        triggerWebSearchRef = ::runWebSearch
 
         etQuery.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
@@ -7541,8 +7834,9 @@ class MainActivity : AppCompatActivity() {
         btnWebSearch.setOnClickListener { runWebSearch() }
         activePageCleanup = {
             localSearchSeq++
-            searchPageRunnable?.let { etQuery.removeCallbacks(it) }
             webSearchSeq++
+            RoutingEngine.cancelPendingSearch()
+            searchPageRunnable?.let { etQuery.removeCallbacks(it) }
         }
 
         return outer
@@ -8319,7 +8613,10 @@ class MainActivity : AppCompatActivity() {
         return "$stem ($n)"
     }
 
+    private var mergeIndexSeq: Long = 0L
+
     private fun applyMergedFoldersAndRender() {
+        val myMergeSeq = ++mergeIndexSeq
         val cachedLocal = LocalFolderStore.getCachedOrNull()
         val local = if (cachedLocal != null) {
             cachedLocal
@@ -8331,33 +8628,80 @@ class MainActivity : AppCompatActivity() {
             }
             LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
         }
-        layers = (cloudLayers + local.layers).sortedByDescending { it.updatedAt }
-        pins = cloudPins + local.pins
-        tracks = cloudTracks + local.tracks
-        layerById = layers.associateBy { it.id }
-        pinById = pins.associateBy { it.id }
-        pinsByLayerId = pins.groupBy { it.layerId }
-        tracksByLayerId = tracks.groupBy { it.layerId }
-        val activeTrackIds = tracks.mapTo(HashSet(tracks.size)) { it.id }
-        synchronized(trackPointCache) {
-            trackPointCache.keys.retainAll(activeTrackIds)
+        val mergedLayersRaw = cloudLayers + local.layers
+        val mergedPins = cloudPins + local.pins
+        val mergedTracks = cloudTracks + local.tracks
+        val hasLocalCached = cachedLocal != null
+
+        fun commitIndexed(
+            sortedLayers: List<LayerItem>,
+            lById: Map<String, LayerItem>,
+            pById: Map<String, PinItem>,
+            pByLayer: Map<String, List<PinItem>>,
+            tByLayer: Map<String, List<TrackItem>>,
+            buckets: Map<Long, List<PinItem>>
+        ) {
+            layers = sortedLayers
+            pins = mergedPins
+            tracks = mergedTracks
+            layerById = lById
+            pinById = pById
+            pinsByLayerId = pByLayer
+            tracksByLayerId = tByLayer
+            val activeTrackIds = mergedTracks.mapTo(HashSet(mergedTracks.size)) { it.id }
+            synchronized(trackPointCache) {
+                trackPointCache.keys.retainAll(activeTrackIds)
+            }
+            stackedPinBuckets = buckets
+            dataVersion++
+            val joinedEmpty = DevicePrefs.getJoinedLayerIds(this).isEmpty()
+            if (hasLocalCached && (sortedLayers.isNotEmpty() || isLiveConnected || joinedEmpty)) {
+                DevicePrefs.saveCachedLayerNames(this, sortedLayers.map { it.name })
+                if (isLiveConnected || joinedEmpty) {
+                    DevicePrefs.prunePinReferencesKeeping(this, pById.keys)
+                }
+            }
+            renderMapData()
+            liveBookmarksRefresh?.invoke()
+            livePinListRefresh?.invoke()
+            liveEditHistoryRefresh?.invoke()
+            if (isLassoMode) updateLassoUi()
         }
-        val buckets = HashMap<Long, MutableList<PinItem>>(pins.size)
-        for (pItem in pins) {
-            val bx = kotlin.math.floor(pItem.lat / stackedCellSize).toInt()
-            val by = kotlin.math.floor(pItem.lng / stackedCellSize).toInt()
-            buckets.getOrPut(stackedBucketKey(bx, by)) { ArrayList(2) }.add(pItem)
+
+        if (mergedPins.size < 200) {
+            val sortedLayers = mergedLayersRaw.sortedByDescending { it.updatedAt }
+            val lById = sortedLayers.associateBy { it.id }
+            val pById = mergedPins.associateBy { it.id }
+            val pByLayer = mergedPins.groupBy { it.layerId }
+            val tByLayer = mergedTracks.groupBy { it.layerId }
+            val buckets = HashMap<Long, MutableList<PinItem>>(mergedPins.size)
+            for (pItem in mergedPins) {
+                val bx = kotlin.math.floor(pItem.lat / stackedCellSize).toInt()
+                val by = kotlin.math.floor(pItem.lng / stackedCellSize).toInt()
+                buckets.getOrPut(stackedBucketKey(bx, by)) { ArrayList(2) }.add(pItem)
+            }
+            commitIndexed(sortedLayers, lById, pById, pByLayer, tByLayer, buckets)
+            return
         }
-        stackedPinBuckets = buckets
-        dataVersion++
-        if (cachedLocal != null && (layers.isNotEmpty() || isLiveConnected || DevicePrefs.getJoinedLayerIds(this).isEmpty())) {
-            DevicePrefs.saveCachedLayerNames(this, layers.map { it.name })
+
+        val cell = stackedCellSize
+        RoutingEngine.uiQueryExecutor.execute {
+            val sortedLayers = mergedLayersRaw.sortedByDescending { it.updatedAt }
+            val lById = sortedLayers.associateBy { it.id }
+            val pById = mergedPins.associateBy { it.id }
+            val pByLayer = mergedPins.groupBy { it.layerId }
+            val tByLayer = mergedTracks.groupBy { it.layerId }
+            val buckets = HashMap<Long, MutableList<PinItem>>(mergedPins.size)
+            for (pItem in mergedPins) {
+                val bx = kotlin.math.floor(pItem.lat / cell).toInt()
+                val by = kotlin.math.floor(pItem.lng / cell).toInt()
+                buckets.getOrPut(stackedBucketKey(bx, by)) { ArrayList(2) }.add(pItem)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed || myMergeSeq != mergeIndexSeq) return@runOnUiThread
+                commitIndexed(sortedLayers, lById, pById, pByLayer, tByLayer, buckets)
+            }
         }
-        renderMapData()
-        liveBookmarksRefresh?.invoke()
-        livePinListRefresh?.invoke()
-        liveEditHistoryRefresh?.invoke()
-        if (isLassoMode) updateLassoUi()
     }
 
     internal fun refreshJoinedSync() {
@@ -8548,14 +8892,15 @@ class MainActivity : AppCompatActivity() {
     }
     @Suppress("DEPRECATION")
     internal fun getInstalledVersionName(): String {
+        val fallback = BuildConfig.VERSION_NAME.trim().removePrefix("v").removePrefix("V")
         return runCatching {
             val info = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
             } else {
                 packageManager.getPackageInfo(packageName, 0)
             }
-            (info.versionName ?: "2.8.0").trim().removePrefix("v").removePrefix("V")
-        }.getOrDefault("2.8.0")
+            (info.versionName ?: fallback).trim().removePrefix("v").removePrefix("V")
+        }.getOrDefault(fallback)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

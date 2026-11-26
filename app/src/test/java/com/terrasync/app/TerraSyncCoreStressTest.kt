@@ -421,4 +421,20 @@ class TerraSyncCoreStressTest {
         assertEquals("6h 35m", formatEtaDuration(23700.0))
         assertEquals("22h 43m", formatEtaDuration(81780.0))
     }
+
+    @Test
+    fun testDesignSystemBidiIsolationAndTimeFormatters() {
+        assertEquals("\u2068Feeder A\u2069", DesignSystem.isolateBidi("Feeder A"))
+        assertEquals("   ", DesignSystem.isolateBidi("   "))
+        assertEquals("\u2068دهۆک\u2069 • \u20681.2 km\u2069", DesignSystem.joinBidi("دهۆک", "1.2 km", ""))
+
+        val sampleMs = 1701001800000L
+        assertTrue(Regex("""\d{2} [A-Za-z]{3} \d{2}:\d{2}""").matches(TimeFormatters.canonicalHistory(sampleMs)))
+        assertTrue(Regex("""\d{2} [A-Za-z]{3}""").matches(TimeFormatters.dayMonth(sampleMs)))
+        assertTrue(Regex("""\d{2}:\d{2}""").matches(TimeFormatters.hourMinute(sampleMs)))
+        assertTrue(Regex("""\d{4}-\d{2}-\d{2} \d{2}:\d{2}""").matches(TimeFormatters.csvTimestamp(sampleMs)))
+        assertTrue(Regex("""\d{8}_\d{4}""").matches(TimeFormatters.fileStamp(sampleMs)))
+        val reportTs = TimeFormatters.reportTimestamp(sampleMs)
+        assertTrue(reportTs.isNotBlank() && reportTs.contains("•"))
+    }
 }

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
 import android.os.Handler
@@ -19,6 +20,7 @@ import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.Session
 import androidx.car.app.model.Action
+import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarLocation
 import androidx.car.app.model.Distance
@@ -36,21 +38,15 @@ import androidx.car.app.model.Template
 import androidx.car.app.validation.HostValidator
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 
 class TerraSyncCarAppService : CarAppService() {
     override fun onCreate() {
         super.onCreate()
         RoutingEngine.appContext = applicationContext
-        val ver = runCatching {
-            val info = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
-            } else {
-                @Suppress("DEPRECATION")
-                packageManager.getPackageInfo(packageName, 0)
-            }
-            (info.versionName ?: "2.8.0").trim().removePrefix("v").removePrefix("V")
-        }.getOrDefault("2.8.0")
+        val ver = BuildConfig.VERSION_NAME.trim().removePrefix("v").removePrefix("V")
+            .ifBlank { "3.11.0" }
         RoutingEngine.userAgent = "TerraSync/$ver (https://github.com/Thamirakkurd/TerraSync)"
     }
 
@@ -109,16 +105,9 @@ private class TerraSyncCarFoldersScreen(carContext: CarContext) : Screen(carCont
         })
     }
 
-    @SuppressLint("MissingPermission")
-    private fun getLastKnownLocation(): Location? {
-        val hasPerm = ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!hasPerm) return null
-        val lm = carContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-        return providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
-            .maxByOrNull { it.time }
-    }
+    private val locationTracker = CarLocationTracker(carContext, lifecycle) { invalidate() }
+
+    private fun getLastKnownLocation(): Location? = locationTracker.getBestLocation()
 
     override fun onGetTemplate(): Template {
         if (!loaded) {
@@ -233,21 +222,19 @@ private class TerraSyncCarPinsScreen(
 ) : Screen(carContext) {
 
     private val workingPins = sourcePins.toMutableList()
+    private val locationTracker = CarLocationTracker(carContext, lifecycle) { invalidate() }
+    private var statusFilter: String = "all"
 
-    @SuppressLint("MissingPermission")
-    private fun getLastKnownLocation(): Location? {
-        val hasPerm = ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(carContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!hasPerm) return null
-        val lm = carContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-        return providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
-            .maxByOrNull { it.time }
-    }
+    private fun getLastKnownLocation(): Location? = locationTracker.getBestLocation()
 
     override fun onGetTemplate(): Template {
         val myLoc = getLastKnownLocation()
-        val prioritized = workingPins.sortedWith(
+        val filteredPins = when (statusFilter) {
+            "pending" -> workingPins.filter { PinStatus.fromRaw(it.status) == PinStatus.PENDING }
+            "issue" -> workingPins.filter { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+            else -> workingPins
+        }
+        val prioritized = filteredPins.sortedWith(
             compareBy<PinItem> {
                 when (PinStatus.fromRaw(it.status)) {
                     PinStatus.ISSUE -> 0
@@ -320,15 +307,121 @@ private class TerraSyncCarPinsScreen(
             )
         }
 
+        val filterTag = when (statusFilter) {
+            "pending" -> " • Pending"
+            "issue" -> " • Issues"
+            else -> ""
+        }
+        val chipLabel = when (statusFilter) {
+            "pending" -> "Pending"
+            "issue" -> "Issues"
+            else -> "All"
+        }
         val builder = PlaceListMapTemplate.Builder()
-            .setTitle(title)
+            .setTitle("$title$filterTag")
             .setHeaderAction(Action.BACK)
             .setItemList(listBuilder.build())
+            .setActionStrip(
+                ActionStrip.Builder()
+                    .addAction(
+                        Action.Builder()
+                            .setTitle(chipLabel)
+                            .setOnClickListener {
+                                statusFilter = when (statusFilter) {
+                                    "all" -> "pending"
+                                    "pending" -> "issue"
+                                    else -> "all"
+                                }
+                                invalidate()
+                            }
+                            .build()
+                    )
+                    .build()
+            )
 
         if (myLoc != null) {
             builder.setCurrentLocationEnabled(true)
         }
         return builder.build()
+    }
+}
+
+private class CarLocationTracker(
+    private val context: Context,
+    lifecycle: Lifecycle,
+    private val onLocationMoved: () -> Unit
+) : DefaultLifecycleObserver {
+
+    @Volatile private var lastKnown: Location? = null
+    @Volatile private var registered = false
+
+    private val listener = LocationListener { loc ->
+        val prev = lastKnown
+        lastKnown = loc
+        val movedMeters = if (prev == null) Float.MAX_VALUE else prev.distanceTo(loc)
+        if (movedMeters >= 40f) {
+            onLocationMoved()
+        }
+    }
+
+    init {
+        lifecycle.addObserver(this)
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        start()
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        stop()
+    }
+
+    override fun onDestroy(owner: LifecycleOwner) {
+        stop()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun getBestLocation(): Location? {
+        val hasPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasPerm) return null
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return lastKnown
+        val cached = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+            .maxByOrNull { it.time }
+        val cur = lastKnown
+        return when {
+            cur == null -> cached
+            cached == null -> cur
+            cached.time > cur.time -> cached
+            else -> cur
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun start() {
+        if (registered) return
+        val hasPerm = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasPerm) return
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        var any = false
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+            runCatching {
+                if (lm.isProviderEnabled(provider)) {
+                    lm.requestLocationUpdates(provider, 10_000L, 40f, listener, Looper.getMainLooper())
+                    any = true
+                }
+            }
+        }
+        registered = any
+    }
+
+    private fun stop() {
+        if (!registered) return
+        registered = false
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        runCatching { lm.removeUpdates(listener) }
     }
 }
 

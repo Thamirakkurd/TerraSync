@@ -3,6 +3,7 @@ package com.terrasync.app
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,6 +11,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.BufferedWriter
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
@@ -254,15 +256,104 @@ class OfflineRoutingAndStoreRobolectricTest {
             assertNotNull("Expected corner-to-corner offline route (err=$err)", route)
             assertTrue("Expected route distance > 15 km, got ${route!!.totalDistanceMeters}", route.totalDistanceMeters > 15_000.0)
             assertTrue("Expected turn-by-turn steps", route.steps.isNotEmpty())
+
+            val tWarm1 = System.nanoTime()
+            val (route2, err2) = OfflineRoutingEngine.routeOffline(
+                ctx = ctx,
+                startLat = 36.8002,
+                startLng = 42.9002,
+                endLat = 36.80 + (rows - 1) * 0.0008,
+                endLng = 42.90 + (cols - 1) * 0.0009,
+                mode = TravelMode.CAR
+            )
+            val warmRepeatMs = (System.nanoTime() - tWarm1) / 1_000_000L
+            assertNotNull("Expected deterministic cached route (err=$err2)", route2)
+            assertEquals(route.totalDistanceMeters, route2!!.totalDistanceMeters, 0.01)
+            assertEquals(route.steps.size, route2.steps.size)
+
+            val tWarm2 = System.nanoTime()
+            val (route3, err3) = OfflineRoutingEngine.routeOffline(
+                ctx = ctx,
+                startLat = 36.805,
+                startLng = 42.905,
+                endLat = 36.80 + (rows - 6) * 0.0008,
+                endLng = 42.90 + (cols - 6) * 0.0009,
+                mode = TravelMode.CAR
+            )
+            val warmShiftedMs = (System.nanoTime() - tWarm2) / 1_000_000L
+            assertNotNull("Expected shifted interior route via SpatialNodeGrid (err=$err3)", route3)
+            assertTrue("Expected shifted route distance > 10 km, got ${route3!!.totalDistanceMeters}", route3.totalDistanceMeters > 10_000.0)
+
             println(
                 "[CI-STRESS] SQLite staging multi-MB: chunk=${"%.2f".format(Locale.US, chunkFile.length() / (1024.0 * 1024.0))} MB, " +
                     "compile=${compileMs} ms, nodes=${region.nodeCount}, edges=${region.edgeCount}, " +
                     "tsr=${region.sizeBytes / 1024} KB, routeKm=${"%.2f".format(Locale.US, route.totalDistanceMeters / 1000.0)}, " +
-                    "heapUsed=${"%.1f".format(Locale.US, usedMb)} MB"
+                    "warmRepeat=${warmRepeatMs}ms, warmShifted=${warmShiftedMs}ms, heapUsed=${"%.1f".format(Locale.US, usedMb)} MB"
             )
         } finally {
             OfflineRoutingEngine.deletePackRegion(ctx, packId)
             chunkFile.delete()
         }
+    }
+
+    @Test
+    fun testStreamingKmlNestedFoldersAndBareAmpersandRecovery() {
+        val sb = StringBuilder(380 * 1024)
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document><name>Substation & Grid</name>\n")
+        sb.append("<Folder><name>Feeder 1 & Main</name>\n<Folder><name>Zone A</name>\n")
+        for (i in 1..2000) {
+            val lat = 36.84 + (i % 50) * 0.0002
+            val lng = 42.94 + (i / 50) * 0.0002
+            sb.append("<Placemark><name>Pole &amp; Tap #$i</name>")
+            sb.append("<description>Feeder R&D check #$i — transformer & fuse bay inspectable payload</description>")
+            sb.append("<Point><coordinates>$lng,$lat,0</coordinates></Point></Placemark>\n")
+        }
+        sb.append("<Placemark><name>MultiBay Junction</name><MultiGeometry>")
+        sb.append("<Point><coordinates>42.9501,36.8501,0</coordinates></Point>")
+        sb.append("<Point><coordinates>42.9505,36.8505,0</coordinates></Point>")
+        sb.append("<LineString><coordinates>42.9501,36.8501,0 42.9505,36.8505,0</coordinates></LineString>")
+        sb.append("</MultiGeometry></Placemark>\n")
+        sb.append("</Folder></Folder></Document></kml>")
+
+        val payloadBytes = sb.toString().toByteArray(Charsets.UTF_8)
+        assertTrue("Expected KML > 256 KB to exercise temp-file spill, got ${payloadBytes.size}", payloadBytes.size > 300 * 1024)
+
+        val parsed = KmlParser.parse(ByteArrayInputStream(payloadBytes), "layer_kml_test")
+        assertEquals("Substation & Grid", parsed.documentName)
+        assertTrue("Expected >= 2002 parsed pins, got ${parsed.pins.size}", parsed.pins.size >= 2002)
+        assertEquals(1, parsed.tracks.size)
+        assertEquals("Feeder 1 & Main / Zone A", parsed.pins.first().folderPath)
+        assertEquals("Feeder 1 & Main / Zone A", parsed.tracks.first().folderPath)
+
+        val exportedXml = KmlCsvExporter.buildKmlXml("Export", parsed.pins.take(10), parsed.tracks)
+        val reparsed = KmlParser.parse(ByteArrayInputStream(exportedXml.toByteArray(Charsets.UTF_8)), "layer_kml_test")
+        assertEquals(10, reparsed.pins.size)
+        assertEquals(1, reparsed.tracks.size)
+        assertEquals("Feeder 1 & Main / Zone A", reparsed.pins.first().folderPath)
+        assertEquals("Feeder 1 & Main / Zone A", reparsed.tracks.first().folderPath)
+    }
+
+    @Test
+    fun testDevicePrefsPruneOrphanedPinReferences() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        if (!DevicePrefs.isBookmarked(ctx, "p_keep_1")) DevicePrefs.toggleBookmark(ctx, "p_keep_1")
+        if (!DevicePrefs.isBookmarked(ctx, "p_orphan_1")) DevicePrefs.toggleBookmark(ctx, "p_orphan_1")
+        if (!DevicePrefs.isBookmarked(ctx, "p_orphan_2")) DevicePrefs.toggleBookmark(ctx, "p_orphan_2")
+
+        if (!DevicePrefs.isPinLocalSent(ctx, "p_keep_1")) DevicePrefs.toggleLocalSentPin(ctx, "p_keep_1")
+        if (!DevicePrefs.isPinLocalSent(ctx, "p_orphan_1")) DevicePrefs.toggleLocalSentPin(ctx, "p_orphan_1")
+        if (!DevicePrefs.isPinLocalSent(ctx, "p_orphan_2")) DevicePrefs.toggleLocalSentPin(ctx, "p_orphan_2")
+
+        DevicePrefs.prunePinReferencesKeeping(ctx, setOf("p_keep_1"))
+
+        val bookmarks = DevicePrefs.getBookmarks(ctx)
+        val localSent = DevicePrefs.getLocalSentPinIds(ctx)
+        assertTrue(bookmarks.contains("p_keep_1"))
+        assertFalse(bookmarks.contains("p_orphan_1"))
+        assertFalse(bookmarks.contains("p_orphan_2"))
+        assertTrue(localSent.contains("p_keep_1"))
+        assertFalse(localSent.contains("p_orphan_1"))
+        assertFalse(localSent.contains("p_orphan_2"))
     }
 }

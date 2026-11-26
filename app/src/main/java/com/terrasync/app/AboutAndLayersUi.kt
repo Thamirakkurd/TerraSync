@@ -18,6 +18,10 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 
+private const val GITHUB_PROFILE_URL = "https://github.com/Thamirakkurd"
+private const val GITHUB_REPO_URL = "https://github.com/Thamirakkurd/TerraSync"
+private const val GITHUB_RELEASES_URL = "https://github.com/Thamirakkurd/TerraSync/releases"
+
 internal fun MainActivity.showMapLayersSheet() {
     val p = currentPalette()
     val d = resources.displayMetrics.density
@@ -318,7 +322,7 @@ internal fun MainActivity.buildAboutPage(): View {
     hero.addView(heroText)
     heroCard.addView(hero)
     heroCard.addView(TextView(this).apply {
-        text = "Minimalist field mapping built with Organic Maps-inspired cartography: shaded relief, elevation contours, multilingual English/Kurdish/Arabic labels, Valhalla + embedded offline turn-by-turn routing, status-preserving KML/KMZ round-tripping, Firebase sync, and Android Auto support."
+        text = AppStrings.aboutTagline(this@buildAboutPage)
         textSize = 13.5f
         setLineSpacing(dp(2).toFloat(), 1.05f)
         setTextColor(txtSub)
@@ -327,7 +331,7 @@ internal fun MainActivity.buildAboutPage(): View {
 
     val devCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 16, paddingVDp = 14, bottomMarginDp = 14)
     devCard.addView(TextView(this).apply {
-        text = "DEVELOPER & DIAGNOSTICS"
+        text = AppStrings.aboutDeveloperHeader(this@buildAboutPage)
         textSize = 11.5f
         letterSpacing = 0.06f
         setTypeface(null, Typeface.BOLD)
@@ -352,8 +356,8 @@ internal fun MainActivity.buildAboutPage(): View {
         val pendingCount = repo.pendingUploadCount()
         val syncState = when {
             pendingCount > 0 -> AppStrings.pendingUploadCount(this@buildAboutPage, pendingCount)
-            isLiveConnected -> "Cloud live"
-            else -> "Offline cache"
+            isLiveConnected -> AppStrings.aboutCloudLive(this@buildAboutPage)
+            else -> AppStrings.aboutOfflineCache(this@buildAboutPage)
         }
         text = "Data: ${layers.size} $fLabel • ${pins.size} $pLabel • ${tracks.size} $tLabel • $syncState"
         textSize = 12f
@@ -367,9 +371,9 @@ internal fun MainActivity.buildAboutPage(): View {
         this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 14
     )
     val linkSpecs = listOf(
-        listOf("GitHub Profile", "@Thamirakkurd", "https://github.com/Thamirakkurd", R.drawable.ic_info),
-        listOf("TerraSync Repository", "Source code & issue tracker", "https://github.com/Thamirakkurd/TerraSync", R.drawable.ic_layers),
-        listOf("Releases & Updates", "Latest signed APK builds", "https://github.com/Thamirakkurd/TerraSync/releases", R.drawable.ic_download)
+        listOf(AppStrings.aboutGithubProfile(this), "@Thamirakkurd", GITHUB_PROFILE_URL, R.drawable.ic_info),
+        listOf(AppStrings.aboutRepoTitle(this), AppStrings.aboutRepoSub(this), GITHUB_REPO_URL, R.drawable.ic_layers),
+        listOf(AppStrings.aboutReleasesTitle(this), AppStrings.aboutReleasesSub(this), GITHUB_RELEASES_URL, R.drawable.ic_download)
     )
     linkSpecs.forEachIndexed { idx, spec ->
         if (idx > 0) {
