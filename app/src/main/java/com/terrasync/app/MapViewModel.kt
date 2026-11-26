@@ -150,7 +150,7 @@ class MapViewModel : ViewModel() {
         activeNavDestTitle = ""
     }
 
-    fun setRulerMode(enabled: Boolean) {
+    fun applyRulerMode(enabled: Boolean) {
         isRulerMode = enabled
         if (!enabled) {
             rulerPoints.clear()
@@ -171,7 +171,7 @@ class MapViewModel : ViewModel() {
         rulerPoints.clear()
     }
 
-    fun setLassoMode(enabled: Boolean) {
+    fun applyLassoMode(enabled: Boolean) {
         isLassoMode = enabled
         if (!enabled) {
             lassoMoveMapMode = false

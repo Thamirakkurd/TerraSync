@@ -166,7 +166,7 @@ class MapToolsController(
     fun toggleLassoMode(enabled: Boolean) {
         if (enabled && isFullScreenMapMode()) setFullScreenMapMode(false, false)
         if (enabled && viewModel.isRulerMode) toggleRulerMode(false)
-        viewModel.setLassoMode(enabled)
+        viewModel.applyLassoMode(enabled)
         if (enabled) {
             undoController.dismiss(animate = false)
             hideInScreenSheet()
@@ -328,7 +328,7 @@ class MapToolsController(
     fun toggleRulerMode(enabled: Boolean) {
         if (enabled && isFullScreenMapMode()) setFullScreenMapMode(false, false)
         if (enabled && viewModel.isLassoMode) toggleLassoMode(false)
-        viewModel.setRulerMode(enabled)
+        viewModel.applyRulerMode(enabled)
         if (enabled) {
             undoController.dismiss(animate = false)
             hideInScreenSheet()

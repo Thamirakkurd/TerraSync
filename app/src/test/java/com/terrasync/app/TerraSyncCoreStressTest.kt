@@ -476,17 +476,17 @@ class TerraSyncCoreStressTest {
         assertNull(vm.activeNavRoute)
         assertNull(vm.routeOrigin)
 
-        vm.setRulerMode(true)
+        vm.applyRulerMode(true)
         vm.addRulerPoint(36.8, 42.9)
         vm.addRulerPoint(36.81, 42.91)
         assertTrue(vm.undoRulerPoint())
         assertEquals(1, vm.rulerPoints.size)
-        vm.setRulerMode(false)
+        vm.applyRulerMode(false)
         assertTrue(vm.rulerPoints.isEmpty())
 
-        vm.setLassoMode(true)
+        vm.applyLassoMode(true)
         vm.lassoPendingPinIds = listOf("p1")
-        vm.setLassoMode(false)
+        vm.applyLassoMode(false)
         assertTrue(vm.lassoPendingPinIds.isEmpty())
 
         vm.setSearchState("feeder", "pending")
