@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
 
     <application
@@ -11,6 +14,7 @@
         android:icon="@drawable/ic_app_icon"
         android:roundIcon="@drawable/ic_app_icon"
         android:label="TerraSync"
+        android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.TerraSync">
 
@@ -41,6 +45,11 @@
                 <category android:name="androidx.car.app.category.POI" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".OfflineDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <activity
             android:name=".MainActivity"

@@ -432,7 +432,7 @@ class MainActivity : AppCompatActivity() {
 
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(RoutingEngine.sharedOkHttpClient)
-        offlineMaps = OfflineMapManager(this).apply { refreshAll() }
+        offlineMaps = OfflineMapManager.getInstance(this).apply { refreshAll() }
         repo = SyncRepo(applicationContext)
         RoutingEngine.appContext = applicationContext
         LocalFolderStore.preloadAsync(applicationContext)
@@ -8655,37 +8655,78 @@ class MainActivity : AppCompatActivity() {
                         text = subtitle
                         textSize = 12f
                         setTextColor(txtSub)
-                        setPadding(0, dp(2), 0, dp(6))
+                        setPadding(0, dp(2), 0, dp(8))
                     })
                     val tvStatus = TextView(this).apply {
-                        textSize = 12f
-                        setTextColor(p.green)
+                        textSize = 12.5f
+                        setTextColor(p.textSecondary)
                         DesignSystem.applyTabularNumerals(this)
                     }
                     card.addView(tvStatus)
 
                     val tvRoadStatus = TextView(this).apply {
-                        textSize = 11.5f
-                        setTextColor(p.accent)
+                        textSize = 12f
+                        setTextColor(p.textSecondary)
                         DesignSystem.applyTabularNumerals(this)
                         visibility = View.GONE
-                        setPadding(0, dp(2), 0, 0)
+                        setPadding(0, dp(3), 0, 0)
                     }
                     card.addView(tvRoadStatus)
 
                     val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                         max = 100
                         visibility = View.GONE
-                        progressTintList = android.content.res.ColorStateList.valueOf(p.accent)
-                        indeterminateTintList = android.content.res.ColorStateList.valueOf(p.accent)
+                        progressTintList = android.content.res.ColorStateList.valueOf(p.accentPrimary)
+                        indeterminateTintList = android.content.res.ColorStateList.valueOf(p.accentPrimary)
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { topMargin = dp(6) }
                     }
                     card.addView(progressBar)
 
                     val btnRow = LinearLayout(this).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        setPadding(0, dp(8), 0, 0)
+                        setPadding(0, dp(10), 0, 0)
                     }
                     val btnDl = MaterialButton(this).apply {
+                        textSize = 12.5f
+                        setTypeface(null, Typeface.BOLD)
+                        isAllCaps = false
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(12), 0, dp(12), 0)
+                        setTextColor(Color.WHITE)
+                        backgroundTintList = android.content.res.ColorStateList.valueOf(p.accentPrimary)
+                        cornerRadius = dp(12)
+                        layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+                        UiAnimations.attachSnappyPress(this)
+                    }
+                    val btnDel = MaterialButton(this).apply {
+                        text = "Delete"
+                        textSize = 12.5f
+                        setTypeface(null, Typeface.BOLD)
+                        isAllCaps = false
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(12), 0, dp(12), 0)
+                        setTextColor(p.red)
+                        backgroundTintList = android.content.res.ColorStateList.valueOf(p.redSoft)
+                        strokeWidth = dp(1)
+                        strokeColor = android.content.res.ColorStateList.valueOf(
+                            Color.argb(if (night) 76 else 56, Color.red(p.red), Color.green(p.red), Color.blue(p.red))
+                        )
+                        cornerRadius = dp(12)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42))
+                    }
+                    val btnRetryRoads = MaterialButton(this).apply {
+                        text = "Retry Roads"
                         textSize = 12.5f
                         isAllCaps = false
                         maxLines = 1
@@ -8693,52 +8734,109 @@ class MainActivity : AppCompatActivity() {
                         insetBottom = 0
                         minWidth = 0
                         minimumWidth = 0
-                        setPadding(dp(10), 0, dp(10), 0)
-                        setTextColor(Color.WHITE)
-                        setBackgroundColor(p.green)
-                        cornerRadius = dp(10)
-                        layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+                        setPadding(dp(12), 0, dp(12), 0)
+                        cornerRadius = dp(12)
+                        DesignSystem.styleSegmentedButton(this, false, p, onTonalCard = true)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)).apply {
+                            topMargin = dp(8)
+                        }
+                        visibility = View.GONE
                         UiAnimations.attachSnappyPress(this)
-                    }
-                    val btnDel = MaterialButton(this).apply {
-                        text = "Delete"
-                        textSize = 12.5f
-                        isAllCaps = false
-                        insetTop = 0
-                        insetBottom = 0
-                        minWidth = 0
-                        minimumWidth = 0
-                        setPadding(dp(10), 0, dp(10), 0)
-                        setTextColor(p.red)
-                        setBackgroundColor(Color.TRANSPARENT)
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42))
                     }
 
                     fun refreshCard() {
                         val st = offlineMaps.getState(packId)
                         val busy = st.isDownloading || st.isRoadDownloading
                         val fullyReady = st.isDownloaded && st.hasRoadGraph
-                        tvStatus.text = st.statusText
-                        if (st.roadStatusText.isNotBlank() && !fullyReady) {
-                            tvRoadStatus.text = st.roadStatusText
+                        val hasPartialTiles = !st.isDownloaded && st.completedResources > 0L
+                        val hasAnyContent = st.hasAnyData
+                        val sizeStr = offlineMaps.formatSize(st.sizeBytes)
+
+                        val (mapText, mapColor, mapBold) = when {
+                            st.mapError != null && !st.isDownloaded ->
+                                Triple("Map Tiles: ${st.mapError}", p.red, true)
+                            !hasAnyContent && st.roadError == null ->
+                                Triple("Not downloaded (online only)", p.textSecondary, false)
+                            st.isDownloaded ->
+                                Triple("Map Tiles: Ready ($sizeStr)", p.accentPrimary, true)
+                            st.isDownloading -> {
+                                val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
+                                val sizePart = if (st.sizeBytes > 0L) " • $sizeStr" else ""
+                                Triple("Map Tiles: Downloading ${st.progressPercent}%$countPart$sizePart", p.accentPrimary, true)
+                            }
+                            hasPartialTiles -> {
+                                val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
+                                Triple("Map Tiles: Paused ${st.progressPercent}%$countPart • $sizeStr", if (night) p.amber else Color.parseColor("#B36B00"), false)
+                            }
+                            else ->
+                                Triple("Map Tiles: Not downloaded", p.textSecondary, false)
+                        }
+                        tvStatus.text = mapText
+                        tvStatus.setTextColor(mapColor)
+                        tvStatus.setTypeface(null, if (mapBold) Typeface.BOLD else Typeface.NORMAL)
+
+                        if (hasAnyContent || st.roadError != null || st.isRoadQueued) {
+                            val (roadText, roadColor, roadBold) = when {
+                                st.roadError != null ->
+                                    Triple("Roads failed: ${st.roadError}", p.red, true)
+                                st.isRoadDownloading ->
+                                    Triple("Road Routing: ${st.roadStatusText.ifBlank { "Downloading..." }}", p.accentPrimary, true)
+                                st.hasRoadGraph ->
+                                    Triple("Road Routing: Ready (${offlineMaps.formatSize(st.roadSizeBytes)})", p.accentPrimary, true)
+                                st.isRoadQueued ->
+                                    Triple("Road Routing: Queued after map tiles finish", p.textSecondary, false)
+                                else ->
+                                    Triple("Road Routing: Not downloaded yet", p.textSecondary, false)
+                            }
+                            tvRoadStatus.text = roadText
+                            tvRoadStatus.setTextColor(roadColor)
+                            tvRoadStatus.setTypeface(null, if (roadBold) Typeface.BOLD else Typeface.NORMAL)
                             tvRoadStatus.visibility = View.VISIBLE
                         } else {
                             tvRoadStatus.visibility = View.GONE
                         }
-                        progressBar.visibility = if (busy) View.VISIBLE else View.GONE
-                        progressBar.isIndeterminate = !st.isDownloading && st.isRoadDownloading
+
+                        val showProgress = busy || hasPartialTiles
+                        progressBar.visibility = if (showProgress) View.VISIBLE else View.GONE
+                        val activeTint = if (busy) p.accentPrimary else p.textMuted
+                        progressBar.progressTintList = android.content.res.ColorStateList.valueOf(activeTint)
+                        progressBar.indeterminateTintList = android.content.res.ColorStateList.valueOf(activeTint)
                         if (st.isDownloading) {
+                            progressBar.isIndeterminate = st.requiredResources <= 0L
                             progressBar.setProgress(st.progressPercent, !UiAnimations.isReducedMotion(this@MainActivity))
+                        } else if (st.isRoadDownloading) {
+                            progressBar.isIndeterminate = st.roadProgressPercent <= 0
+                            if (st.roadProgressPercent > 0) {
+                                progressBar.setProgress(st.roadProgressPercent, !UiAnimations.isReducedMotion(this@MainActivity))
+                            }
+                        } else {
+                            progressBar.isIndeterminate = false
+                            progressBar.progress = st.progressPercent
                         }
 
                         btnDl.text = when {
                             busy -> "Pause"
                             fullyReady -> "Map + Routing Ready"
-                            st.isDownloaded && !st.hasRoadGraph -> "Add Offline Roads"
+                            st.isDownloaded && !st.hasRoadGraph && st.roadError != null -> "Retry Roads"
+                            st.isDownloaded && !st.hasRoadGraph -> "Download Offline Roads"
+                            hasPartialTiles -> "Resume Download"
                             else -> "Download Map + Roads"
                         }
                         btnDl.isEnabled = !fullyReady || busy
-                        btnDl.alpha = if (btnDl.isEnabled) 1f else 0.55f
+                        val dlBg = if (btnDl.isEnabled) p.accentPrimary else p.accentPrimarySoft
+                        val dlFg = if (btnDl.isEnabled) Color.WHITE else p.accentPrimary
+                        btnDl.backgroundTintList = android.content.res.ColorStateList.valueOf(dlBg)
+                        btnDl.setTextColor(dlFg)
+                        btnDl.alpha = 1f
+
+                        val showDelete = hasAnyContent || st.roadError != null || st.mapError != null
+                        btnDel.visibility = if (showDelete) View.VISIBLE else View.GONE
+                        (btnDl.layoutParams as LinearLayout.LayoutParams).marginEnd = if (showDelete) dp(8) else 0
+
+                        val showSeparateRoadRetry = !st.isDownloaded && !st.hasRoadGraph && !busy &&
+                            (st.roadError != null || hasPartialTiles)
+                        btnRetryRoads.visibility = if (showSeparateRoadRetry) View.VISIBLE else View.GONE
+                        btnRetryRoads.text = if (st.roadError != null) "Retry Roads Only" else "Download Roads Only"
                     }
 
                     btnDl.setOnClickListener {
@@ -8749,15 +8847,17 @@ class MainActivity : AppCompatActivity() {
                             else -> onDownload()
                         }
                     }
+                    btnRetryRoads.setOnClickListener {
+                        onDownloadRoadsOnly()
+                    }
                     btnDel.setOnClickListener {
                         val st = offlineMaps.getState(packId)
-                        if (!st.isDownloaded && !st.isDownloading && !st.hasRoadGraph && !st.isRoadDownloading && st.completedResources == 0L) {
-                            Toast.makeText(this@MainActivity, "Nothing downloaded for $title", Toast.LENGTH_SHORT).show()
+                        if (!st.hasAnyData && st.roadError == null && st.mapError == null) {
                             return@setOnClickListener
                         }
                         showThemedDialog(
                             themedDialogBuilder("Delete \"$title\" Offline Pack?")
-                                .setMessage("This removes the downloaded offline map tiles and road graph for $title from this phone.")
+                                .setMessage("This removes downloaded offline map tiles, partial road files, and offline routing data for $title from this phone.")
                                 .setPositiveButton("Delete") { _, _ ->
                                     offlineMaps.deletePack(packId) { msg ->
                                         runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
@@ -8772,6 +8872,7 @@ class MainActivity : AppCompatActivity() {
                     btnRow.addView(btnDl)
                     btnRow.addView(btnDel)
                     card.addView(btnRow)
+                    card.addView(btnRetryRoads)
                     body.addView(card)
 
                     refreshCard()
