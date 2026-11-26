@@ -16,7 +16,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.atan2
@@ -32,14 +32,12 @@ object RoutingEngine {
     @Volatile var userAgent: String = "TerraSync/${BuildConfig.VERSION_NAME} (https://github.com/Thamirakkurd/TerraSync)"
     @Volatile var appContext: Context? = null
 
-    val uiQueryExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(3) { r ->
-        Thread(r, "terrasync-ui-io").apply { isDaemon = true }
-    }
-    val batchIoExecutor: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(2) { r ->
-        Thread(r, "terrasync-batch-io").apply { isDaemon = true }
-    }
-    val ioExecutor: java.util.concurrent.ExecutorService
-        get() = batchIoExecutor
+    val uiQueryExecutor: ExecutorService
+        get() = AppExecutors.uiQueryExecutor
+    val batchIoExecutor: ExecutorService
+        get() = AppExecutors.batchIoExecutor
+    val ioExecutor: ExecutorService
+        get() = AppExecutors.batchIoExecutor
 
     private const val NOMINATIM_CACHE_TTL_MS = 10L * 60L * 1000L
     private data class CachedSearch(val cachedAtMs: Long, val places: List<PlaceResult>)

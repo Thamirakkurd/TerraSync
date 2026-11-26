@@ -41,6 +41,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -280,23 +281,22 @@ class MainActivity : AppCompatActivity() {
 
     internal var map: MapLibreMap? = null
     internal val contourManager = ContourOverlayManager()
+    private val viewModel: MapViewModel by viewModels()
     private var isActivityStarted = false
     private var isActivityResumed = false
     internal lateinit var offlineMaps: OfflineMapManager
-    internal lateinit var repo: SyncRepo
+    internal lateinit var repository: TerraSyncRepository
+    internal val repo: SyncRepo get() = repository.syncRepo
 
-    internal var layers: List<LayerItem> = emptyList()
-    internal var pins: List<PinItem> = emptyList()
-    internal var tracks: List<TrackItem> = emptyList()
-    private var pinById: Map<String, PinItem> = emptyMap()
-    private var layerById: Map<String, LayerItem> = emptyMap()
-    internal var pinsByLayerId: Map<String, List<PinItem>> = emptyMap()
-    private var tracksByLayerId: Map<String, List<TrackItem>> = emptyMap()
-    private var dataVersion: Long = 0L
-    private val stackedCellSize = 0.00003
-    private var stackedPinBuckets: Map<Long, List<PinItem>> = emptyMap()
-    private fun stackedBucketKey(cx: Int, cy: Int): Long =
-        (cx.toLong() shl 32) xor (cy.toLong() and 0xFFFFFFFFL)
+    internal val layers: List<LayerItem> get() = viewModel.folderSnapshot.layers
+    internal val pins: List<PinItem> get() = viewModel.folderSnapshot.pins
+    internal val tracks: List<TrackItem> get() = viewModel.folderSnapshot.tracks
+    private val pinById: Map<String, PinItem> get() = viewModel.folderSnapshot.pinById
+    private val layerById: Map<String, LayerItem> get() = viewModel.folderSnapshot.layerById
+    internal val pinsByLayerId: Map<String, List<PinItem>> get() = viewModel.folderSnapshot.pinsByLayerId
+    private val tracksByLayerId: Map<String, List<TrackItem>> get() = viewModel.folderSnapshot.tracksByLayerId
+    private val dataVersion: Long get() = viewModel.folderSnapshot.dataVersion
+    private val stackedPinBuckets: Map<Long, List<PinItem>> get() = viewModel.folderSnapshot.stackedPinBuckets
 
     private data class SearchIndexEntry(
         val pin: PinItem,
@@ -727,19 +727,27 @@ class MainActivity : AppCompatActivity() {
     private var activeGpsProfile = GpsPollProfile.OFF
 
     private val trackPointCache = HashMap<String, Pair<Long, List<Point>>>()
-    private var cloudLayers: List<LayerItem> = emptyList()
-    private var cloudPins: List<PinItem> = emptyList()
-    private var cloudTracks: List<TrackItem> = emptyList()
-    internal var visibleStatuses: MutableSet<String> = mutableSetOf("pending", "done", "issue")
-    internal var isLiveConnected = false
-    internal var mapStyleMode: MapStyleMode = MapStyleMode.VECTOR
-    internal var travelMode: TravelMode = TravelMode.CAR
+    internal var visibleStatuses: MutableSet<String>
+        get() = viewModel.visibleStatuses
+        set(value) { viewModel.visibleStatuses = value }
+    internal val isLiveConnected: Boolean
+        get() = viewModel.folderSnapshot.isLiveConnected
+    internal var mapStyleMode: MapStyleMode
+        get() = viewModel.mapStyleMode
+        set(value) { viewModel.mapStyleMode = value }
+    internal var travelMode: TravelMode
+        get() = viewModel.travelMode
+        set(value) { viewModel.travelMode = value }
     internal var cachedScaleBarEnabled: Boolean = true
     internal var cachedSpeedUnit: SpeedUnit = SpeedUnit.METRIC
     internal var lastScaleLabel: String = ""
     internal var lastScaleWidthPx: Int = -1
-    private var isFollowingGps = false
-    private var hasAutoZoomedInitial = false
+    private var isFollowingGps: Boolean
+        get() = viewModel.isFollowingGps
+        set(value) { viewModel.isFollowingGps = value }
+    private var hasAutoZoomedInitial: Boolean
+        get() = viewModel.hasAutoZoomedInitial
+        set(value) { viewModel.hasAutoZoomedInitial = value }
     private var statusBarInsetTop = 0
     private var navBarInsetBottom = 0
     private var imeInsetBottom = 0
@@ -767,19 +775,32 @@ class MainActivity : AppCompatActivity() {
     private var lastGpsFixTimeMs: Long = 0L
 
     // Local-only Sent Tracking & Circle-Select State
-    internal var hideSentPins = false
-    private var isLassoMode = false
-    private var lassoMoveMapMode = false
-    private var lassoPendingPinIds: List<String> = emptyList()
-    private val sentUndoStack = mutableListOf<List<String>>()
+    internal var hideSentPins: Boolean
+        get() = viewModel.hideSentPins
+        set(value) { viewModel.hideSentPins = value }
+    private var isLassoMode: Boolean
+        get() = viewModel.isLassoMode
+        set(value) { viewModel.isLassoMode = value }
+    private var lassoMoveMapMode: Boolean
+        get() = viewModel.lassoMoveMapMode
+        set(value) { viewModel.lassoMoveMapMode = value }
+    private var lassoPendingPinIds: List<String>
+        get() = viewModel.lassoPendingPinIds
+        set(value) { viewModel.lassoPendingPinIds = value }
+    private val sentUndoStack: MutableList<List<String>>
+        get() = viewModel.sentUndoStack
     private var lastSentTogglePillText: String = ""
 
     // Ruler state
-    internal var isRulerMode = false
+    internal var isRulerMode: Boolean
+        get() = viewModel.isRulerMode
+        set(value) { viewModel.isRulerMode = value }
     private val rulerPoints = mutableListOf<LatLng>()
 
     // Selected pin or tapped location sky-blue dot marker
-    private var selectedPinId: String? = null
+    private var selectedPinId: String?
+        get() = viewModel.selectedPinId
+        set(value) { viewModel.selectedPinId = value }
     private var selectedMarkerLatLng: LatLng? = null
     private var pulseAnimator: ValueAnimator? = null
 
@@ -798,15 +819,21 @@ class MainActivity : AppCompatActivity() {
     private var prevLocationElapsedMs: Long = 0L
 
     // Route Preview & Active Turn-by-Turn Navigation State
-    private var previewRoute: NavRoute? = null
+    private var previewRoute: NavRoute?
+        get() = viewModel.previewRoute
+        set(value) { viewModel.previewRoute = value }
     private var routeRequestSeq: Int = 0
     private var lastRoutePillKey: String? = null
-    private var activeNavRoute: NavRoute? = null
+    private var activeNavRoute: NavRoute?
+        get() = viewModel.activeNavRoute
+        set(value) { viewModel.activeNavRoute = value }
     private var activeNavTrimmedGeom: List<Pair<Double, Double>>? = null
     private var navLastSegIdx: Int = 0
     private var isRerouting: Boolean = false
     private var navDestLatLng: LatLng? = null
-    private var navDestName: String = ""
+    private var navDestName: String
+        get() = viewModel.activeNavDestTitle
+        set(value) { viewModel.activeNavDestTitle = value }
     private var navCurrentStepIdx: Int = 0
     private var lastSpokenStepIdx: Int = -1
     private var lastRerouteTime: Long = 0L
@@ -906,10 +933,18 @@ class MainActivity : AppCompatActivity() {
         HttpRequestUtil.setOkHttpClient(RoutingEngine.sharedOkHttpClient)
         contourManager.initDiskCache(cacheDir)
         offlineMaps = OfflineMapManager.getInstance(this).apply { refreshAll() }
-        repo = SyncRepo(applicationContext)
+        repository = TerraSyncRepository(applicationContext).apply {
+            onSnapshotUpdated = { snap ->
+                if (!isFinishing && !isDestroyed) {
+                    onRepositorySnapshotUpdated(snap)
+                }
+            }
+        }
         RoutingEngine.appContext = applicationContext
-        LocalFolderStore.preloadAsync(applicationContext)
-        RoutingEngine.batchIoExecutor.execute { OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext) }
+        LocalFolderStore.preloadAsync(applicationContext) {
+            repository.applyMergedFolders()
+        }
+        AppExecutors.batchIoExecutor.execute { OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext) }
         setContentView(R.layout.activity_main)
 
         visibleStatuses = DevicePrefs.getVisibleStatuses(this).toMutableSet()
@@ -2619,29 +2654,13 @@ class MainActivity : AppCompatActivity() {
     private fun findExactStackedPins(pin: PinItem): List<PinItem> {
         val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
         val sentIds = if (hideSentPins) DevicePrefs.getLocalSentPinIds(this) else emptySet()
-        val cx = kotlin.math.floor(pin.lat / stackedCellSize).toInt()
-        val cy = kotlin.math.floor(pin.lng / stackedCellSize).toInt()
-        val stack = ArrayList<PinItem>(4)
-        for (dx in -1..1) {
-            for (dy in -1..1) {
-                val bucket = stackedPinBuckets[stackedBucketKey(cx + dx, cy + dy)] ?: continue
-                for (it in bucket) {
-                    val normStatus = PinStatus.fromRaw(it.status).key
-                    if (it.layerId !in hiddenLayerIds &&
-                        normStatus in visibleStatuses &&
-                        it.id !in sentIds &&
-                        kotlin.math.abs(it.lat - pin.lat) <= stackedCellSize &&
-                        kotlin.math.abs(it.lng - pin.lng) <= stackedCellSize &&
-                        RoutingEngine.haversineMeters(it.lat, it.lng, pin.lat, pin.lng) <= 2.0
-                    ) {
-                        stack.add(it)
-                    }
-                }
-            }
-        }
-        if (stack.none { it.id == pin.id }) return listOf(pin)
-        if (stack.size > 1) stack.sortBy { it.id }
-        return stack
+        return findExactStackedPinsFromSnapshot(
+            snapshot = viewModel.folderSnapshot,
+            pin = pin,
+            hiddenLayerIds = hiddenLayerIds,
+            visibleStatuses = visibleStatuses,
+            sentIds = sentIds
+        )
     }
 
     private fun parseTrackPointsCached(t: TrackItem): List<Point> = synchronized(trackPointCache) {
@@ -2870,7 +2889,7 @@ class MainActivity : AppCompatActivity() {
     internal fun updateSyncStatusBadge() {
         if (!::btnSyncStatus.isInitialized || !::tvSyncPendingBadge.isInitialized) return
         val p = currentPalette()
-        val pendingUploads = if (::repo.isInitialized) repo.pendingUploadCount() else 0
+        val pendingUploads = if (::repository.isInitialized) repo.pendingUploadCount() else 0
         btnSyncStatus.setColorFilter(
             when {
                 pendingUploads > 0 -> p.accentWarm
@@ -6533,12 +6552,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    internal fun buildLocalDeviceAliasMap(): Map<String, String> {
-        val custom = DevicePrefs.getCustomName(this).trim()
-        if (custom.isBlank()) return emptyMap()
-        val devId = DevicePrefs.getDeviceId(this).trim()
-        return if (devId.isNotBlank()) mapOf(devId to custom) else emptyMap()
-    }
+    internal fun buildLocalDeviceAliasMap(): Map<String, String> = repository.buildLocalDeviceAliasMap()
 
     private fun showVisibleFoldersDailyReportDialog() {
         val hiddenIds = DevicePrefs.getHiddenLayerIds(this)
@@ -6598,12 +6612,7 @@ class MainActivity : AppCompatActivity() {
                     if (next.isBlank()) {
                         Toast.makeText(this, "Folder name cannot be empty", Toast.LENGTH_SHORT).show()
                     } else {
-                        if (LocalFolderStore.isLocalLayerId(layer.id)) {
-                            LocalFolderStore.renameLayer(this, layer.id, next)
-                            applyMergedFoldersAndRender()
-                        } else {
-                            repo.renameLayer(layer.id, next, ::notifySyncError)
-                        }
+                        repository.renameLayer(layer, next, ::notifySyncError)
                         Toast.makeText(this, "Renamed to \"$next\"", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -8112,8 +8121,7 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("Save") { _, _ ->
                     val stamp = DevicePrefs.getDeviceStamp(this)
                     val devId = DevicePrefs.getDeviceId(this)
-                    val savedPin = LocalFolderStore.addManualPin(
-                        this,
+                    val savedPin = repository.addManualPin(
                         etName.text.toString().trim(),
                         etDesc.text.toString().trim(),
                         latLng.latitude,
@@ -8123,7 +8131,6 @@ class MainActivity : AppCompatActivity() {
                     )
                     DevicePrefs.setLayerVisible(this, savedPin.layerId, true)
                     ensurePinVisibleOnMap(savedPin)
-                    applyMergedFoldersAndRender()
                     fireStatusPulse(savedPin.lat, savedPin.lng, "#F59E0B")
                     Toast.makeText(this, "Saved \"${savedPin.name}\" locally", Toast.LENGTH_SHORT).show()
                     hideInScreenSheet()
@@ -8427,11 +8434,7 @@ class MainActivity : AppCompatActivity() {
             themedDialogBuilder("Delete Local Folder \"${layer.name}\"?")
                 .setMessage("Removes all $pinCount pins stored locally on this phone.")
                 .setPositiveButton("Delete") { _, _ ->
-                    val deletedPinIds = pinsByLayerId[layer.id]?.map { it.id }.orEmpty()
-                    LocalFolderStore.deleteLayer(this, layer.id)
-                    DevicePrefs.removeJoinedLayerId(this, layer.id)
-                    DevicePrefs.removePinReferences(this, deletedPinIds)
-                    applyMergedFoldersAndRender()
+                    repository.deleteLocalLayer(layer.id)
                     Toast.makeText(this, "Deleted local folder \"${layer.name}\"", Toast.LENGTH_SHORT).show()
                 }
                 .setNegativeButton("Cancel", null)
@@ -8440,17 +8443,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    internal fun isLayerOwner(layer: LayerItem?): Boolean {
-        if (layer == null) return false
-        if (LocalFolderStore.isLocalLayerId(layer.id)) return true
-        val uid = repo.currentUid()
-        if (layer.creatorUid.isNotBlank()) {
-            return !uid.isNullOrBlank() && layer.creatorUid == uid
-        }
-        val myDevId = DevicePrefs.getDeviceId(this)
-        return (layer.creatorDeviceId.isNotBlank() && layer.creatorDeviceId.equals(myDevId, ignoreCase = true)) ||
-            (layer.creatorDeviceId.isBlank() && layer.createdBy.contains("#$myDevId", ignoreCase = true))
-    }
+    internal fun isLayerOwner(layer: LayerItem?): Boolean = repository.isLayerOwner(layer)
 
     private fun notifySyncError(err: String) {
         runOnUiThread {
@@ -8459,68 +8452,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyOptimisticCloudPinUpdate(updated: PinItem) {
-        if (cloudPins.any { it.id == updated.id }) {
-            cloudPins = cloudPins.map { if (it.id == updated.id) updated else it }
-        }
-        applyMergedFoldersAndRender()
-    }
-
     private fun savePinStatusUnified(pin: PinItem, status: String, stamp: String, reason: String = "") {
-        if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
-            LocalFolderStore.updatePinStatus(this, pin, status, stamp, reason)
-            applyMergedFoldersAndRender()
-        } else {
-            val updated = repo.updatePinStatus(pin, status, stamp, reason, ::notifySyncError)
-            applyOptimisticCloudPinUpdate(updated)
-        }
+        repository.savePinStatus(pin, status, stamp, reason, ::notifySyncError)
     }
 
     private fun savePinsStatusBatchUnified(targetPins: List<PinItem>, status: String, stamp: String, reason: String = "") {
-        if (targetPins.isEmpty()) return
-        val localPins = targetPins.filter { LocalFolderStore.isLocalLayerId(it.layerId) }
-        val remotePins = targetPins.filterNot { LocalFolderStore.isLocalLayerId(it.layerId) }
-        if (localPins.isNotEmpty()) {
-            LocalFolderStore.updatePinsStatusBatch(this, localPins, status, stamp, reason)
-        }
-        if (remotePins.isNotEmpty()) {
-            val updatedCloud = repo.updatePinsStatusBatch(remotePins, status, stamp, reason, ::notifySyncError)
-            val byId = updatedCloud.associateBy { it.id }
-            cloudPins = cloudPins.map { byId[it.id] ?: it }
-        }
-        applyMergedFoldersAndRender()
+        repository.savePinsStatusBatch(targetPins, status, stamp, reason, ::notifySyncError)
     }
 
     private fun savePinTextUnified(pin: PinItem, newName: String, newDesc: String, stamp: String) {
-        if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
-            LocalFolderStore.updatePinText(this, pin, newName, newDesc, stamp)
-            applyMergedFoldersAndRender()
-        } else {
-            val updated = repo.updatePinText(pin, newName, newDesc, stamp, ::notifySyncError)
-            applyOptimisticCloudPinUpdate(updated)
-        }
+        repository.savePinText(pin, newName, newDesc, stamp, ::notifySyncError)
     }
 
     internal fun deletePinHistoryEntryUnified(pin: PinItem, idx: Int): PinItem {
-        return if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
-            val updated = LocalFolderStore.deletePinHistoryEntry(this, pin, idx)
-            applyMergedFoldersAndRender()
-            updated
-        } else {
-            val updated = repo.deletePinHistoryEntry(pin, idx, ::notifySyncError)
-            applyOptimisticCloudPinUpdate(updated)
-            updated
-        }
+        return repository.deletePinHistoryEntry(pin, idx, ::notifySyncError)
     }
 
     internal fun restorePinStatusSnapshotUnified(previousPin: PinItem) {
-        if (LocalFolderStore.isLocalLayerId(previousPin.layerId)) {
-            LocalFolderStore.restorePinStatusSnapshot(this, previousPin)
-            applyMergedFoldersAndRender()
-        } else {
-            val restored = repo.restorePinStatusSnapshot(previousPin, ::notifySyncError)
-            applyOptimisticCloudPinUpdate(restored)
-        }
+        repository.restorePinStatusSnapshot(previousPin, ::notifySyncError)
     }
 
     private fun showStatusUndo(previousPin: PinItem, summaryMsg: String) {
@@ -8534,43 +8483,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun resetPinStatusUnified(pin: PinItem): PinItem {
-        return if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
-            val updated = LocalFolderStore.resetPinStatusToPending(this, pin)
-            applyMergedFoldersAndRender()
-            updated
-        } else {
-            val updated = repo.resetPinStatusToPending(pin, ::notifySyncError)
-            applyOptimisticCloudPinUpdate(updated)
-            updated
-        }
+        return repository.resetPinStatus(pin, ::notifySyncError)
     }
 
     private fun deletePinUnified(pin: PinItem) {
-        DevicePrefs.removePinReferences(this, listOf(pin.id))
-        if (LocalFolderStore.isLocalLayerId(pin.layerId)) {
-            LocalFolderStore.deletePin(this, pin.id)
-            applyMergedFoldersAndRender()
-        } else {
-            repo.deletePin(pin.id, ::notifySyncError)
-            cloudPins = cloudPins.filterNot { it.id == pin.id }
-            applyMergedFoldersAndRender()
-        }
+        repository.deletePin(pin, ::notifySyncError)
     }
 
     private fun deletePinsUnified(pinsToDelete: List<PinItem>) {
-        if (pinsToDelete.isEmpty()) return
-        DevicePrefs.removePinReferences(this, pinsToDelete.map { it.id })
-        val localIds = pinsToDelete.filter { LocalFolderStore.isLocalLayerId(it.layerId) }.map { it.id }
-        val cloudIds = pinsToDelete.filterNot { LocalFolderStore.isLocalLayerId(it.layerId) }.map { it.id }
-        if (localIds.isNotEmpty()) {
-            LocalFolderStore.deletePins(this, localIds)
-        }
-        if (cloudIds.isNotEmpty()) {
-            val dropSet = cloudIds.toSet()
-            repo.deletePinsBatch(cloudIds, ::notifySyncError)
-            cloudPins = cloudPins.filterNot { it.id in dropSet }
-        }
-        applyMergedFoldersAndRender()
+        repository.deletePins(pinsToDelete, ::notifySyncError)
     }
 
     internal fun applyExtraMapToolsVisibility() {
@@ -8595,147 +8516,50 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun normalizeLayerNameKey(name: String): String {
-        return name.trim().lowercase(java.util.Locale.US).replace(Regex("[_\\s-]+"), " ")
-    }
+    private fun normalizeLayerNameKey(name: String): String = repository.normalizeLayerNameKey(name)
 
-    private fun makeUniqueLayerName(baseName: String): String {
-        val clean = baseName.trim().ifBlank { "Imported Folder" }
-        val existingKeys = buildSet {
-            layers.forEach { add(normalizeLayerNameKey(it.name)) }
-            DevicePrefs.getCachedLayerNames(this@MainActivity).forEach { add(normalizeLayerNameKey(it)) }
-        }
-        if (normalizeLayerNameKey(clean) !in existingKeys) return clean
-        val stem = clean.replace(Regex("\\s*\\(\\d+\\)$"), "").trim().ifBlank { clean }
-        var n = 2
-        while (normalizeLayerNameKey("$stem ($n)") in existingKeys) {
-            n++
-        }
-        return "$stem ($n)"
-    }
+    private fun makeUniqueLayerName(baseName: String): String = repository.makeUniqueLayerName(baseName)
 
-    private var mergeIndexSeq: Long = 0L
+    private fun onRepositorySnapshotUpdated(snap: FolderIndexSnapshot) {
+        viewModel.updateFolderSnapshot(snap)
+        val activeTrackIds = snap.tracks.mapTo(HashSet(snap.tracks.size)) { it.id }
+        synchronized(trackPointCache) {
+            trackPointCache.keys.retainAll(activeTrackIds)
+        }
+        renderMapData()
+        liveBookmarksRefresh?.invoke()
+        livePinListRefresh?.invoke()
+        liveEditHistoryRefresh?.invoke()
+        if (isLassoMode) updateLassoUi()
+    }
 
     private fun applyMergedFoldersAndRender() {
-        val myMergeSeq = ++mergeIndexSeq
-        val cachedLocal = LocalFolderStore.getCachedOrNull()
-        val local = if (cachedLocal != null) {
-            cachedLocal
-        } else {
-            LocalFolderStore.preloadAsync(applicationContext) {
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) applyMergedFoldersAndRender()
-                }
-            }
-            LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
-        }
-        val mergedLayersRaw = cloudLayers + local.layers
-        val mergedPins = cloudPins + local.pins
-        val mergedTracks = cloudTracks + local.tracks
-        val hasLocalCached = cachedLocal != null
-
-        fun commitIndexed(
-            sortedLayers: List<LayerItem>,
-            lById: Map<String, LayerItem>,
-            pById: Map<String, PinItem>,
-            pByLayer: Map<String, List<PinItem>>,
-            tByLayer: Map<String, List<TrackItem>>,
-            buckets: Map<Long, List<PinItem>>
-        ) {
-            layers = sortedLayers
-            pins = mergedPins
-            tracks = mergedTracks
-            layerById = lById
-            pinById = pById
-            pinsByLayerId = pByLayer
-            tracksByLayerId = tByLayer
-            val activeTrackIds = mergedTracks.mapTo(HashSet(mergedTracks.size)) { it.id }
-            synchronized(trackPointCache) {
-                trackPointCache.keys.retainAll(activeTrackIds)
-            }
-            stackedPinBuckets = buckets
-            dataVersion++
-            val joinedEmpty = DevicePrefs.getJoinedLayerIds(this).isEmpty()
-            if (hasLocalCached && (sortedLayers.isNotEmpty() || isLiveConnected || joinedEmpty)) {
-                DevicePrefs.saveCachedLayerNames(this, sortedLayers.map { it.name })
-                if (isLiveConnected || joinedEmpty) {
-                    DevicePrefs.prunePinReferencesKeeping(this, pById.keys)
-                }
-            }
-            renderMapData()
-            liveBookmarksRefresh?.invoke()
-            livePinListRefresh?.invoke()
-            liveEditHistoryRefresh?.invoke()
-            if (isLassoMode) updateLassoUi()
-        }
-
-        if (mergedPins.size < 200) {
-            val sortedLayers = mergedLayersRaw.sortedByDescending { it.updatedAt }
-            val lById = sortedLayers.associateBy { it.id }
-            val pById = mergedPins.associateBy { it.id }
-            val pByLayer = mergedPins.groupBy { it.layerId }
-            val tByLayer = mergedTracks.groupBy { it.layerId }
-            val buckets = HashMap<Long, MutableList<PinItem>>(mergedPins.size)
-            for (pItem in mergedPins) {
-                val bx = kotlin.math.floor(pItem.lat / stackedCellSize).toInt()
-                val by = kotlin.math.floor(pItem.lng / stackedCellSize).toInt()
-                buckets.getOrPut(stackedBucketKey(bx, by)) { ArrayList(2) }.add(pItem)
-            }
-            commitIndexed(sortedLayers, lById, pById, pByLayer, tByLayer, buckets)
-            return
-        }
-
-        val cell = stackedCellSize
-        RoutingEngine.uiQueryExecutor.execute {
-            val sortedLayers = mergedLayersRaw.sortedByDescending { it.updatedAt }
-            val lById = sortedLayers.associateBy { it.id }
-            val pById = mergedPins.associateBy { it.id }
-            val pByLayer = mergedPins.groupBy { it.layerId }
-            val tByLayer = mergedTracks.groupBy { it.layerId }
-            val buckets = HashMap<Long, MutableList<PinItem>>(mergedPins.size)
-            for (pItem in mergedPins) {
-                val bx = kotlin.math.floor(pItem.lat / cell).toInt()
-                val by = kotlin.math.floor(pItem.lng / cell).toInt()
-                buckets.getOrPut(stackedBucketKey(bx, by)) { ArrayList(2) }.add(pItem)
-            }
-            runOnUiThread {
-                if (isFinishing || isDestroyed || myMergeSeq != mergeIndexSeq) return@runOnUiThread
-                commitIndexed(sortedLayers, lById, pById, pByLayer, tByLayer, buckets)
-            }
-        }
+        repository.applyMergedFolders()
     }
 
     internal fun refreshJoinedSync() {
-        val joined = DevicePrefs.getJoinedLayerIds(this)
-        repo.syncJoinedLayers(joined) { newLayers, newPins, newTracks, connected ->
-            cloudLayers = newLayers
-            cloudPins = newPins
-            cloudTracks = newTracks
-            isLiveConnected = connected
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                applyMergedFoldersAndRender()
-                val waitingId = activeSharedPinId
-                if (waitingId != null) {
-                    val matched = pinById[waitingId]
-                    if (matched != null) {
-                        activeSharedPinId = null
-                        hasAutoZoomedInitial = true
-                        ensurePinVisibleOnMap(matched)
-                        selectPinAndOpenCard(matched, zoomIfFar = true)
-                        return@runOnUiThread
-                    }
-                }
-                if (!hasAutoZoomedInitial && (pins.isNotEmpty() || tracks.isNotEmpty())) {
+        repository.refreshJoinedSync { snap ->
+            if (isFinishing || isDestroyed) return@refreshJoinedSync
+            val waitingId = activeSharedPinId
+            if (waitingId != null) {
+                val matched = snap.pinById[waitingId]
+                if (matched != null) {
+                    activeSharedPinId = null
                     hasAutoZoomedInitial = true
-                    zoomToKmlBounds(collectLayerLatLngs(pins, tracks))
+                    ensurePinVisibleOnMap(matched)
+                    selectPinAndOpenCard(matched, zoomIfFar = true)
+                    return@refreshJoinedSync
                 }
+            }
+            if (!hasAutoZoomedInitial && (snap.pins.isNotEmpty() || snap.tracks.isNotEmpty())) {
+                hasAutoZoomedInitial = true
+                zoomToKmlBounds(collectLayerLatLngs(snap.pins, snap.tracks))
             }
         }
     }
 
     private fun joinShareCode(rawCode: String) {
-        repo.joinLayerByCode(rawCode) { ok, msg, layerId ->
+        repository.joinShareCode(rawCode) { ok, msg, layerId ->
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
@@ -8953,7 +8777,7 @@ class MainActivity : AppCompatActivity() {
         tts?.stop()
         tts?.shutdown()
         tts = null
-        if (::repo.isInitialized) repo.stopListening()
+        if (::repository.isInitialized) repository.stop()
         mapView.onDestroy()
         super.onDestroy()
     }
