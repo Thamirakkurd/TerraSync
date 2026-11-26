@@ -14,7 +14,7 @@ android {
         targetSdk = 34
         val tagVer = (project.findProperty("appVersionName") as String?)
             ?: System.getenv("GITHUB_REF_NAME")?.removePrefix("v")?.takeIf { it.matches(Regex("\\d+\\.\\d+\\.\\d+.*")) }
-            ?: "3.10.1-dev"
+            ?: "3.11.0"
         val baseNum = tagVer.substringBefore("-").split(".").mapNotNull { it.toIntOrNull() }
             .let { if (it.size >= 3) it[0] * 10000 + it[1] * 100 + it[2] else 20700 }
         val preOffset = if (!tagVer.contains("-")) {
@@ -83,6 +83,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    buildFeatures {
+        buildConfig = true
+    }
     testOptions {
         unitTests {
             isReturnDefaultValues = true
@@ -104,6 +107,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.android.material:material:1.12.0")
     implementation("org.maplibre.gl:android-sdk:11.13.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
