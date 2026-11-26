@@ -20,6 +20,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
@@ -671,6 +674,11 @@ object DesignSystem {
             )
             setPadding((16 * d).toInt(), (10 * d).toInt(), (16 * d).toInt(), (24 * d).toInt())
         }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val navBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            v.setPadding((16 * d).toInt(), (10 * d).toInt(), (16 * d).toInt(), navBottom + (24 * d).toInt())
+            insets
+        }
 
         // Centered drag handle (36 x 4dp, #D6D7D3)
         root.addView(View(ctx).apply {
@@ -815,7 +823,7 @@ object DesignSystem {
                     text = item.subtitle
                     textSize = 12f
                     setTextColor(if (item.destructive) palette.red else palette.textMuted)
-                    maxLines = 1
+                    maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     setPadding(0, (1 * d).toInt(), 0, 0)
                 })
@@ -850,6 +858,12 @@ object DesignSystem {
         dialog.setOnShowListener {
             val sheet = dialog.findViewById<FrameLayout>(com.google.android.material.R.id.design_bottom_sheet)
             sheet?.setBackgroundColor(Color.TRANSPARENT)
+            dialog.window?.let { w ->
+                WindowCompat.getInsetsController(w, w.decorView).apply {
+                    isAppearanceLightStatusBars = !palette.isDark
+                    isAppearanceLightNavigationBars = !palette.isDark
+                }
+            }
             dialog.behavior.apply {
                 state = BottomSheetBehavior.STATE_EXPANDED
                 skipCollapsed = true

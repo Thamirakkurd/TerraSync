@@ -3054,6 +3054,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 12.5f
             setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(
@@ -3622,6 +3623,27 @@ class MainActivity : AppCompatActivity() {
 
     // --- Tap-Anywhere Place Card (With Route To & Route From) ---
 
+    private fun fitCleanSubtitle(raw: String, tv: TextView, maxWidthPx: Int): String {
+        val clean = raw.trim()
+        if (clean.isEmpty() || maxWidthPx <= 0) return clean
+        if (tv.paint.measureText(clean) <= maxWidthPx) return clean
+        val parts = clean.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size > 1) {
+            val sb = StringBuilder()
+            for (part in parts) {
+                val candidate = if (sb.isEmpty()) part else "$sb, $part"
+                if (tv.paint.measureText(candidate) <= maxWidthPx) {
+                    sb.clear()
+                    sb.append(candidate)
+                } else {
+                    break
+                }
+            }
+            if (sb.isNotEmpty()) return sb.toString()
+        }
+        return clean
+    }
+
     private fun showTappedPlaceCard(title: String, subtitle: String, lat: Double, lng: Double) {
         sheetQuickSelectPinId = null
         val p = currentPalette()
@@ -3677,12 +3699,18 @@ class MainActivity : AppCompatActivity() {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 if (childCount == 2 && MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
                     val avail = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+                    val subTv = getChildAt(0) as? TextView
                     val distChild = getChildAt(1)
-                    if (distChild.visibility == View.VISIBLE) {
+                    val subMaxW = if (distChild.visibility == View.VISIBLE) {
                         distChild.measure(MeasureSpec.makeMeasureSpec(avail, MeasureSpec.AT_MOST), heightMeasureSpec)
-                        (getChildAt(0) as? TextView)?.maxWidth = (avail - distChild.measuredWidth).coerceAtLeast(dp(56))
+                        (avail - distChild.measuredWidth).coerceAtLeast(dp(56))
                     } else {
-                        (getChildAt(0) as? TextView)?.maxWidth = avail
+                        avail
+                    }
+                    if (subTv != null) {
+                        subTv.maxWidth = subMaxW
+                        val fitted = fitCleanSubtitle(tappedResolvedSub, subTv, subMaxW)
+                        if (subTv.text.toString() != fitted) subTv.text = fitted
                     }
                 }
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
@@ -3701,6 +3729,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 12.5f
             setTextColor(p.accentPrimary)
             setTypeface(null, Typeface.BOLD)
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             visibility = if (subtitle.isNotBlank()) View.VISIBLE else View.GONE
