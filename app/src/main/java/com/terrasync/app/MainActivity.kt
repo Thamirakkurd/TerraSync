@@ -191,6 +191,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var topBar: LinearLayout
     private lateinit var routeFromBanner: LinearLayout
     private lateinit var tvRouteFromText: TextView
+    private lateinit var tvRouteFromHint: TextView
     private lateinit var btnClearRouteFrom: ImageButton
     private lateinit var btnSyncStatus: ImageButton
     private lateinit var btnCompass: ImageButton
@@ -757,6 +758,7 @@ class MainActivity : AppCompatActivity() {
         topBar = findViewById(R.id.topBar)
         routeFromBanner = findViewById(R.id.routeFromBanner)
         tvRouteFromText = findViewById(R.id.tvRouteFromText)
+        tvRouteFromHint = findViewById(R.id.tvRouteFromHint)
         btnClearRouteFrom = findViewById(R.id.btnClearRouteFrom)
         btnSyncStatus = findViewById(R.id.btnSyncStatus)
         btnCompass = findViewById(R.id.btnCompass)
@@ -1144,6 +1146,7 @@ class MainActivity : AppCompatActivity() {
 
         DesignSystem.applyFloatingSurface(this, routeFromBanner, p, radiusDp = 20f, elevationDp = 5f, strokeOverride = p.accentPrimary)
         tvRouteFromText.setTextColor(p.textPrimary)
+        tvRouteFromHint.setTextColor(p.textSecondary)
         btnClearRouteFrom.setColorFilter(p.textMuted)
 
         DesignSystem.applyFloatingSurface(this, rulerCard, p, radiusDp = 24f, elevationDp = 8f)
@@ -2684,7 +2687,7 @@ class MainActivity : AppCompatActivity() {
     private fun setRouteOrigin(lat: Double, lng: Double, label: String) {
         routeOriginLatLng = LatLng(lat, lng)
         routeOriginName = label.ifBlank { "${"%.5f".format(Locale.US, lat)}, ${"%.5f".format(Locale.US, lng)}" }
-        tvRouteFromText.text = "From: $routeOriginName (tap a destination)"
+        tvRouteFromText.text = "From: $routeOriginName"
         UiAnimations.showSlideTop(routeFromBanner)
         hideInScreenSheet()
         Toast.makeText(this, "Start set: $routeOriginName — tap any pin or place & choose Route To", Toast.LENGTH_LONG).show()
@@ -2931,15 +2934,18 @@ class MainActivity : AppCompatActivity() {
             if (stackedPins.size > 2) {
                 stackRow.addView(MaterialButton(this).apply {
                     text = "‹"
-                    textSize = 15f
+                    textSize = 17f
+                    setTypeface(null, Typeface.BOLD)
                     isAllCaps = false
                     insetTop = 0
                     insetBottom = 0
                     minWidth = 0
                     minimumWidth = 0
                     setPadding(dp(11), 0, dp(11), 0)
-                    setTextColor(p.accent)
-                    setBackgroundColor(if (night) p.cardSurface else Color.WHITE)
+                    setTextColor(if (night) p.textPrimary else p.accent)
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(if (night) p.cardSurface else Color.WHITE)
+                    strokeWidth = dp(1)
+                    strokeColor = android.content.res.ColorStateList.valueOf(p.borderSubtle)
                     cornerRadius = dp(10)
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)).apply {
                         marginEnd = dp(6)
@@ -3202,15 +3208,17 @@ class MainActivity : AppCompatActivity() {
             ).apply { bottomMargin = dp(8) }
         }
         val stamp = DevicePrefs.getDeviceStamp(this)
+        data class StatusButtonStyle(val key: String, val title: String, val solidColor: Int, val softColor: Int, val inactiveTextColor: Int)
         listOf(
-            Triple("pending", AppStrings.pending(this), p.amber),
-            Triple("done", AppStrings.done(this), p.green),
-            Triple("issue", AppStrings.issue(this), p.red)
-        ).forEachIndexed { idx, (key, title, colorInt) ->
+            StatusButtonStyle("pending", AppStrings.pending(this), p.amber, p.amberSoft, if (night) p.amber else Color.parseColor("#B36B00")),
+            StatusButtonStyle("done", AppStrings.done(this), p.green, p.greenSoft, p.green),
+            StatusButtonStyle("issue", AppStrings.issue(this), p.red, p.redSoft, p.red)
+        ).forEachIndexed { idx, (key, title, solidColor, softColor, inactiveTextColor) ->
             val active = pinStatus.key == key
             statusRow.addView(MaterialButton(this).apply {
                 text = if (active) "✓ $title" else title
                 textSize = 13f
+                setTypeface(null, Typeface.BOLD)
                 isAllCaps = false
                 insetTop = 0
                 insetBottom = 0
@@ -3219,9 +3227,19 @@ class MainActivity : AppCompatActivity() {
                 minWidth = 0
                 minimumWidth = 0
                 setPadding(dp(6), 0, dp(6), 0)
-                setTextColor(Color.WHITE)
-                setBackgroundColor(colorInt)
-                alpha = if (active) 1f else 0.55f
+                if (active) {
+                    setTextColor(Color.WHITE)
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(solidColor)
+                    strokeWidth = 0
+                } else {
+                    setTextColor(inactiveTextColor)
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(softColor)
+                    strokeWidth = dp(1)
+                    strokeColor = android.content.res.ColorStateList.valueOf(
+                        Color.argb(if (night) 76 else 64, Color.red(solidColor), Color.green(solidColor), Color.blue(solidColor))
+                    )
+                }
+                alpha = 1f
                 cornerRadius = dp(12)
                 layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
                     if (idx < 2) marginEnd = dp(8)
@@ -4088,8 +4106,9 @@ class MainActivity : AppCompatActivity() {
             text = "$startLabel → $destTitle"
             textSize = 13f
             setTextColor(txtSub)
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
             maxLines = 1
-            ellipsize = TextUtils.TruncateAt.MIDDLE
+            ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(6), 0, 0)
         })
         header.addView(titleCol)
@@ -8235,21 +8254,68 @@ class MainActivity : AppCompatActivity() {
                 langCard.addView(mapLangScroll)
 
                 langCard.addView(DesignSystem.createHairlineDivider(this, p))
-                addSegmentedBlock(
-                    langCard,
-                    title = "POI & Icon Labels",
-                    subtitle = "Control text labels shown beneath map POI badges",
-                    options = PoiLabelBehavior.entries.map { it.id to it.label },
-                    selectedId = DevicePrefs.getPoiLabelBehavior(this).id
-                ) { id ->
-                    val next = PoiLabelBehavior.fromId(id)
-                    DevicePrefs.setPoiLabelBehavior(this, next)
-                    map?.style?.let { st ->
-                        if (st.isFullyLoaded && mapStyleMode == MapStyleMode.VECTOR) {
-                            MapCartography.applyOrganicCartography(this, st, isDarkMapUi())
-                        }
+                langCard.addView(TextView(this).apply {
+                    text = "POI & Icon Labels"
+                    textSize = 14.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    setPadding(0, dp(8), 0, dp(2))
+                })
+                langCard.addView(TextView(this).apply {
+                    text = "Control text labels shown beneath map POI badges"
+                    textSize = 12f
+                    setTextColor(txtSub)
+                    setPadding(0, 0, 0, dp(8))
+                })
+
+                val curPoiBehavior = DevicePrefs.getPoiLabelBehavior(this)
+                val poiScroll = android.widget.HorizontalScrollView(this).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                }
+                val poiRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 0, 0, dp(10))
+                }
+                val poiBtns = mutableMapOf<PoiLabelBehavior, MaterialButton>()
+                fun syncPoiBtns(activeBehavior: PoiLabelBehavior) {
+                    poiBtns.forEach { (bBehavior, b) ->
+                        DesignSystem.styleSegmentedButton(b, bBehavior == activeBehavior, p, onTonalCard = true)
                     }
                 }
+                PoiLabelBehavior.entries.forEachIndexed { idx, behavior ->
+                    val btn = MaterialButton(this).apply {
+                        text = behavior.label
+                        textSize = 12.5f
+                        isAllCaps = false
+                        maxLines = 1
+                        insetTop = 0
+                        insetBottom = 0
+                        minWidth = 0
+                        minimumWidth = 0
+                        setPadding(dp(11), 0, dp(11), 0)
+                        cornerRadius = dp(12)
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
+                            if (idx < PoiLabelBehavior.entries.lastIndex) marginEnd = dp(6)
+                        }
+                        UiAnimations.attachSnappyPress(this)
+                        setOnClickListener {
+                            if (DevicePrefs.getPoiLabelBehavior(this@MainActivity) == behavior) return@setOnClickListener
+                            DevicePrefs.setPoiLabelBehavior(this@MainActivity, behavior)
+                            syncPoiBtns(behavior)
+                            map?.style?.let { st ->
+                                if (st.isFullyLoaded && mapStyleMode == MapStyleMode.VECTOR) {
+                                    MapCartography.applyOrganicCartography(this@MainActivity, st, isDarkMapUi())
+                                }
+                            }
+                        }
+                    }
+                    poiBtns[behavior] = btn
+                    poiRow.addView(btn)
+                }
+                syncPoiBtns(curPoiBehavior)
+                poiScroll.addView(poiRow)
+                langCard.addView(poiScroll)
                 body.addView(langCard)
             }
 
@@ -8865,7 +8931,10 @@ class MainActivity : AppCompatActivity() {
             setTextColor(txtSub)
         })
         devCard.addView(TextView(this).apply {
-            text = "Data: ${layers.size} folders • ${pins.size} bookmarks • ${tracks.size} tracks • ${if (isLiveConnected) "Cloud live" else "Offline cache"}"
+            val fLabel = if (layers.size == 1) "folder" else "folders"
+            val pLabel = if (pins.size == 1) "bookmark" else "bookmarks"
+            val tLabel = if (tracks.size == 1) "track" else "tracks"
+            text = "Data: ${layers.size} $fLabel • ${pins.size} $pLabel • ${tracks.size} $tLabel • ${if (isLiveConnected) "Cloud live" else "Offline cache"}"
             textSize = 12f
             setTextColor(txtSub)
             DesignSystem.applyTabularNumerals(this)
