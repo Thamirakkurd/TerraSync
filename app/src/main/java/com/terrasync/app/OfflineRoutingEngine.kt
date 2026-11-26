@@ -871,8 +871,8 @@ object OfflineRoutingEngine {
                         if (count < 10000) break
                     }
                     dos.flush()
+                    runCatching { fos.fd.sync() }
                 }
-                runCatching { fos.fd.sync() }
             }
 
             checkCancelled()

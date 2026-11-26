@@ -28,6 +28,7 @@ object LocalFolderStore {
 
     private const val FILE_NAME = "local_folders_v1.json"
     private val lock = Any()
+    private val diskLock = Any()
     private val ioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "terrasync-local-store").apply { isDaemon = true }
     }
@@ -48,10 +49,13 @@ object LocalFolderStore {
     }
 
     internal fun flushPendingWritesForTest(ctx: Context) {
-        val snap = pendingWrite.getAndSet(null) ?: return
-        synchronized(lock) {
-            persistSnapshotToDisk(ctx.applicationContext, snap)
-        }
+        val appCtx = ctx.applicationContext
+        ioExecutor.submit {
+            val remaining = pendingWrite.getAndSet(null)
+            if (remaining != null) {
+                persistSnapshotToDisk(appCtx, remaining)
+            }
+        }.get()
     }
 
     private fun JsonReader.nextStringOrEmpty(): String =
@@ -222,14 +226,16 @@ object LocalFolderStore {
             cachedSnapshot?.let { return it }
             val f = storeFile(ctx)
             val staleTmp = File(ctx.filesDir, "$FILE_NAME.tmp")
-            if (staleTmp.exists()) runCatching { staleTmp.delete() }
-            val loaded = if (!f.exists()) {
-                LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
-            } else {
-                runCatching {
-                    FileInputStream(f).use { fis -> readSnapshotFromStream(fis) }
-                }.getOrElse {
+            val loaded = synchronized(diskLock) {
+                if (staleTmp.exists()) runCatching { staleTmp.delete() }
+                if (!f.exists()) {
                     LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
+                } else {
+                    runCatching {
+                        FileInputStream(f).use { fis -> readSnapshotFromStream(fis) }
+                    }.getOrElse {
+                        LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
+                    }
                 }
             }
             cachedSnapshot = loaded
@@ -256,78 +262,80 @@ object LocalFolderStore {
     }
 
     private fun persistSnapshotToDisk(appCtx: Context, sortedSnap: LocalStoreSnapshot) {
-        runCatching {
-            val tmp = File(appCtx.filesDir, "$FILE_NAME.tmp")
-            FileOutputStream(tmp).use { fos ->
-                JsonWriter(BufferedWriter(OutputStreamWriter(fos, Charsets.UTF_8), 32 * 1024)).use { jw ->
-                    jw.beginObject()
-                    jw.name("layers")
-                    jw.beginArray()
-                    sortedSnap.layers.forEach { l ->
+        synchronized(diskLock) {
+            runCatching {
+                val tmp = File(appCtx.filesDir, "$FILE_NAME.tmp")
+                FileOutputStream(tmp).use { fos ->
+                    JsonWriter(BufferedWriter(OutputStreamWriter(fos, Charsets.UTF_8), 32 * 1024)).use { jw ->
                         jw.beginObject()
-                        jw.name("id").value(l.id)
-                        jw.name("name").value(l.name)
-                        jw.name("createdBy").value(l.createdBy)
-                        jw.name("creatorDeviceId").value(l.creatorDeviceId)
-                        jw.name("updatedAt").value(l.updatedAt)
-                        jw.endObject()
-                    }
-                    jw.endArray()
+                        jw.name("layers")
+                        jw.beginArray()
+                        sortedSnap.layers.forEach { l ->
+                            jw.beginObject()
+                            jw.name("id").value(l.id)
+                            jw.name("name").value(l.name)
+                            jw.name("createdBy").value(l.createdBy)
+                            jw.name("creatorDeviceId").value(l.creatorDeviceId)
+                            jw.name("updatedAt").value(l.updatedAt)
+                            jw.endObject()
+                        }
+                        jw.endArray()
 
-                    jw.name("pins")
-                    jw.beginArray()
-                    sortedSnap.pins.forEach { p ->
-                        jw.beginObject()
-                        jw.name("id").value(p.id)
-                        jw.name("layerId").value(p.layerId)
-                        jw.name("name").value(p.name)
-                        jw.name("description").value(p.description)
-                        jw.name("lat").value(if (p.lat.isFinite()) p.lat else 0.0)
-                        jw.name("lng").value(if (p.lng.isFinite()) p.lng else 0.0)
-                        jw.name("status").value(p.status)
-                        jw.name("issueReason").value(p.issueReason)
-                        jw.name("updatedAt").value(p.updatedAt)
-                        jw.name("isEdited").value(p.isEdited)
-                        jw.name("editedBy").value(p.editedBy)
-                        jw.name("editedAt").value(p.editedAt)
-                        jw.name("editHistory").value(p.editHistory)
-                        jw.endObject()
-                    }
-                    jw.endArray()
+                        jw.name("pins")
+                        jw.beginArray()
+                        sortedSnap.pins.forEach { p ->
+                            jw.beginObject()
+                            jw.name("id").value(p.id)
+                            jw.name("layerId").value(p.layerId)
+                            jw.name("name").value(p.name)
+                            jw.name("description").value(p.description)
+                            jw.name("lat").value(if (p.lat.isFinite()) p.lat else 0.0)
+                            jw.name("lng").value(if (p.lng.isFinite()) p.lng else 0.0)
+                            jw.name("status").value(p.status)
+                            jw.name("issueReason").value(p.issueReason)
+                            jw.name("updatedAt").value(p.updatedAt)
+                            jw.name("isEdited").value(p.isEdited)
+                            jw.name("editedBy").value(p.editedBy)
+                            jw.name("editedAt").value(p.editedAt)
+                            jw.name("editHistory").value(p.editHistory)
+                            jw.endObject()
+                        }
+                        jw.endArray()
 
-                    jw.name("tracks")
-                    jw.beginArray()
-                    sortedSnap.tracks.forEach { t ->
-                        jw.beginObject()
-                        jw.name("id").value(t.id)
-                        jw.name("layerId").value(t.layerId)
-                        jw.name("name").value(t.name)
-                        jw.name("coords").value(t.coords)
-                        jw.name("updatedAt").value(t.updatedAt)
+                        jw.name("tracks")
+                        jw.beginArray()
+                        sortedSnap.tracks.forEach { t ->
+                            jw.beginObject()
+                            jw.name("id").value(t.id)
+                            jw.name("layerId").value(t.layerId)
+                            jw.name("name").value(t.name)
+                            jw.name("coords").value(t.coords)
+                            jw.name("updatedAt").value(t.updatedAt)
+                            jw.endObject()
+                        }
+                        jw.endArray()
                         jw.endObject()
-                    }
-                    jw.endArray()
-                    jw.endObject()
-                    jw.flush()
-                }
-                fos.fd.sync()
-            }
-            val dst = storeFile(appCtx)
-            if (!tmp.renameTo(dst)) {
-                val backupTmp = File(appCtx.filesDir, "$FILE_NAME.tmp2")
-                FileInputStream(tmp).use { input ->
-                    FileOutputStream(backupTmp).use { output ->
-                        input.copyTo(output, bufferSize = 32 * 1024)
-                        output.flush()
-                        output.fd.sync()
+                        jw.flush()
+                        fos.fd.sync()
                     }
                 }
-                if (!backupTmp.renameTo(dst)) {
-                    backupTmp.copyTo(dst, overwrite = true)
-                    backupTmp.delete()
+                val dst = storeFile(appCtx)
+                if (!tmp.renameTo(dst)) {
+                    val backupTmp = File(appCtx.filesDir, "$FILE_NAME.tmp2")
+                    FileInputStream(tmp).use { input ->
+                        FileOutputStream(backupTmp).use { output ->
+                            input.copyTo(output, bufferSize = 32 * 1024)
+                            output.flush()
+                            output.fd.sync()
+                        }
+                    }
+                    if (!backupTmp.renameTo(dst)) {
+                        backupTmp.copyTo(dst, overwrite = true)
+                        backupTmp.delete()
+                    }
+                    tmp.delete()
                 }
-                tmp.delete()
-            }
+            }.onFailure { android.util.Log.e("LocalFolderStore", "persistSnapshotToDisk failed", it) }
         }
     }
 

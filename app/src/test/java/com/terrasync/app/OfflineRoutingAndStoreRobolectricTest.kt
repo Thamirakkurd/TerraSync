@@ -124,6 +124,7 @@ class OfflineRoutingAndStoreRobolectricTest {
         )
         LocalFolderStore.flushPendingWritesForTest(ctx)
         LocalFolderStore.clearCacheForTest()
+        assertTrue("Expected persisted local_folders_v1.json on disk", storeFile.exists())
 
         val reloaded = LocalFolderStore.loadAll(ctx)
         assertEquals(1, reloaded.layers.size)

@@ -2188,11 +2188,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun attachOverlayLayers(style: Style) {
-        val darkLabels = isDarkMapUi() || mapStyleMode == MapStyleMode.SATELLITE
-        val labelColor = if (darkLabels) "#F8FAFC" else "#0F172A"
-        val haloColor = if (darkLabels) "#0F172A" else "#FFFFFF"
-        val showTitles = DevicePrefs.isShowBookmarkTitles(this)
-
         if (style.getSource(TRACKS_SOURCE) == null) {
             style.addSource(GeoJsonSource(TRACKS_SOURCE))
             style.addLayer(
