@@ -360,7 +360,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun appendPaginatedSearchCard(
         container: LinearLayout,
-        p: AppPalette,
+        p: ThemePalette,
         matches: List<Pair<SearchIndexEntry, String?>>,
         showFolderInSub: Boolean,
         pageSize: Int = 60
@@ -7255,7 +7255,7 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
             setTextColor(p.accentPrimary)
             setPadding(dp(6), dp(4), dp(2), dp(4))
-            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+            UiAnimations.applyRowRipple(this@MainActivity, this, p.isDark)
             setOnClickListener {
                 if (chosenStartMin == chosenEndMin) {
                     Toast.makeText(this@MainActivity, "Start and End times cannot be identical", Toast.LENGTH_SHORT).show()
