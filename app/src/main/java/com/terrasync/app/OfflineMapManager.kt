@@ -395,6 +395,9 @@ class OfflineMapManager private constructor(context: Context) {
             },
             onDone = { reg, err ->
                 runOnMain {
+                    if (err == "Cancelled" && OfflineRoutingEngine.isDownloading(packId)) {
+                        return@runOnMain
+                    }
                     roadProgressNotes.remove(packId)
                     roadProgressPercents.remove(packId)
                     if (reg != null) {
@@ -402,7 +405,7 @@ class OfflineMapManager private constructor(context: Context) {
                     } else if (err != null && err != "Cancelled") {
                         roadErrors[packId] = err
                     }
-                    syncRoadFields(packId, forceNotDownloading = true)
+                    syncRoadFields(packId, forceNotDownloading = !OfflineRoutingEngine.isDownloading(packId))
                     if (!hasAnyActiveDownload()) {
                         OfflineDownloadService.stop(appCtx)
                     }
@@ -594,7 +597,7 @@ class OfflineMapManager private constructor(context: Context) {
                 else -> "Not downloaded (online only)"
             }
         )
-        syncRoadFields(packId)
+        syncRoadFields(packId, forceNotDownloading = true)
         if (!hasAnyActiveDownload()) {
             OfflineDownloadService.stop(appCtx)
         }

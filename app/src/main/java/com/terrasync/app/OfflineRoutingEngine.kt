@@ -79,7 +79,14 @@ object OfflineRoutingEngine {
     @Volatile private var cachedGraph: RoadGraph? = null
     private data class CachedHeader(val lastModified: Long, val sizeBytes: Long, val region: OfflineRoadRegion)
     private val headerCache = ConcurrentHashMap<String, CachedHeader>()
-    private val activeDownloads = ConcurrentHashMap<String, AtomicBoolean>()
+
+    private class DownloadJob {
+        val cancelled = AtomicBoolean(false)
+        @Volatile var activeConn: HttpURLConnection? = null
+        @Volatile var workerThread: Thread? = null
+    }
+
+    private val activeDownloads = ConcurrentHashMap<String, DownloadJob>()
 
     private fun dir(ctx: Context): File = File(ctx.filesDir, "offline_routes").apply { mkdirs() }
 
@@ -111,10 +118,24 @@ object OfflineRoutingEngine {
         return readHeader(f)
     }
 
-    fun isDownloading(packId: String): Boolean = activeDownloads.containsKey(packId)
+    fun isDownloading(packId: String): Boolean {
+        val job = activeDownloads[packId] ?: return false
+        return !job.cancelled.get()
+    }
 
     fun cancelDownload(packId: String) {
-        activeDownloads[packId]?.set(true)
+        val job = activeDownloads[packId] ?: return
+        job.cancelled.set(true)
+        val conn = job.activeConn
+        job.activeConn = null
+        if (conn != null) {
+            Thread { runCatching { conn.disconnect() } }.apply {
+                name = "terrasync-road-cancel"
+                isDaemon = true
+                start()
+            }
+        }
+        job.workerThread?.interrupt()
     }
 
     fun deletePackRegion(ctx: Context, packId: String): Boolean {
@@ -291,10 +312,16 @@ object OfflineRoutingEngine {
         onDone: (OfflineRoadRegion?, String?) -> Unit
     ) {
         val jobKey = packId ?: safeName(regionName)
-        val cancelFlag = AtomicBoolean(false)
-        if (activeDownloads.putIfAbsent(jobKey, cancelFlag) != null) {
-            onDone(null, "Road download already running")
-            return
+        val job = DownloadJob()
+        var prevCancelledJob: DownloadJob? = null
+        synchronized(activeDownloads) {
+            val existing = activeDownloads[jobKey]
+            if (existing != null && !existing.cancelled.get()) {
+                onDone(null, "Road download already running")
+                return
+            }
+            prevCancelledJob = existing
+            activeDownloads[jobKey] = job
         }
 
         Thread {
@@ -317,7 +344,7 @@ object OfflineRoutingEngine {
             }
 
             fun checkCancelled() {
-                if (cancelFlag.get()) throw CancelledSignal()
+                if (job.cancelled.get()) throw CancelledSignal()
             }
 
             fun sleepWithCancel(delayMs: Long) {
@@ -325,7 +352,11 @@ object OfflineRoutingEngine {
                 while (remaining > 0L) {
                     checkCancelled()
                     val step = minOf(remaining, 200L)
-                    Thread.sleep(step)
+                    try {
+                        Thread.sleep(step)
+                    } catch (_: InterruptedException) {
+                        checkCancelled()
+                    }
                     remaining -= step
                 }
             }
@@ -336,6 +367,10 @@ object OfflineRoutingEngine {
             }
 
             try {
+                prevCancelledJob?.workerThread?.let { prev ->
+                    runCatching { prev.join(5000L) }
+                }
+                checkCancelled()
                 val sLat = minOf(minLat, maxLat)
                 val nLat = maxOf(minLat, maxLat)
                 val wLng = minOf(minLng, maxLng)
@@ -539,6 +574,8 @@ object OfflineRoutingEngine {
                                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                                 setRequestProperty("User-Agent", RoutingEngine.userAgent)
                             }
+                            job.activeConn = conn
+                            checkCancelled()
                             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
                                 w.write("data=" + URLEncoder.encode(chunk.query, "UTF-8"))
                             }
@@ -588,8 +625,10 @@ object OfflineRoutingEngine {
                             throw e
                         } catch (e: Exception) {
                             partFile.delete()
+                            if (job.cancelled.get()) throw CancelledSignal()
                             lastErr = e.message ?: "Network error"
                         } finally {
+                            if (job.activeConn === conn) job.activeConn = null
                             conn?.disconnect()
                         }
                         if (epIdx < endpoints.lastIndex) {
@@ -1019,12 +1058,14 @@ object OfflineRoutingEngine {
                 } else if (packId != null) {
                     File(dir(ctx), "${packFileName(packId)}.part").delete()
                 }
-                activeDownloads.remove(jobKey, cancelFlag)
+                job.activeConn = null
+                activeDownloads.remove(jobKey, job)
             }
             if (invokeDone) {
                 onDone(resultRegion, resultError)
             }
         }.apply {
+            job.workerThread = this
             name = "terrasync-road-dl-$jobKey"
             isDaemon = true
             start()
