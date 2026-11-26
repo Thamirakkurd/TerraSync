@@ -512,7 +512,7 @@ class MainActivity : AppCompatActivity() {
     internal var isLiveConnected = false
     internal var mapStyleMode: MapStyleMode = MapStyleMode.VECTOR
     internal var travelMode: TravelMode = TravelMode.CAR
-    private var cachedScaleBarEnabled: Boolean = true
+    internal var cachedScaleBarEnabled: Boolean = true
     internal var cachedSpeedUnit: SpeedUnit = SpeedUnit.METRIC
     internal var lastScaleLabel: String = ""
     internal var lastScaleWidthPx: Int = -1

@@ -128,7 +128,7 @@ internal fun MainActivity.showMultiStatusFilterDialog() {
         }
         swUnsent.isChecked = hideSentPins
         btnResetFilter.visibility =
-            if (!visibleStatuses.containsAll(ALL_STATUSES) || hideSentPins) View.VISIBLE else View.GONE
+            if (!visibleStatuses.containsAll(MainActivity.ALL_STATUSES) || hideSentPins) View.VISIBLE else View.GONE
         updatingUi = false
     }
 
@@ -254,7 +254,7 @@ internal fun MainActivity.showMultiStatusFilterDialog() {
     btnResetFilter.setOnClickListener {
         UiAnimations.hapticTick(btnResetFilter)
         visibleStatuses.clear()
-        visibleStatuses.addAll(ALL_STATUSES)
+        visibleStatuses.addAll(MainActivity.ALL_STATUSES)
         hideSentPins = false
         applyFilterChanges()
     }
