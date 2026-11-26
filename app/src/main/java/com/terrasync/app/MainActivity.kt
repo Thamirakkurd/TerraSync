@@ -8720,7 +8720,7 @@ class MainActivity : AppCompatActivity() {
                         backgroundTintList = android.content.res.ColorStateList.valueOf(p.redSoft)
                         strokeWidth = dp(1)
                         strokeColor = android.content.res.ColorStateList.valueOf(
-                            Color.argb(if (night) 76 else 56, Color.red(p.red), Color.green(p.red), Color.blue(p.red))
+                            Color.argb(if (p.isDark) 76 else 56, Color.red(p.red), Color.green(p.red), Color.blue(p.red))
                         )
                         cornerRadius = dp(12)
                         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42))
@@ -8766,7 +8766,7 @@ class MainActivity : AppCompatActivity() {
                             }
                             hasPartialTiles -> {
                                 val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
-                                Triple("Map Tiles: Paused ${st.progressPercent}%$countPart • $sizeStr", if (night) p.amber else Color.parseColor("#B36B00"), false)
+                                Triple("Map Tiles: Paused ${st.progressPercent}%$countPart • $sizeStr", if (p.isDark) p.amber else Color.parseColor("#B36B00"), false)
                             }
                             else ->
                                 Triple("Map Tiles: Not downloaded", p.textSecondary, false)
