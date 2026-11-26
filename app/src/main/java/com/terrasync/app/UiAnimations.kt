@@ -84,6 +84,7 @@ object UiAnimations {
     /** Alias kept for call-site ergonomics. */
     fun attachSpringTouch(view: View) = attachSnappyPress(view)
 
+    @Suppress("UNUSED_PARAMETER")
     fun applyRowRipple(ctx: Context, view: View, isDark: Boolean = false) {
         val rippleColor = Color.parseColor(if (isDark) "#22FFFFFF" else "#141C1E1B")
         val mask = GradientDrawable().apply { setColor(Color.WHITE) }
@@ -693,6 +694,7 @@ object UiAnimations {
     }
 
     /** Crisp 120ms in-place alpha crossfade for stacked pin swaps without sheet dismissal or layout jank. */
+    @Suppress("UNUSED_PARAMETER")
     fun animateContentSwap(view: View, forward: Boolean = true) {
         view.animate().cancel()
         view.translationX = 0f
@@ -709,6 +711,7 @@ object UiAnimations {
     }
 
     /** Subtle optional content reveal (no double-fade when container already animates). */
+    @Suppress("UNUSED_PARAMETER")
     fun staggerRevealChildren(parent: ViewGroup, maxAnimated: Int = 6) {
         // Container-level push/pop/enter handles page transitions cleanly without double-fading.
     }

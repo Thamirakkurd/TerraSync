@@ -5,6 +5,7 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipInputStream
 
@@ -22,6 +23,27 @@ object KmlParser {
     private val HTML_TAG_REGEX = Regex("<[^>]+>")
     private val BARE_AMP_REGEX = Regex("&(?!amp;|lt;|gt;|quot;|apos;|#\\d+;|#x[0-9a-fA-F]+;)")
     private val CTRL_CHAR_REGEX = Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")
+    private val IMPLICIT_REASON_KEYS = setOf(
+        "meter linked",
+        "inaccessible",
+        "no bill",
+        "need electricity",
+        "customer refused / no access",
+        "wrong location / coordinates",
+        "closed / nobody home",
+        "safety hazard / network fault"
+    )
+    private val GENERIC_META_KEYS = setOf(
+        "status",
+        "pin_status",
+        "issue",
+        "issue_reason",
+        "done_note",
+        "status_note",
+        "edited_by",
+        "edited_at",
+        "edit_history"
+    )
 
     private fun readBoundedBytes(input: InputStream, maxBytes: Int = MAX_KML_BYTES): ByteArray? {
         val out = ByteArrayOutputStream()
@@ -97,19 +119,10 @@ object KmlParser {
 
     private fun extractImplicitReasonFromStatus(raw: String?): String {
         val trimmed = raw?.trim().orEmpty()
-        val low = trimmed.lowercase()
+        val low = trimmed.lowercase(Locale.ROOT)
         return when {
             low.startsWith("done:") || low.startsWith("issue:") -> trimmed.substringAfter(":").trim()
-            low in setOf(
-                "meter linked",
-                "inaccessible",
-                "no bill",
-                "need electricity",
-                "customer refused / no access",
-                "wrong location / coordinates",
-                "closed / nobody home",
-                "safety hazard / network fault"
-            ) -> trimmed
+            low in IMPLICIT_REASON_KEYS -> trimmed
             else -> ""
         }
     }
@@ -273,7 +286,7 @@ object KmlParser {
                                     } else if (v.isNotBlank()) {
                                         when {
                                             keyLow.startsWith("ts_") -> pmMeta[keyLow] = v
-                                            keyLow in setOf("status", "pin_status", "issue", "issue_reason", "done_note", "status_note", "edited_by", "edited_at", "edit_history") -> {
+                                            keyLow in GENERIC_META_KEYS -> {
                                                 pmGeneric[keyLow] = v
                                             }
                                             else -> pmExtra.add("$currentDataKey: $v")

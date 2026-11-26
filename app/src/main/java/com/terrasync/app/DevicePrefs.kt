@@ -108,8 +108,15 @@ object DevicePrefs {
     private const val KEY_OPERATOR_SETUP_DONE = "operator_setup_prompt_done"
     private const val KEY_SHOW_ZOOM_BUTTONS = "show_zoom_buttons"
     private const val KEY_MAP_PIN_STYLE = "map_pin_style"
+    private const val KEY_WORK_HOURS_PRESETS = "work_hours_presets"
+    private const val KEY_CLUSTER_DENSE_PINS = "cluster_dense_pins"
 
     val ALL_STATUSES = setOf("pending", "done", "issue")
+    internal val DEFAULT_WORK_HOUR_PRESETS: List<Pair<Int, Int>> = listOf(
+        8 * 60 to 16 * 60,
+        8 * 60 to 17 * 60,
+        7 * 60 to 15 * 60
+    )
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -387,5 +394,65 @@ object DevicePrefs {
         if (c.isBlank()) return
         val next = getCachedLayerNames(ctx).toMutableSet().apply { add(c) }
         prefs(ctx).edit().putStringSet(KEY_CACHED_LAYER_NAMES, next).apply()
+    }
+
+    fun isClusterDensePins(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_CLUSTER_DENSE_PINS, false)
+
+    fun setClusterDensePins(ctx: Context, enabled: Boolean) =
+        prefs(ctx).edit().putBoolean(KEY_CLUSTER_DENSE_PINS, enabled).apply()
+
+    internal fun parseWorkHourPresets(raw: String?): List<Pair<Int, Int>> {
+        if (raw.isNullOrBlank()) return DEFAULT_WORK_HOUR_PRESETS
+        val maxMin = 23 * 60 + 59
+        val out = LinkedHashSet<Pair<Int, Int>>()
+        raw.split(',').forEach { token ->
+            val clean = token.trim()
+            val dash = clean.indexOf('-')
+            if (dash > 0) {
+                val s = clean.substring(0, dash).toIntOrNull()?.coerceIn(0, maxMin)
+                val e = clean.substring(dash + 1).toIntOrNull()?.coerceIn(0, maxMin)
+                if (s != null && e != null && s != e) {
+                    out.add(s to e)
+                }
+            }
+        }
+        return if (out.isEmpty()) DEFAULT_WORK_HOUR_PRESETS else out.take(6)
+    }
+
+    internal fun serializeWorkHourPresets(presets: List<Pair<Int, Int>>): String {
+        val maxMin = 23 * 60 + 59
+        return presets
+            .asSequence()
+            .map { (s, e) -> s.coerceIn(0, maxMin) to e.coerceIn(0, maxMin) }
+            .filter { (s, e) -> s != e }
+            .distinct()
+            .take(6)
+            .joinToString(",") { (s, e) -> "${s}-${e}" }
+    }
+
+    fun getWorkHourPresets(ctx: Context): List<Pair<Int, Int>> =
+        parseWorkHourPresets(prefs(ctx).getString(KEY_WORK_HOURS_PRESETS, null))
+
+    fun addWorkHourPreset(ctx: Context, startMin: Int, endMin: Int): List<Pair<Int, Int>> {
+        val maxMin = 23 * 60 + 59
+        val item = startMin.coerceIn(0, maxMin) to endMin.coerceIn(0, maxMin)
+        if (item.first == item.second) return getWorkHourPresets(ctx)
+        val next = (listOf(item) + getWorkHourPresets(ctx).filterNot { it == item }).take(6)
+        prefs(ctx).edit().putString(KEY_WORK_HOURS_PRESETS, serializeWorkHourPresets(next)).apply()
+        return next
+    }
+
+    fun removeWorkHourPreset(ctx: Context, startMin: Int, endMin: Int): List<Pair<Int, Int>> {
+        val current = getWorkHourPresets(ctx)
+        val filtered = current.filterNot { it == (startMin to endMin) }
+        val next = if (filtered.isEmpty()) DEFAULT_WORK_HOUR_PRESETS else filtered
+        prefs(ctx).edit().putString(KEY_WORK_HOURS_PRESETS, serializeWorkHourPresets(next)).apply()
+        return next
+    }
+
+    fun resetWorkHourPresets(ctx: Context): List<Pair<Int, Int>> {
+        prefs(ctx).edit().remove(KEY_WORK_HOURS_PRESETS).apply()
+        return DEFAULT_WORK_HOUR_PRESETS
     }
 }

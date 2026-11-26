@@ -1,13 +1,16 @@
 package com.terrasync.app
 
 import android.content.Context
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
 import com.google.gson.stream.JsonWriter
-import org.json.JSONArray
-import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -40,6 +43,166 @@ object LocalFolderStore {
 
     fun getCachedOrNull(): LocalStoreSnapshot? = cachedSnapshot
 
+    internal fun clearCacheForTest() = synchronized(lock) {
+        cachedSnapshot = null
+    }
+
+    internal fun flushPendingWritesForTest(ctx: Context) {
+        val snap = pendingWrite.getAndSet(null) ?: return
+        synchronized(lock) {
+            persistSnapshotToDisk(ctx.applicationContext, snap)
+        }
+    }
+
+    private fun JsonReader.nextStringOrEmpty(): String =
+        if (peek() == JsonToken.NULL) { skipValue(); "" } else nextString()
+
+    private fun JsonReader.nextLongOrZero(): Long =
+        if (peek() == JsonToken.NULL) { skipValue(); 0L } else nextLong()
+
+    private fun JsonReader.nextDoubleOrZero(): Double =
+        if (peek() == JsonToken.NULL) { skipValue(); 0.0 } else nextDouble()
+
+    private fun JsonReader.nextBooleanOrFalse(): Boolean =
+        if (peek() == JsonToken.NULL) { skipValue(); false } else nextBoolean()
+
+    internal fun readSnapshotFromStream(input: InputStream): LocalStoreSnapshot {
+        val layers = mutableListOf<LayerItem>()
+        val pins = mutableListOf<PinItem>()
+        val tracks = mutableListOf<TrackItem>()
+        JsonReader(InputStreamReader(BufferedInputStream(input, 32 * 1024), Charsets.UTF_8)).use { jr ->
+            jr.beginObject()
+            while (jr.hasNext()) {
+                when (jr.nextName()) {
+                    "layers" -> {
+                        if (jr.peek() == JsonToken.BEGIN_ARRAY) {
+                            jr.beginArray()
+                            while (jr.hasNext()) {
+                                var id = ""
+                                var name = "Local Folder"
+                                var createdBy = ""
+                                var creatorDeviceId = ""
+                                var updatedAt = 0L
+                                jr.beginObject()
+                                while (jr.hasNext()) {
+                                    when (jr.nextName()) {
+                                        "id" -> id = jr.nextStringOrEmpty()
+                                        "name" -> name = jr.nextStringOrEmpty().ifBlank { "Local Folder" }
+                                        "createdBy" -> createdBy = jr.nextStringOrEmpty()
+                                        "creatorDeviceId" -> creatorDeviceId = jr.nextStringOrEmpty()
+                                        "updatedAt" -> updatedAt = jr.nextLongOrZero()
+                                        else -> jr.skipValue()
+                                    }
+                                }
+                                jr.endObject()
+                                layers += LayerItem(
+                                    id = id,
+                                    name = name,
+                                    shareCode = "",
+                                    createdBy = createdBy,
+                                    creatorDeviceId = creatorDeviceId,
+                                    updatedAt = updatedAt
+                                )
+                            }
+                            jr.endArray()
+                        } else jr.skipValue()
+                    }
+                    "pins" -> {
+                        if (jr.peek() == JsonToken.BEGIN_ARRAY) {
+                            jr.beginArray()
+                            while (jr.hasNext()) {
+                                var id = ""
+                                var layerId = ""
+                                var name = "Pin"
+                                var description = ""
+                                var lat = 0.0
+                                var lng = 0.0
+                                var status = "pending"
+                                var issueReason = ""
+                                var updatedAt = 0L
+                                var isEdited = false
+                                var editedBy = ""
+                                var editedAt = 0L
+                                var editHistory = ""
+                                jr.beginObject()
+                                while (jr.hasNext()) {
+                                    when (jr.nextName()) {
+                                        "id" -> id = jr.nextStringOrEmpty()
+                                        "layerId" -> layerId = jr.nextStringOrEmpty()
+                                        "name" -> name = jr.nextStringOrEmpty().ifBlank { "Pin" }
+                                        "description" -> description = jr.nextStringOrEmpty()
+                                        "lat" -> lat = jr.nextDoubleOrZero()
+                                        "lng" -> lng = jr.nextDoubleOrZero()
+                                        "status" -> status = PinStatus.fromRaw(jr.nextStringOrEmpty()).key
+                                        "issueReason" -> issueReason = jr.nextStringOrEmpty()
+                                        "updatedAt" -> updatedAt = jr.nextLongOrZero()
+                                        "isEdited" -> isEdited = jr.nextBooleanOrFalse()
+                                        "editedBy" -> editedBy = jr.nextStringOrEmpty()
+                                        "editedAt" -> editedAt = jr.nextLongOrZero()
+                                        "editHistory" -> editHistory = jr.nextStringOrEmpty()
+                                        else -> jr.skipValue()
+                                    }
+                                }
+                                jr.endObject()
+                                pins += PinItem(
+                                    id = id,
+                                    layerId = layerId,
+                                    name = name,
+                                    description = description,
+                                    lat = lat,
+                                    lng = lng,
+                                    status = status,
+                                    issueReason = issueReason,
+                                    updatedAt = updatedAt,
+                                    isEdited = isEdited,
+                                    editedBy = editedBy,
+                                    editedAt = editedAt,
+                                    editHistory = editHistory
+                                )
+                            }
+                            jr.endArray()
+                        } else jr.skipValue()
+                    }
+                    "tracks" -> {
+                        if (jr.peek() == JsonToken.BEGIN_ARRAY) {
+                            jr.beginArray()
+                            while (jr.hasNext()) {
+                                var id = ""
+                                var layerId = ""
+                                var name = "Track"
+                                var coords = ""
+                                var updatedAt = 0L
+                                jr.beginObject()
+                                while (jr.hasNext()) {
+                                    when (jr.nextName()) {
+                                        "id" -> id = jr.nextStringOrEmpty()
+                                        "layerId" -> layerId = jr.nextStringOrEmpty()
+                                        "name" -> name = jr.nextStringOrEmpty().ifBlank { "Track" }
+                                        "coords" -> coords = jr.nextStringOrEmpty()
+                                        "updatedAt" -> updatedAt = jr.nextLongOrZero()
+                                        else -> jr.skipValue()
+                                    }
+                                }
+                                jr.endObject()
+                                tracks += TrackItem(
+                                    id = id,
+                                    layerId = layerId,
+                                    name = name,
+                                    coords = coords,
+                                    updatedAt = updatedAt
+                                )
+                            }
+                            jr.endArray()
+                        } else jr.skipValue()
+                    }
+                    else -> jr.skipValue()
+                }
+            }
+            jr.endObject()
+        }
+        return LocalStoreSnapshot(layers.sortedByDescending { it.updatedAt }, pins, tracks)
+    }
+
     fun preloadAsync(ctx: Context, onLoaded: ((LocalStoreSnapshot) -> Unit)? = null) {
         val existing = cachedSnapshot
         if (existing != null) {
@@ -64,56 +227,7 @@ object LocalFolderStore {
                 LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
             } else {
                 runCatching {
-                    val root = JSONObject(f.readText(Charsets.UTF_8))
-                    val layers = mutableListOf<LayerItem>()
-                    val pins = mutableListOf<PinItem>()
-                    val tracks = mutableListOf<TrackItem>()
-
-                    val lArr = root.optJSONArray("layers") ?: JSONArray()
-                    for (i in 0 until lArr.length()) {
-                        val o = lArr.getJSONObject(i)
-                        layers += LayerItem(
-                            id = o.optString("id"),
-                            name = o.optString("name", "Local Folder"),
-                            shareCode = "",
-                            createdBy = o.optString("createdBy"),
-                            creatorDeviceId = o.optString("creatorDeviceId"),
-                            updatedAt = o.optLong("updatedAt", 0L)
-                        )
-                    }
-
-                    val pArr = root.optJSONArray("pins") ?: JSONArray()
-                    for (i in 0 until pArr.length()) {
-                        val o = pArr.getJSONObject(i)
-                        pins += PinItem(
-                            id = o.optString("id"),
-                            layerId = o.optString("layerId"),
-                            name = o.optString("name", "Pin"),
-                            description = o.optString("description"),
-                            lat = o.optDouble("lat"),
-                            lng = o.optDouble("lng"),
-                            status = PinStatus.fromRaw(o.optString("status", "pending")).key,
-                            issueReason = o.optString("issueReason"),
-                            updatedAt = o.optLong("updatedAt", 0L),
-                            isEdited = o.optBoolean("isEdited", false),
-                            editedBy = o.optString("editedBy"),
-                            editedAt = o.optLong("editedAt", 0L),
-                            editHistory = o.optString("editHistory")
-                        )
-                    }
-
-                    val tArr = root.optJSONArray("tracks") ?: JSONArray()
-                    for (i in 0 until tArr.length()) {
-                        val o = tArr.getJSONObject(i)
-                        tracks += TrackItem(
-                            id = o.optString("id"),
-                            layerId = o.optString("layerId"),
-                            name = o.optString("name", "Track"),
-                            coords = o.optString("coords"),
-                            updatedAt = o.optLong("updatedAt", 0L)
-                        )
-                    }
-                    LocalStoreSnapshot(layers.sortedByDescending { it.updatedAt }, pins, tracks)
+                    FileInputStream(f).use { fis -> readSnapshotFromStream(fis) }
                 }.getOrElse {
                     LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
                 }

@@ -161,3 +161,44 @@ fun formatDistanceShort(meters: Double, unit: SpeedUnit = SpeedUnit.METRIC): Str
         else -> "${(safeMeters / 1000.0).toInt()} km"
     }
 }
+
+internal object SpeedFallbackEstimator {
+    data class SpeedSampleState(
+        val derivedSpeedMps: Float = 0f,
+        val lat: Double = Double.NaN,
+        val lng: Double = Double.NaN,
+        val provider: String = "",
+        val elapsedMs: Long = 0L
+    )
+
+    fun update(
+        prev: SpeedSampleState,
+        lat: Double,
+        lng: Double,
+        provider: String,
+        hasSpeed: Boolean,
+        speedMps: Float,
+        accurate: Boolean,
+        elapsedMs: Long
+    ): SpeedSampleState {
+        if (hasSpeed && speedMps > 0.1f) {
+            return SpeedSampleState(speedMps, lat, lng, provider, elapsedMs)
+        }
+        if (!accurate) return prev
+        if (prev.lat.isNaN() || prev.lng.isNaN()) {
+            return SpeedSampleState(0f, lat, lng, provider, elapsedMs)
+        }
+        val dtSec = (elapsedMs - prev.elapsedMs) / 1000f
+        val dist = RoutingEngine.haversineMeters(prev.lat, prev.lng, lat, lng).toFloat()
+        // Ignore cross-provider echoes (e.g., FUSED_PROVIDER mirroring GPS_PROVIDER at the same point).
+        if (dist < 1.5f && provider != prev.provider && dtSec < 2.2f) {
+            return prev
+        }
+        if (dtSec < 0.35f) return prev
+        if (dtSec in 0.35f..5.0f) {
+            val speed = if (dist >= 1.5f) (dist / dtSec).coerceAtMost(55f) else 0f
+            return SpeedSampleState(speed, lat, lng, provider, elapsedMs)
+        }
+        return SpeedSampleState(0f, lat, lng, provider, elapsedMs)
+    }
+}

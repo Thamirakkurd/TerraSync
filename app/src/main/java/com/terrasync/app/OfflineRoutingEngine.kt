@@ -497,6 +497,472 @@ object OfflineRoutingEngine {
         downloadRoadGraphInternal(ctx, packId, regionName, minLat, minLng, maxLat, maxLng, onProgress, onDone)
     }
 
+    internal class RoadGraphStagingCompiler(
+        private val stageDir: File,
+        private val checkCancelled: () -> Unit,
+        private val emitProgress: (String, Int, Boolean) -> Unit
+    ) : AutoCloseable {
+        val stageDbFile = File(stageDir, "stage.db")
+        private val db: SQLiteDatabase
+        private val openStmts = ArrayList<SQLiteStatement>(5)
+        private val stmtChunkNode: SQLiteStatement
+        private val stmtNodeInsert: SQLiteStatement
+        private val stmtWayInsert: SQLiteStatement
+        private val stmtNameInsert: SQLiteStatement
+        private val stmtEdgeInsert: SQLiteStatement
+        private val nodeCache = android.util.LruCache<Long, NodePt>(16384)
+        private val nameCache = android.util.LruCache<String, Int>(2048).apply { put("", 0) }
+        private var nextNodeIdx = 0
+        private var nextNameIdx = 1
+
+        init {
+            stageDir.mkdirs()
+            stageDbFile.delete()
+            File(stageDir, "stage.db-journal").delete()
+            File(stageDir, "stage.db-wal").delete()
+            File(stageDir, "stage.db-shm").delete()
+
+            db = SQLiteDatabase.openOrCreateDatabase(stageDbFile, null)
+            db.rawQuery("PRAGMA journal_mode = OFF", null).use { it.moveToFirst() }
+            db.execSQL("PRAGMA synchronous = OFF")
+            db.execSQL("PRAGMA temp_store = FILE")
+            db.execSQL("PRAGMA cache_size = -4000")
+            db.execSQL("CREATE TABLE chunk_nodes(osm_id INTEGER PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL)")
+            db.execSQL("CREATE TABLE nodes(idx INTEGER PRIMARY KEY, osm_id INTEGER UNIQUE NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL)")
+            db.execSQL("CREATE TABLE ways(way_id INTEGER PRIMARY KEY)")
+            db.execSQL("CREATE TABLE names(idx INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL)")
+            db.execSQL("CREATE TABLE edges(from_idx INTEGER NOT NULL, to_idx INTEGER NOT NULL, dist REAL NOT NULL, speed REAL NOT NULL, flags INTEGER NOT NULL, name_idx INTEGER NOT NULL)")
+            db.execSQL("INSERT INTO names(idx, name) VALUES (0, '')")
+
+            stmtChunkNode = db.compileStatement("INSERT OR REPLACE INTO chunk_nodes(osm_id, lat, lon) VALUES (?, ?, ?)").also { openStmts.add(it) }
+            stmtNodeInsert = db.compileStatement("INSERT INTO nodes(idx, osm_id, lat, lon) VALUES (?, ?, ?, ?)").also { openStmts.add(it) }
+            stmtWayInsert = db.compileStatement("INSERT OR IGNORE INTO ways(way_id) VALUES (?)").also { openStmts.add(it) }
+            stmtNameInsert = db.compileStatement("INSERT OR IGNORE INTO names(idx, name) VALUES (?, ?)").also { openStmts.add(it) }
+            stmtEdgeInsert = db.compileStatement("INSERT INTO edges(from_idx, to_idx, dist, speed, flags, name_idx) VALUES (?, ?, ?, ?, ?, ?)").also { openStmts.add(it) }
+        }
+
+        private fun resolveNameIdx(name: String): Int {
+            if (name.isEmpty()) return 0
+            nameCache.get(name)?.let { return it }
+            db.rawQuery("SELECT idx FROM names WHERE name = ? LIMIT 1", arrayOf(name)).use { c ->
+                if (c.moveToFirst()) {
+                    val existing = c.getInt(0)
+                    nameCache.put(name, existing)
+                    return existing
+                }
+            }
+            val idx = nextNameIdx++
+            stmtNameInsert.clearBindings()
+            stmtNameInsert.bindLong(1, idx.toLong())
+            stmtNameInsert.bindString(2, name)
+            stmtNameInsert.executeInsert()
+            nameCache.put(name, idx)
+            return idx
+        }
+
+        private fun resolveWayNodes(
+            wayNodeIds: List<Long>,
+            resolved: HashMap<Long, NodePt>,
+            missing: ArrayList<Long>,
+            stillMissing: ArrayList<Long>,
+            seenMissing: HashSet<Long>,
+            sb: StringBuilder
+        ) {
+            resolved.clear()
+            missing.clear()
+            stillMissing.clear()
+            seenMissing.clear()
+
+            for (i in 0 until wayNodeIds.size) {
+                val id = wayNodeIds[i]
+                if (resolved.containsKey(id)) continue
+                val cached = nodeCache.get(id)
+                if (cached != null) {
+                    resolved[id] = cached
+                } else if (seenMissing.add(id)) {
+                    missing.add(id)
+                }
+            }
+            if (missing.isEmpty()) return
+
+            var offset = 0
+            while (offset < missing.size) {
+                val end = minOf(offset + 400, missing.size)
+                sb.setLength(0)
+                sb.append("SELECT osm_id, idx, lat, lon FROM nodes WHERE osm_id IN (")
+                for (i in offset until end) {
+                    if (i > offset) sb.append(',')
+                    sb.append(missing[i])
+                }
+                sb.append(')')
+                db.rawQuery(sb.toString(), null).use { c ->
+                    while (c.moveToNext()) {
+                        val osmId = c.getLong(0)
+                        val pt = NodePt(c.getInt(1), c.getDouble(2).toFloat(), c.getDouble(3).toFloat())
+                        resolved[osmId] = pt
+                        nodeCache.put(osmId, pt)
+                    }
+                }
+                offset = end
+            }
+
+            for (i in 0 until missing.size) {
+                val id = missing[i]
+                if (!resolved.containsKey(id)) {
+                    stillMissing.add(id)
+                }
+            }
+            if (stillMissing.isEmpty()) return
+
+            offset = 0
+            while (offset < stillMissing.size) {
+                val end = minOf(offset + 400, stillMissing.size)
+                sb.setLength(0)
+                sb.append("SELECT osm_id, lat, lon FROM chunk_nodes WHERE osm_id IN (")
+                for (i in offset until end) {
+                    if (i > offset) sb.append(',')
+                    sb.append(stillMissing[i])
+                }
+                sb.append(')')
+                db.rawQuery(sb.toString(), null).use { c ->
+                    while (c.moveToNext()) {
+                        val osmId = c.getLong(0)
+                        if (resolved.containsKey(osmId)) continue
+                        val lat = c.getDouble(1)
+                        val lon = c.getDouble(2)
+                        val idx = nextNodeIdx++
+                        stmtNodeInsert.clearBindings()
+                        stmtNodeInsert.bindLong(1, idx.toLong())
+                        stmtNodeInsert.bindLong(2, osmId)
+                        stmtNodeInsert.bindDouble(3, lat)
+                        stmtNodeInsert.bindDouble(4, lon)
+                        stmtNodeInsert.executeInsert()
+                        val pt = NodePt(idx, lat.toFloat(), lon.toFloat())
+                        resolved[osmId] = pt
+                        nodeCache.put(osmId, pt)
+                    }
+                }
+                offset = end
+            }
+        }
+
+        fun streamChunkIntoDb(chunkFile: File, chunkLabel: String, basePct: Int, chunkCount: Int) {
+            emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (45 / chunkCount), true)
+            var ops = 0
+            var inTx = true
+            db.beginTransaction()
+            val (parsedElements, remarkErr) = try {
+                FileInputStream(chunkFile).use { fis ->
+                    streamOverpassNodes(fis, checkCancelled) { id, lat, lon ->
+                        stmtChunkNode.clearBindings()
+                        stmtChunkNode.bindLong(1, id)
+                        stmtChunkNode.bindDouble(2, lat)
+                        stmtChunkNode.bindDouble(3, lon)
+                        stmtChunkNode.executeInsert()
+                        ops++
+                        if (ops >= 1000) {
+                            db.setTransactionSuccessful()
+                            db.endTransaction()
+                            db.beginTransaction()
+                            ops = 0
+                            emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (55 / chunkCount), false)
+                        }
+                    }
+                }.also {
+                    if (inTx) {
+                        db.setTransactionSuccessful()
+                        db.endTransaction()
+                        inTx = false
+                    }
+                }
+            } finally {
+                if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
+            }
+            if (!parsedElements) {
+                throw IllegalStateException(remarkErr ?: "Overpass returned invalid JSON")
+            }
+
+            emitProgress("Processing roads ($chunkLabel)...", basePct + (62 / chunkCount), true)
+            val wayNodeMap = HashMap<Long, NodePt>(64)
+            val missingIds = ArrayList<Long>(64)
+            val stillMissingIds = ArrayList<Long>(64)
+            val seenMissing = HashSet<Long>(64)
+            val inClauseSb = StringBuilder(256)
+            ops = 0
+            inTx = true
+            db.beginTransaction()
+            try {
+                FileInputStream(chunkFile).use { fis ->
+                    streamOverpassWays(fis, checkCancelled) { wid, hw, access, roadName, onewayTag, junction, wayNodeIds ->
+                        if (access == "private" || access == "no") return@streamOverpassWays
+
+                        stmtWayInsert.clearBindings()
+                        stmtWayInsert.bindLong(1, wid)
+                        if (stmtWayInsert.executeInsert() == -1L) return@streamOverpassWays
+
+                        val (carOk, bikeOk, walkOk, carSpeed) = when (hw) {
+                            "motorway", "motorway_link" -> Quad(true, false, false, 95f)
+                            "trunk", "trunk_link" -> Quad(true, true, true, 80f)
+                            "primary", "primary_link" -> Quad(true, true, true, 65f)
+                            "secondary", "secondary_link" -> Quad(true, true, true, 55f)
+                            "tertiary", "tertiary_link" -> Quad(true, true, true, 45f)
+                            "unclassified", "road" -> Quad(true, true, true, 40f)
+                            "residential" -> Quad(true, true, true, 30f)
+                            "living_street", "service" -> Quad(true, true, true, 20f)
+                            "track" -> Quad(true, true, true, 16f)
+                            "cycleway" -> Quad(false, true, true, 15f)
+                            "path", "footway" -> Quad(false, true, true, 10f)
+                            else -> Quad(false, false, false, 15f)
+                        }
+
+                        val isOneWayFwd = onewayTag == "yes" || onewayTag == "true" || onewayTag == "1" ||
+                            junction == "roundabout" || hw == "motorway" || hw == "motorway_link"
+                        val isOneWayRev = onewayTag == "-1"
+                        val fwdFlags = (if (carOk && !isOneWayRev) FLAG_CAR else 0) or
+                            (if (bikeOk && !isOneWayRev) FLAG_BIKE else 0) or
+                            (if (walkOk) FLAG_WALK else 0)
+                        val revFlags = (if (carOk && !isOneWayFwd) FLAG_CAR else 0) or
+                            (if (bikeOk && !isOneWayFwd) FLAG_BIKE else 0) or
+                            (if (walkOk) FLAG_WALK else 0)
+                        if (fwdFlags == 0 && revFlags == 0) return@streamOverpassWays
+
+                        val nIdx = resolveNameIdx(roadName)
+                        resolveWayNodes(wayNodeIds, wayNodeMap, missingIds, stillMissingIds, seenMissing, inClauseSb)
+                        var prev: NodePt? = null
+                        for (k in 0 until wayNodeIds.size) {
+                            val curr = wayNodeMap[wayNodeIds[k]]
+                            if (prev != null && curr != null && prev.idx != curr.idx) {
+                                val d = RoutingEngine.haversineMeters(
+                                    prev.lat.toDouble(), prev.lng.toDouble(),
+                                    curr.lat.toDouble(), curr.lng.toDouble()
+                                ).toFloat().coerceAtLeast(0.5f)
+                                if (fwdFlags != 0) {
+                                    stmtEdgeInsert.clearBindings()
+                                    stmtEdgeInsert.bindLong(1, prev.idx.toLong())
+                                    stmtEdgeInsert.bindLong(2, curr.idx.toLong())
+                                    stmtEdgeInsert.bindDouble(3, d.toDouble())
+                                    stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
+                                    stmtEdgeInsert.bindLong(5, fwdFlags.toLong())
+                                    stmtEdgeInsert.bindLong(6, nIdx.toLong())
+                                    stmtEdgeInsert.executeInsert()
+                                    ops++
+                                }
+                                if (revFlags != 0) {
+                                    stmtEdgeInsert.clearBindings()
+                                    stmtEdgeInsert.bindLong(1, curr.idx.toLong())
+                                    stmtEdgeInsert.bindLong(2, prev.idx.toLong())
+                                    stmtEdgeInsert.bindDouble(3, d.toDouble())
+                                    stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
+                                    stmtEdgeInsert.bindLong(5, revFlags.toLong())
+                                    stmtEdgeInsert.bindLong(6, nIdx.toLong())
+                                    stmtEdgeInsert.executeInsert()
+                                    ops++
+                                }
+                            }
+                            if (curr != null) prev = curr
+                        }
+                        if (ops >= 1000) {
+                            db.setTransactionSuccessful()
+                            db.endTransaction()
+                            db.beginTransaction()
+                            ops = 0
+                            emitProgress("Processing roads ($chunkLabel)...", basePct + (72 / chunkCount), false)
+                        }
+                    }
+                }
+                if (inTx) {
+                    db.setTransactionSuccessful()
+                    db.endTransaction()
+                    inTx = false
+                }
+            } finally {
+                if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
+            }
+        }
+
+        fun clearChunkNodes() {
+            db.execSQL("DELETE FROM chunk_nodes")
+        }
+
+        fun counts(): Triple<Int, Int, Int> {
+            val nodeCount = db.rawQuery("SELECT COUNT(*) FROM nodes", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+            val edgeCount = db.rawQuery("SELECT COUNT(*) FROM edges", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+            val nameCount = db.rawQuery("SELECT COUNT(*) FROM names", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+            return Triple(nodeCount, edgeCount, nameCount)
+        }
+
+        fun writeTsr(
+            partFile: File,
+            outFile: File,
+            regionName: String,
+            sLat: Double,
+            wLng: Double,
+            nLat: Double,
+            eLng: Double,
+            now: Long,
+            nodeCount: Int,
+            edgeCount: Int,
+            nameCount: Int
+        ): OfflineRoadRegion {
+            partFile.delete()
+            FileOutputStream(partFile).use { fos ->
+                DataOutputStream(GZIPOutputStream(BufferedOutputStream(fos, 32 * 1024))).use { dos ->
+                    writeTsrHeader(dos, regionName, sLat, wLng, nLat, eLng, now, nodeCount, edgeCount, nameCount)
+
+                    var lastNameIdx = -1
+                    while (true) {
+                        checkCancelled()
+                        var count = 0
+                        db.rawQuery(
+                            "SELECT idx, name FROM names WHERE idx > ? ORDER BY idx ASC LIMIT 5000",
+                            arrayOf(lastNameIdx.toString())
+                        ).use { c ->
+                            while (c.moveToNext()) {
+                                lastNameIdx = c.getInt(0)
+                                dos.writeUTF(c.getString(1) ?: "")
+                                count++
+                            }
+                        }
+                        if (count < 5000) break
+                    }
+
+                    var lastNodeIdx = -1
+                    while (true) {
+                        checkCancelled()
+                        var count = 0
+                        db.rawQuery(
+                            "SELECT idx, lat, lon FROM nodes WHERE idx > ? ORDER BY idx ASC LIMIT 10000",
+                            arrayOf(lastNodeIdx.toString())
+                        ).use { c ->
+                            while (c.moveToNext()) {
+                                lastNodeIdx = c.getInt(0)
+                                dos.writeFloat(c.getDouble(1).toFloat())
+                                dos.writeFloat(c.getDouble(2).toFloat())
+                                count++
+                            }
+                        }
+                        if (count < 10000) break
+                    }
+                    emitProgress("Saving offline road graph (92%)...", 92, true)
+
+                    var lastEdgeRowId = 0L
+                    var writtenEdges = 0
+                    while (true) {
+                        checkCancelled()
+                        var count = 0
+                        db.rawQuery(
+                            "SELECT rowid, from_idx, to_idx, dist, speed, flags, name_idx FROM edges WHERE rowid > ? ORDER BY rowid ASC LIMIT 10000",
+                            arrayOf(lastEdgeRowId.toString())
+                        ).use { c ->
+                            while (c.moveToNext()) {
+                                lastEdgeRowId = c.getLong(0)
+                                dos.writeInt(c.getInt(1))
+                                dos.writeInt(c.getInt(2))
+                                dos.writeFloat(c.getDouble(3).toFloat())
+                                dos.writeFloat(c.getDouble(4).toFloat())
+                                dos.writeByte(c.getInt(5))
+                                dos.writeInt(c.getInt(6))
+                                count++
+                            }
+                        }
+                        writtenEdges += count
+                        val savePct = 92 + ((writtenEdges.toLong() * 7L) / edgeCount.coerceAtLeast(1)).toInt()
+                        emitProgress("Saving offline road graph ($savePct%)...", savePct, false)
+                        if (count < 10000) break
+                    }
+                    dos.flush()
+                }
+                runCatching { fos.fd.sync() }
+            }
+
+            checkCancelled()
+            if (outFile.exists()) outFile.delete()
+            if (!partFile.renameTo(outFile)) {
+                partFile.copyTo(outFile, overwrite = true)
+                partFile.delete()
+            }
+
+            return OfflineRoadRegion(
+                fileName = outFile.name,
+                name = regionName,
+                minLat = sLat,
+                minLng = wLng,
+                maxLat = nLat,
+                maxLng = eLng,
+                nodeCount = nodeCount,
+                edgeCount = edgeCount,
+                sizeBytes = outFile.length(),
+                downloadedAt = now
+            )
+        }
+
+        override fun close() {
+            for (stmt in openStmts) runCatching { stmt.close() }
+            runCatching { db.close() }
+            stageDbFile.delete()
+            File(stageDir, "stage.db-journal").delete()
+            File(stageDir, "stage.db-wal").delete()
+            File(stageDir, "stage.db-shm").delete()
+        }
+    }
+
+    internal fun compileLocalOverpassChunksToTsr(
+        ctx: Context,
+        regionName: String,
+        packId: String?,
+        minLat: Double,
+        minLng: Double,
+        maxLat: Double,
+        maxLng: Double,
+        chunkFiles: List<File>,
+        checkCancelled: () -> Unit = {}
+    ): OfflineRoadRegion? {
+        val jobKey = packId ?: safeName(regionName)
+        val stageDir = stagingDir(ctx, "test_$jobKey")
+        val sLat = minOf(minLat, maxLat)
+        val nLat = maxOf(minLat, maxLat)
+        val wLng = minOf(minLng, maxLng)
+        val eLng = maxOf(minLng, maxLng)
+        val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}.tsr"
+        val outFile = File(dir(ctx), fileName)
+        val partFile = File(dir(ctx), "$fileName.part")
+        var finished = false
+        try {
+            RoadGraphStagingCompiler(stageDir, checkCancelled) { _, _, _ -> }.use { compiler ->
+                val chunkCount = chunkFiles.size.coerceAtLeast(1)
+                for ((idx, chunkFile) in chunkFiles.withIndex()) {
+                    checkCancelled()
+                    compiler.streamChunkIntoDb(chunkFile, chunkFile.name, (idx * 80) / chunkCount, chunkCount)
+                    compiler.clearChunkNodes()
+                }
+                val (nodeCount, edgeCount, nameCount) = compiler.counts()
+                if (nodeCount == 0 || edgeCount == 0) return null
+                val meta = compiler.writeTsr(
+                    partFile = partFile,
+                    outFile = outFile,
+                    regionName = regionName,
+                    sLat = sLat,
+                    wLng = wLng,
+                    nLat = nLat,
+                    eLng = eLng,
+                    now = System.currentTimeMillis(),
+                    nodeCount = nodeCount,
+                    edgeCount = edgeCount,
+                    nameCount = nameCount
+                )
+                synchronized(graphCacheLock) {
+                    if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                }
+                headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
+                finished = true
+                return meta
+            }
+        } finally {
+            partFile.takeIf { it.exists() }?.delete()
+            if (finished) stageDir.deleteRecursively() else stageDir.deleteRecursively()
+        }
+    }
+
     private fun downloadRoadGraphInternal(
         ctx: Context,
         packId: String?,
@@ -510,28 +976,23 @@ object OfflineRoutingEngine {
     ) {
         val jobKey = packId ?: safeName(regionName)
         val job = DownloadJob()
-        var prevCancelledJob: DownloadJob? = null
-        synchronized(activeDownloads) {
+        val prevCancelledJob: DownloadJob? = synchronized(activeDownloads) {
             val existing = activeDownloads[jobKey]
             if (existing != null && !existing.cancelled.get()) {
                 onDone(null, "Road download already running")
                 return
             }
-            prevCancelledJob = existing
             activeDownloads[jobKey] = job
+            existing
         }
 
         Thread {
             val stageDir = stagingDir(ctx, jobKey)
-            val stageDbFile = File(stageDir, "stage.db")
             var activePartFile: File? = null
-            var stageDb: SQLiteDatabase? = null
-            val openStmts = ArrayList<SQLiteStatement>(5)
+            var compiler: RoadGraphStagingCompiler? = null
             var finishedCleanly = false
-            var wasCancelled = false
             var resultRegion: OfflineRoadRegion? = null
             var resultError: String? = null
-            var invokeDone = false
             var lastProgressMs = 0L
 
             fun emitProgress(msg: String, pct: Int, force: Boolean = false) {
@@ -571,593 +1032,228 @@ object OfflineRoutingEngine {
                 checkCancelled()
                 if (!hasEnoughStorage(ctx, MIN_FREE_BYTES_ROADS)) {
                     resultError = "Not enough free storage to download offline roads"
-                    invokeDone = true
                 } else {
-                val sLat = minOf(minLat, maxLat)
-                val nLat = maxOf(minLat, maxLat)
-                val wLng = minOf(minLng, maxLng)
-                val eLng = maxOf(minLng, maxLng)
-                val maxSpan = maxOf(nLat - sLat, eLng - wLng)
+                    val sLat = minOf(minLat, maxLat)
+                    val nLat = maxOf(minLat, maxLat)
+                    val wLng = minOf(minLng, maxLng)
+                    val eLng = maxOf(minLng, maxLng)
+                    val maxSpan = maxOf(nLat - sLat, eLng - wLng)
 
-                val fullStreetRegex =
-                    "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|path|footway|cycleway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|road)$"
-                val arterialRegex =
-                    "^(motorway|trunk|primary|secondary|tertiary|unclassified|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
-                val highwayOnlyRegex =
-                    "^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
+                    val fullStreetRegex =
+                        "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|path|footway|cycleway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|road)$"
+                    val arterialRegex =
+                        "^(motorway|trunk|primary|secondary|tertiary|unclassified|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
+                    val highwayOnlyRegex =
+                        "^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
 
-                fun buildQuery(regex: String, aLat: Double, aLng: Double, bLat: Double, bLng: Double): String = """
-                    [out:json][timeout:60];
-                    way["highway"~"$regex"]($aLat,$aLng,$bLat,$bLng);
-                    out body;
-                    >;
-                    out skel qt;
-                """.trimIndent()
+                    fun buildQuery(regex: String, aLat: Double, aLng: Double, bLat: Double, bLng: Double): String = """
+                        [out:json][timeout:60];
+                        way["highway"~"$regex"]($aLat,$aLng,$bLat,$bLng);
+                        out body;
+                        >;
+                        out skel qt;
+                    """.trimIndent()
 
-                val chunks: List<ChunkSpec> = when (packId) {
-                    OfflineMapManager.PACK_KURDISTAN_ID -> listOf(
-                        ChunkSpec("Kurdistan highways", buildQuery(arterialRegex, sLat, wLng, nLat, eLng)),
-                        ChunkSpec("Duhok & Zakho streets", buildQuery(fullStreetRegex, 36.78, 42.55, 37.22, 43.30)),
-                        ChunkSpec("Akre & Shekhan streets", buildQuery(fullStreetRegex, 36.65, 43.28, 37.10, 44.08)),
-                        ChunkSpec("Erbil streets", buildQuery(fullStreetRegex, 36.05, 43.88, 36.32, 44.18)),
-                        ChunkSpec("Sulaymaniyah streets", buildQuery(fullStreetRegex, 35.48, 45.32, 35.65, 45.55))
-                    )
-                    OfflineMapManager.PACK_SOUTHERN_IRAQ_ID -> {
-                        val midLat = (sLat + nLat) * 0.5
-                        listOf(
-                            ChunkSpec("Southern Iraq North highways", buildQuery(highwayOnlyRegex, midLat - 0.02, wLng, nLat, eLng)),
-                            ChunkSpec("Southern Iraq South highways", buildQuery(highwayOnlyRegex, sLat, wLng, midLat + 0.02, eLng))
+                    val chunks: List<ChunkSpec> = when (packId) {
+                        OfflineMapManager.PACK_KURDISTAN_ID -> listOf(
+                            ChunkSpec("Kurdistan highways", buildQuery(arterialRegex, sLat, wLng, nLat, eLng)),
+                            ChunkSpec("Duhok & Zakho streets", buildQuery(fullStreetRegex, 36.78, 42.55, 37.22, 43.30)),
+                            ChunkSpec("Akre & Shekhan streets", buildQuery(fullStreetRegex, 36.65, 43.28, 37.10, 44.08)),
+                            ChunkSpec("Erbil streets", buildQuery(fullStreetRegex, 36.05, 43.88, 36.32, 44.18)),
+                            ChunkSpec("Sulaymaniyah streets", buildQuery(fullStreetRegex, 35.48, 45.32, 35.65, 45.55))
                         )
-                    }
-                    else -> {
-                        val reg = if (maxSpan <= 1.4) fullStreetRegex else highwayOnlyRegex
-                        listOf(ChunkSpec("$regionName roads", buildQuery(reg, sLat, wLng, nLat, eLng)))
-                    }
-                }
-
-                val endpoints = listOf(
-                    "https://overpass-api.de/api/interpreter",
-                    "https://overpass.kumi.systems/api/interpreter",
-                    "https://lz4.overpass-api.de/api/interpreter"
-                )
-
-                stageDir.mkdirs()
-                stageDbFile.delete()
-                File(stageDir, "stage.db-journal").delete()
-                File(stageDir, "stage.db-wal").delete()
-                File(stageDir, "stage.db-shm").delete()
-
-                val db = SQLiteDatabase.openOrCreateDatabase(stageDbFile, null)
-                stageDb = db
-                db.rawQuery("PRAGMA journal_mode = OFF", null).use { it.moveToFirst() }
-                db.execSQL("PRAGMA synchronous = OFF")
-                db.execSQL("PRAGMA temp_store = FILE")
-                db.execSQL("PRAGMA cache_size = -4000")
-                db.execSQL("CREATE TABLE chunk_nodes(osm_id INTEGER PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL)")
-                db.execSQL("CREATE TABLE nodes(idx INTEGER PRIMARY KEY, osm_id INTEGER UNIQUE NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL)")
-                db.execSQL("CREATE TABLE ways(way_id INTEGER PRIMARY KEY)")
-                db.execSQL("CREATE TABLE names(idx INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL)")
-                db.execSQL("CREATE TABLE edges(from_idx INTEGER NOT NULL, to_idx INTEGER NOT NULL, dist REAL NOT NULL, speed REAL NOT NULL, flags INTEGER NOT NULL, name_idx INTEGER NOT NULL)")
-                db.execSQL("INSERT INTO names(idx, name) VALUES (0, '')")
-
-                val stmtChunkNode = db.compileStatement("INSERT OR REPLACE INTO chunk_nodes(osm_id, lat, lon) VALUES (?, ?, ?)").also { openStmts.add(it) }
-                val stmtNodeInsert = db.compileStatement("INSERT INTO nodes(idx, osm_id, lat, lon) VALUES (?, ?, ?, ?)").also { openStmts.add(it) }
-                val stmtWayInsert = db.compileStatement("INSERT OR IGNORE INTO ways(way_id) VALUES (?)").also { openStmts.add(it) }
-                val stmtNameInsert = db.compileStatement("INSERT OR IGNORE INTO names(idx, name) VALUES (?, ?)").also { openStmts.add(it) }
-                val stmtEdgeInsert = db.compileStatement("INSERT INTO edges(from_idx, to_idx, dist, speed, flags, name_idx) VALUES (?, ?, ?, ?, ?, ?)").also { openStmts.add(it) }
-
-                val nodeCache = android.util.LruCache<Long, NodePt>(16384)
-                val nameCache = android.util.LruCache<String, Int>(2048).apply { put("", 0) }
-                var nextNodeIdx = 0
-                var nextNameIdx = 1
-
-                fun resolveNameIdx(name: String): Int {
-                    if (name.isEmpty()) return 0
-                    nameCache.get(name)?.let { return it }
-                    db.rawQuery("SELECT idx FROM names WHERE name = ? LIMIT 1", arrayOf(name)).use { c ->
-                        if (c.moveToFirst()) {
-                            val existing = c.getInt(0)
-                            nameCache.put(name, existing)
-                            return existing
+                        OfflineMapManager.PACK_SOUTHERN_IRAQ_ID -> {
+                            val midLat = (sLat + nLat) * 0.5
+                            listOf(
+                                ChunkSpec("Southern Iraq North highways", buildQuery(highwayOnlyRegex, midLat - 0.02, wLng, nLat, eLng)),
+                                ChunkSpec("Southern Iraq South highways", buildQuery(highwayOnlyRegex, sLat, wLng, midLat + 0.02, eLng))
+                            )
+                        }
+                        else -> {
+                            val reg = if (maxSpan <= 1.4) fullStreetRegex else highwayOnlyRegex
+                            listOf(ChunkSpec("$regionName roads", buildQuery(reg, sLat, wLng, nLat, eLng)))
                         }
                     }
-                    val idx = nextNameIdx++
-                    stmtNameInsert.clearBindings()
-                    stmtNameInsert.bindLong(1, idx.toLong())
-                    stmtNameInsert.bindString(2, name)
-                    stmtNameInsert.executeInsert()
-                    nameCache.put(name, idx)
-                    return idx
-                }
 
-                fun resolveWayNodes(
-                    wayNodeIds: List<Long>,
-                    resolved: HashMap<Long, NodePt>,
-                    missing: ArrayList<Long>,
-                    stillMissing: ArrayList<Long>,
-                    seenMissing: HashSet<Long>,
-                    sb: StringBuilder
-                ) {
-                    resolved.clear()
-                    missing.clear()
-                    stillMissing.clear()
-                    seenMissing.clear()
+                    val endpoints = listOf(
+                        "https://overpass-api.de/api/interpreter",
+                        "https://overpass.kumi.systems/api/interpreter",
+                        "https://lz4.overpass-api.de/api/interpreter"
+                    )
 
-                    for (i in 0 until wayNodeIds.size) {
-                        val id = wayNodeIds[i]
-                        if (resolved.containsKey(id)) continue
-                        val cached = nodeCache.get(id)
-                        if (cached != null) {
-                            resolved[id] = cached
-                        } else if (seenMissing.add(id)) {
-                            missing.add(id)
-                        }
-                    }
-                    if (missing.isEmpty()) return
-
-                    var offset = 0
-                    while (offset < missing.size) {
-                        val end = minOf(offset + 400, missing.size)
-                        sb.setLength(0)
-                        sb.append("SELECT osm_id, idx, lat, lon FROM nodes WHERE osm_id IN (")
-                        for (i in offset until end) {
-                            if (i > offset) sb.append(',')
-                            sb.append(missing[i])
-                        }
-                        sb.append(')')
-                        db.rawQuery(sb.toString(), null).use { c ->
-                            while (c.moveToNext()) {
-                                val osmId = c.getLong(0)
-                                val pt = NodePt(c.getInt(1), c.getDouble(2).toFloat(), c.getDouble(3).toFloat())
-                                resolved[osmId] = pt
-                                nodeCache.put(osmId, pt)
-                            }
-                        }
-                        offset = end
+                    val activeCompiler = RoadGraphStagingCompiler(stageDir, ::checkCancelled, ::emitProgress).also {
+                        compiler = it
                     }
 
-                    for (i in 0 until missing.size) {
-                        val id = missing[i]
-                        if (!resolved.containsKey(id)) {
-                            stillMissing.add(id)
-                        }
-                    }
-                    if (stillMissing.isEmpty()) return
+                    fun downloadChunkToFile(cIdx: Int, chunk: ChunkSpec, outFile: File): String? {
+                        val partFile = File(stageDir, "${outFile.name}.part")
+                        var lastErr = "Could not download road data"
+                        val basePct = (cIdx * 80) / chunks.size
 
-                    offset = 0
-                    while (offset < stillMissing.size) {
-                        val end = minOf(offset + 400, stillMissing.size)
-                        sb.setLength(0)
-                        sb.append("SELECT osm_id, lat, lon FROM chunk_nodes WHERE osm_id IN (")
-                        for (i in offset until end) {
-                            if (i > offset) sb.append(',')
-                            sb.append(stillMissing[i])
-                        }
-                        sb.append(')')
-                        db.rawQuery(sb.toString(), null).use { c ->
-                            while (c.moveToNext()) {
-                                val osmId = c.getLong(0)
-                                if (resolved.containsKey(osmId)) continue
-                                val lat = c.getDouble(1)
-                                val lon = c.getDouble(2)
-                                val idx = nextNodeIdx++
-                                stmtNodeInsert.clearBindings()
-                                stmtNodeInsert.bindLong(1, idx.toLong())
-                                stmtNodeInsert.bindLong(2, osmId)
-                                stmtNodeInsert.bindDouble(3, lat)
-                                stmtNodeInsert.bindDouble(4, lon)
-                                stmtNodeInsert.executeInsert()
-                                val pt = NodePt(idx, lat.toFloat(), lon.toFloat())
-                                resolved[osmId] = pt
-                                nodeCache.put(osmId, pt)
-                            }
-                        }
-                        offset = end
-                    }
-                }
-
-                fun downloadChunkToFile(cIdx: Int, chunk: ChunkSpec, outFile: File): String? {
-                    val partFile = File(stageDir, "${outFile.name}.part")
-                    var lastErr = "Could not download road data"
-                    val basePct = (cIdx * 80) / chunks.size
-
-                    for ((epIdx, ep) in endpoints.withIndex()) {
-                        checkCancelled()
-                        emitProgress("Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label})...", basePct, force = true)
-                        partFile.delete()
-                        var conn: HttpURLConnection? = null
-                        try {
-                            conn = (URL(ep).openConnection() as HttpURLConnection).apply {
-                                requestMethod = "POST"
-                                doOutput = true
-                                connectTimeout = 20000
-                                readTimeout = 70000
-                                setRequestProperty("Accept-Encoding", "gzip")
-                                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                                setRequestProperty("User-Agent", RoutingEngine.userAgent)
-                            }
-                            job.activeConn = conn
+                        for ((epIdx, ep) in endpoints.withIndex()) {
                             checkCancelled()
-                            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
-                                w.write("data=" + URLEncoder.encode(chunk.query, "UTF-8"))
-                            }
-                            val code = conn.responseCode
-                            if (code == 200) {
-                                val rawStream = BufferedInputStream(conn.inputStream, 32 * 1024)
-                                val isGzip = conn.contentEncoding?.contains("gzip", ignoreCase = true) == true
-                                val netStream = if (isGzip) GZIPInputStream(rawStream, 32 * 1024) else rawStream
-                                var bytesWritten = 0L
-                                val buf = ByteArray(32 * 1024)
-                                netStream.use { input ->
-                                    BufferedOutputStream(FileOutputStream(partFile), 32 * 1024).use { output ->
-                                        while (true) {
-                                            checkCancelled()
-                                            val n = input.read(buf)
-                                            if (n <= 0) break
-                                            output.write(buf, 0, n)
-                                            bytesWritten += n
-                                            emitProgress(
-                                                "Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label} • ${formatTransferSize(bytesWritten)})",
-                                                basePct + (40 / chunks.size)
-                                            )
-                                        }
-                                        output.flush()
-                                    }
+                            emitProgress("Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label})...", basePct, force = true)
+                            partFile.delete()
+                            var conn: HttpURLConnection? = null
+                            try {
+                                conn = (URL(ep).openConnection() as HttpURLConnection).apply {
+                                    requestMethod = "POST"
+                                    doOutput = true
+                                    connectTimeout = 20000
+                                    readTimeout = 70000
+                                    setRequestProperty("Accept-Encoding", "gzip")
+                                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                                    setRequestProperty("User-Agent", RoutingEngine.userAgent)
                                 }
+                                job.activeConn = conn
                                 checkCancelled()
-                                if (bytesWritten > 64L) {
-                                    outFile.delete()
-                                    if (!partFile.renameTo(outFile)) {
-                                        partFile.copyTo(outFile, overwrite = true)
+                                OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
+                                    w.write("data=" + URLEncoder.encode(chunk.query, "UTF-8"))
+                                }
+                                val code = conn.responseCode
+                                if (code == 200) {
+                                    val rawStream = BufferedInputStream(conn.inputStream, 32 * 1024)
+                                    val isGzip = conn.contentEncoding?.contains("gzip", ignoreCase = true) == true
+                                    val netStream = if (isGzip) GZIPInputStream(rawStream, 32 * 1024) else rawStream
+                                    var bytesWritten = 0L
+                                    val buf = ByteArray(32 * 1024)
+                                    netStream.use { input ->
+                                        BufferedOutputStream(FileOutputStream(partFile), 32 * 1024).use { output ->
+                                            while (true) {
+                                                checkCancelled()
+                                                val n = input.read(buf)
+                                                if (n <= 0) break
+                                                output.write(buf, 0, n)
+                                                bytesWritten += n
+                                                emitProgress(
+                                                    "Downloading roads (${cIdx + 1}/${chunks.size}: ${chunk.label} • ${formatTransferSize(bytesWritten)})",
+                                                    basePct + (40 / chunks.size)
+                                                )
+                                            }
+                                            output.flush()
+                                        }
+                                    }
+                                    checkCancelled()
+                                    if (bytesWritten > 64L) {
+                                        outFile.delete()
+                                        if (!partFile.renameTo(outFile)) {
+                                            partFile.copyTo(outFile, overwrite = true)
+                                            partFile.delete()
+                                        }
+                                        return null
+                                    } else {
+                                        lastErr = "Overpass returned empty response"
                                         partFile.delete()
                                     }
-                                    return null
                                 } else {
-                                    lastErr = "Overpass returned empty response"
-                                    partFile.delete()
+                                    lastErr = "Overpass server HTTP $code"
                                 }
-                            } else {
-                                lastErr = "Overpass server HTTP $code"
+                            } catch (cs: CancelledSignal) {
+                                partFile.delete()
+                                throw cs
+                            } catch (e: CancellationException) {
+                                partFile.delete()
+                                throw e
+                            } catch (e: Exception) {
+                                partFile.delete()
+                                if (job.cancelled.get()) throw CancelledSignal()
+                                lastErr = e.message ?: "Network error"
+                            } finally {
+                                if (job.activeConn === conn) job.activeConn = null
+                                conn?.disconnect()
                             }
-                        } catch (cs: CancelledSignal) {
-                            partFile.delete()
-                            throw cs
-                        } catch (e: CancellationException) {
-                            partFile.delete()
-                            throw e
-                        } catch (e: Exception) {
-                            partFile.delete()
-                            if (job.cancelled.get()) throw CancelledSignal()
-                            lastErr = e.message ?: "Network error"
-                        } finally {
-                            if (job.activeConn === conn) job.activeConn = null
-                            conn?.disconnect()
-                        }
-                        if (epIdx < endpoints.lastIndex) {
-                            sleepWithCancel(1500L * (epIdx + 1))
-                        }
-                    }
-                    return lastErr
-                }
-
-                fun streamChunkIntoDb(chunkFile: File, chunkLabel: String, basePct: Int): Boolean {
-                    // Pass 1: Stream nodes into SQLite chunk_nodes (batched transactions)
-                    emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (45 / chunks.size), force = true)
-                    var ops = 0
-                    var inTx = true
-                    db.beginTransaction()
-                    val (parsedElements, remarkErr) = try {
-                        FileInputStream(chunkFile).use { fis ->
-                            streamOverpassNodes(fis, ::checkCancelled) { id, lat, lon ->
-                                stmtChunkNode.clearBindings()
-                                stmtChunkNode.bindLong(1, id)
-                                stmtChunkNode.bindDouble(2, lat)
-                                stmtChunkNode.bindDouble(3, lon)
-                                stmtChunkNode.executeInsert()
-                                ops++
-                                if (ops >= 1000) {
-                                    db.setTransactionSuccessful()
-                                    db.endTransaction()
-                                    db.beginTransaction()
-                                    ops = 0
-                                    emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (55 / chunks.size))
-                                }
-                            }
-                        }.also {
-                            if (inTx) {
-                                db.setTransactionSuccessful()
-                                db.endTransaction()
-                                inTx = false
+                            if (epIdx < endpoints.lastIndex) {
+                                sleepWithCancel(1500L * (epIdx + 1))
                             }
                         }
-                    } finally {
-                        if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
-                    }
-                    if (!parsedElements) {
-                        throw IllegalStateException(remarkErr ?: "Overpass returned invalid JSON")
+                        return lastErr
                     }
 
-                    // Pass 2: Stream ways into SQLite nodes/edges
-                    emitProgress("Processing roads ($chunkLabel)...", basePct + (62 / chunks.size), force = true)
-                    val wayNodeMap = HashMap<Long, NodePt>(64)
-                    val missingIds = ArrayList<Long>(64)
-                    val stillMissingIds = ArrayList<Long>(64)
-                    val seenMissing = HashSet<Long>(64)
-                    val inClauseSb = StringBuilder(256)
-                    ops = 0
-                    inTx = true
-                    db.beginTransaction()
-                    try {
-                        FileInputStream(chunkFile).use { fis ->
-                            streamOverpassWays(fis, ::checkCancelled) { wid, hw, access, roadName, onewayTag, junction, wayNodeIds ->
-                                if (access == "private" || access == "no") return@streamOverpassWays
+                    var fetchedAny = false
+                    var lastErr = "Could not download road data"
 
-                                stmtWayInsert.clearBindings()
-                                stmtWayInsert.bindLong(1, wid)
-                                if (stmtWayInsert.executeInsert() == -1L) return@streamOverpassWays
-
-                                val (carOk, bikeOk, walkOk, carSpeed) = when (hw) {
-                                    "motorway", "motorway_link" -> Quad(true, false, false, 95f)
-                                    "trunk", "trunk_link" -> Quad(true, true, true, 80f)
-                                    "primary", "primary_link" -> Quad(true, true, true, 65f)
-                                    "secondary", "secondary_link" -> Quad(true, true, true, 55f)
-                                    "tertiary", "tertiary_link" -> Quad(true, true, true, 45f)
-                                    "unclassified", "road" -> Quad(true, true, true, 40f)
-                                    "residential" -> Quad(true, true, true, 30f)
-                                    "living_street", "service" -> Quad(true, true, true, 20f)
-                                    "track" -> Quad(true, true, true, 16f)
-                                    "cycleway" -> Quad(false, true, true, 15f)
-                                    "path", "footway" -> Quad(false, true, true, 10f)
-                                    else -> Quad(false, false, false, 15f)
-                                }
-
-                                val isOneWayFwd = onewayTag == "yes" || onewayTag == "true" || onewayTag == "1" ||
-                                    junction == "roundabout" || hw == "motorway" || hw == "motorway_link"
-                                val isOneWayRev = onewayTag == "-1"
-                                val fwdFlags = (if (carOk && !isOneWayRev) FLAG_CAR else 0) or
-                                    (if (bikeOk && !isOneWayRev) FLAG_BIKE else 0) or
-                                    (if (walkOk) FLAG_WALK else 0)
-                                val revFlags = (if (carOk && !isOneWayFwd) FLAG_CAR else 0) or
-                                    (if (bikeOk && !isOneWayFwd) FLAG_BIKE else 0) or
-                                    (if (walkOk) FLAG_WALK else 0)
-                                if (fwdFlags == 0 && revFlags == 0) return@streamOverpassWays
-
-                                val nIdx = resolveNameIdx(roadName)
-                                resolveWayNodes(wayNodeIds, wayNodeMap, missingIds, stillMissingIds, seenMissing, inClauseSb)
-                                var prev: NodePt? = null
-                                for (k in 0 until wayNodeIds.size) {
-                                    val curr = wayNodeMap[wayNodeIds[k]]
-                                    if (prev != null && curr != null && prev.idx != curr.idx) {
-                                        val d = RoutingEngine.haversineMeters(
-                                            prev.lat.toDouble(), prev.lng.toDouble(),
-                                            curr.lat.toDouble(), curr.lng.toDouble()
-                                        ).toFloat().coerceAtLeast(0.5f)
-                                        if (fwdFlags != 0) {
-                                            stmtEdgeInsert.clearBindings()
-                                            stmtEdgeInsert.bindLong(1, prev.idx.toLong())
-                                            stmtEdgeInsert.bindLong(2, curr.idx.toLong())
-                                            stmtEdgeInsert.bindDouble(3, d.toDouble())
-                                            stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
-                                            stmtEdgeInsert.bindLong(5, fwdFlags.toLong())
-                                            stmtEdgeInsert.bindLong(6, nIdx.toLong())
-                                            stmtEdgeInsert.executeInsert()
-                                            ops++
-                                        }
-                                        if (revFlags != 0) {
-                                            stmtEdgeInsert.clearBindings()
-                                            stmtEdgeInsert.bindLong(1, curr.idx.toLong())
-                                            stmtEdgeInsert.bindLong(2, prev.idx.toLong())
-                                            stmtEdgeInsert.bindDouble(3, d.toDouble())
-                                            stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
-                                            stmtEdgeInsert.bindLong(5, revFlags.toLong())
-                                            stmtEdgeInsert.bindLong(6, nIdx.toLong())
-                                            stmtEdgeInsert.executeInsert()
-                                            ops++
-                                        }
-                                    }
-                                    if (curr != null) prev = curr
-                                }
-                                if (ops >= 1000) {
-                                    db.setTransactionSuccessful()
-                                    db.endTransaction()
-                                    db.beginTransaction()
-                                    ops = 0
-                                    emitProgress("Processing roads ($chunkLabel)...", basePct + (72 / chunks.size))
-                                }
-                            }
-                        }
-                        if (inTx) {
-                            db.setTransactionSuccessful()
-                            db.endTransaction()
-                            inTx = false
-                        }
-                    } finally {
-                        if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
-                    }
-                    return true
-                }
-
-                var fetchedAny = false
-                var lastErr = "Could not download road data"
-
-                for ((cIdx, chunk) in chunks.withIndex()) {
-                    checkCancelled()
-                    val basePct = (cIdx * 80) / chunks.size
-                    val chunkFile = File(stageDir, "chunk_$cIdx.json")
-                    var chunkProcessed = false
-
-                    for (attempt in 0..1) {
+                    for ((cIdx, chunk) in chunks.withIndex()) {
                         checkCancelled()
-                        if (!chunkFile.exists() || chunkFile.length() <= 128L) {
-                            val dlErr = downloadChunkToFile(cIdx, chunk, chunkFile)
-                            if (dlErr != null) {
-                                lastErr = dlErr
+                        val basePct = (cIdx * 80) / chunks.size
+                        val chunkFile = File(stageDir, "chunk_$cIdx.json")
+                        var chunkProcessed = false
+
+                        for (attempt in 0..1) {
+                            checkCancelled()
+                            if (!chunkFile.exists() || chunkFile.length() <= 128L) {
+                                val dlErr = downloadChunkToFile(cIdx, chunk, chunkFile)
+                                if (dlErr != null) {
+                                    lastErr = dlErr
+                                    break
+                                }
+                            }
+                            try {
+                                activeCompiler.streamChunkIntoDb(chunkFile, chunk.label, basePct, chunks.size)
+                                activeCompiler.clearChunkNodes()
+                                chunkFile.delete()
+                                fetchedAny = true
+                                chunkProcessed = true
                                 break
+                            } catch (cs: CancelledSignal) {
+                                throw cs
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                chunkFile.delete()
+                                activeCompiler.clearChunkNodes()
+                                lastErr = e.message ?: "Malformed road chunk"
+                                if (attempt == 1) break
                             }
                         }
-                        try {
-                            streamChunkIntoDb(chunkFile, chunk.label, basePct)
-                            db.execSQL("DELETE FROM chunk_nodes")
-                            chunkFile.delete()
-                            fetchedAny = true
-                            chunkProcessed = true
-                            break
-                        } catch (cs: CancelledSignal) {
-                            throw cs
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            chunkFile.delete()
-                            db.execSQL("DELETE FROM chunk_nodes")
-                            lastErr = e.message ?: "Malformed road chunk"
-                            if (attempt == 1) break
-                        }
-                    }
-                    if (!chunkProcessed) continue
-                }
-
-                checkCancelled()
-                val nodeCount = db.rawQuery("SELECT COUNT(*) FROM nodes", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
-                val edgeCount = db.rawQuery("SELECT COUNT(*) FROM edges", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
-                val nameCount = db.rawQuery("SELECT COUNT(*) FROM names", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
-
-                if (!fetchedAny || nodeCount == 0 || edgeCount == 0) {
-                    resultError = if (!fetchedAny) lastErr else "No routable roads found in this area"
-                    invokeDone = true
-                } else if (!hasEnoughStorage(ctx, maxOf(64L * 1024L * 1024L, stageDbFile.length() * 2L))) {
-                    resultError = "Not enough free storage to save offline road graph"
-                    invokeDone = true
-                } else {
-                    emitProgress("Saving offline roads ($nodeCount nodes)...", 85, force = true)
-                    val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}_${System.currentTimeMillis() % 10000}.tsr"
-                    val outFile = File(dir(ctx), fileName)
-                    val partFile = File(dir(ctx), "$fileName.part")
-                    activePartFile = partFile
-                    partFile.delete()
-                    val now = System.currentTimeMillis()
-
-                    FileOutputStream(partFile).use { fos ->
-                        DataOutputStream(GZIPOutputStream(BufferedOutputStream(fos, 32 * 1024))).use { dos ->
-                            writeTsrHeader(dos, regionName, sLat, wLng, nLat, eLng, now, nodeCount, edgeCount, nameCount)
-
-                        var lastNameIdx = -1
-                        while (true) {
-                            checkCancelled()
-                            var count = 0
-                            db.rawQuery(
-                                "SELECT idx, name FROM names WHERE idx > ? ORDER BY idx ASC LIMIT 5000",
-                                arrayOf(lastNameIdx.toString())
-                            ).use { c ->
-                                while (c.moveToNext()) {
-                                    lastNameIdx = c.getInt(0)
-                                    dos.writeUTF(c.getString(1) ?: "")
-                                    count++
-                                }
-                            }
-                            if (count < 5000) break
-                        }
-
-                        var lastNodeIdx = -1
-                        while (true) {
-                            checkCancelled()
-                            var count = 0
-                            db.rawQuery(
-                                "SELECT idx, lat, lon FROM nodes WHERE idx > ? ORDER BY idx ASC LIMIT 10000",
-                                arrayOf(lastNodeIdx.toString())
-                            ).use { c ->
-                                while (c.moveToNext()) {
-                                    lastNodeIdx = c.getInt(0)
-                                    dos.writeFloat(c.getDouble(1).toFloat())
-                                    dos.writeFloat(c.getDouble(2).toFloat())
-                                    count++
-                                }
-                            }
-                            if (count < 10000) break
-                        }
-                        emitProgress("Saving offline road graph (92%)...", 92, force = true)
-
-                        var lastEdgeRowId = 0L
-                        var writtenEdges = 0
-                        while (true) {
-                            checkCancelled()
-                            var count = 0
-                            db.rawQuery(
-                                "SELECT rowid, from_idx, to_idx, dist, speed, flags, name_idx FROM edges WHERE rowid > ? ORDER BY rowid ASC LIMIT 10000",
-                                arrayOf(lastEdgeRowId.toString())
-                            ).use { c ->
-                                while (c.moveToNext()) {
-                                    lastEdgeRowId = c.getLong(0)
-                                    dos.writeInt(c.getInt(1))
-                                    dos.writeInt(c.getInt(2))
-                                    dos.writeFloat(c.getDouble(3).toFloat())
-                                    dos.writeFloat(c.getDouble(4).toFloat())
-                                    dos.writeByte(c.getInt(5))
-                                    dos.writeInt(c.getInt(6))
-                                    count++
-                                }
-                            }
-                            writtenEdges += count
-                            val savePct = 92 + ((writtenEdges.toLong() * 7L) / edgeCount.coerceAtLeast(1)).toInt()
-                            emitProgress("Saving offline road graph ($savePct%)...", savePct)
-                            if (count < 10000) break
-                        }
-                        dos.flush()
-                    }
-                        runCatching { fos.fd.sync() }
+                        if (!chunkProcessed) continue
                     }
 
                     checkCancelled()
-                    if (outFile.exists()) outFile.delete()
-                    if (!partFile.renameTo(outFile)) {
-                        partFile.copyTo(outFile, overwrite = true)
-                        partFile.delete()
-                    }
+                    val (nodeCount, edgeCount, nameCount) = activeCompiler.counts()
 
-                    val meta = OfflineRoadRegion(
-                        fileName = fileName,
-                        name = regionName,
-                        minLat = sLat,
-                        minLng = wLng,
-                        maxLat = nLat,
-                        maxLng = eLng,
-                        nodeCount = nodeCount,
-                        edgeCount = edgeCount,
-                        sizeBytes = outFile.length(),
-                        downloadedAt = now
-                    )
-                    synchronized(graphCacheLock) {
-                        if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                    if (!fetchedAny || nodeCount == 0 || edgeCount == 0) {
+                        resultError = if (!fetchedAny) lastErr else "No routable roads found in this area"
+                    } else if (!hasEnoughStorage(ctx, maxOf(64L * 1024L * 1024L, activeCompiler.stageDbFile.length() * 2L))) {
+                        resultError = "Not enough free storage to save offline road graph"
+                    } else {
+                        emitProgress("Saving offline roads ($nodeCount nodes)...", 85, force = true)
+                        val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}_${System.currentTimeMillis() % 10000}.tsr"
+                        val outFile = File(dir(ctx), fileName)
+                        val partFile = File(dir(ctx), "$fileName.part")
+                        activePartFile = partFile
+                        val now = System.currentTimeMillis()
+                        val meta = activeCompiler.writeTsr(
+                            partFile = partFile,
+                            outFile = outFile,
+                            regionName = regionName,
+                            sLat = sLat,
+                            wLng = wLng,
+                            nLat = nLat,
+                            eLng = eLng,
+                            now = now,
+                            nodeCount = nodeCount,
+                            edgeCount = edgeCount,
+                            nameCount = nameCount
+                        )
+                        synchronized(graphCacheLock) {
+                            if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                        }
+                        headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
+                        finishedCleanly = true
+                        resultRegion = meta
                     }
-                    headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
-                    finishedCleanly = true
-                    resultRegion = meta
-                    invokeDone = true
-                }
                 }
             } catch (_: CancelledSignal) {
-                wasCancelled = true
                 resultError = "Cancelled"
-                invokeDone = true
-            } catch (e: CancellationException) {
-                wasCancelled = true
-                throw e
             } catch (_: OutOfMemoryError) {
                 resultError = "Not enough memory to process road data"
-                invokeDone = true
             } catch (t: Throwable) {
                 resultError = t.message ?: "Failed to compile offline graph"
-                invokeDone = true
             } finally {
-                for (stmt in openStmts) runCatching { stmt.close() }
-                runCatching { stageDb?.close() }
-                stageDbFile.delete()
-                File(stageDir, "stage.db-journal").delete()
-                File(stageDir, "stage.db-wal").delete()
-                File(stageDir, "stage.db-shm").delete()
+                runCatching { compiler?.close() }
                 if (finishedCleanly) {
                     stageDir.deleteRecursively()
                 }
-                // Unconditionally remove any aborted/completed .part output file regardless of packId
                 activePartFile?.takeIf { it.exists() }?.delete()
                 if (packId != null) {
                     File(dir(ctx), "${packFileName(packId)}.part").takeIf { it.exists() }?.delete()
@@ -1165,9 +1261,7 @@ object OfflineRoutingEngine {
                 job.activeConn = null
                 activeDownloads.remove(jobKey, job)
             }
-            if (invokeDone) {
-                onDone(resultRegion, resultError)
-            }
+            onDone(resultRegion, resultError)
         }.apply {
             job.workerThread = this
             name = "terrasync-road-dl-$jobKey"

@@ -281,7 +281,7 @@ object MapCartography {
                     }
 
                     is SymbolLayer -> {
-                        val sl = layer.sourceLayer?.lowercase().orEmpty()
+                        val sl = layer.sourceLayer.lowercase()
                         when {
                             // Crisp white rectangular route shields bordered in thin black (e.g. M5, M90)
                             id.contains("shield") || id == "highway_ref" -> {
