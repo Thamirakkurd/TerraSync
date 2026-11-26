@@ -3,9 +3,10 @@ package com.terrasync.app
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteStatement
+import android.os.StatFs
 import android.os.SystemClock
-import android.util.JsonReader
-import android.util.JsonToken
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -13,6 +14,7 @@ import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -95,6 +97,46 @@ object OfflineRoutingEngine {
 
     fun packFileName(packId: String): String = "pack_${safeName(packId)}.tsr"
 
+    const val MIN_FREE_BYTES_ROADS = 120L * 1024L * 1024L
+
+    fun availableStorageBytes(ctx: Context): Long {
+        return runCatching { StatFs(ctx.filesDir.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE)
+    }
+
+    fun hasEnoughStorage(ctx: Context, requiredBytes: Long): Boolean {
+        return availableStorageBytes(ctx) >= requiredBytes
+    }
+
+    fun cleanupOrphanedTempFiles(ctx: Context) {
+        runCatching {
+            val base = dir(ctx)
+            val entries = base.listFiles() ?: return@runCatching
+            val activeKeys = activeDownloads.entries
+                .filter { !it.value.cancelled.get() }
+                .map { safeName(it.key) }
+                .toSet()
+            for (entry in entries) {
+                if (entry.isFile && (entry.name.endsWith(".part") || entry.name.endsWith(".tmp"))) {
+                    val stem = entry.name.substringBefore(".tsr")
+                    val belongsToActive = activeKeys.any { stem == "pack_$it" || stem.startsWith("${it}_") }
+                    if (!belongsToActive) entry.delete()
+                } else if (entry.isDirectory && entry.name.startsWith("staging_")) {
+                    val key = entry.name.removePrefix("staging_")
+                    if (key !in activeKeys) {
+                        for (child in entry.listFiles().orEmpty()) {
+                            if (child.name.startsWith("stage.db") || child.name.endsWith(".part") || child.name.endsWith(".tmp")) {
+                                child.delete()
+                            }
+                        }
+                        if (entry.listFiles().isNullOrEmpty()) {
+                            entry.delete()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun stagingDir(ctx: Context, jobKey: String): File =
         File(dir(ctx), "staging_${safeName(jobKey)}")
 
@@ -167,15 +209,37 @@ object OfflineRoutingEngine {
         return !files.isNullOrEmpty()
     }
 
-    private fun readHeader(file: File): OfflineRoadRegion? {
-        val lm = file.lastModified()
-        val len = file.length()
-        val cached = headerCache[file.name]
-        if (cached != null && cached.lastModified == lm && cached.sizeBytes == len) {
-            return cached.region
-        }
+    internal fun writeTsrHeader(
+        dos: DataOutputStream,
+        regionName: String,
+        sLat: Double,
+        wLng: Double,
+        nLat: Double,
+        eLng: Double,
+        now: Long,
+        nodeCount: Int,
+        edgeCount: Int,
+        nameCount: Int
+    ) {
+        dos.writeInt(MAGIC)
+        dos.writeUTF(regionName)
+        dos.writeDouble(sLat)
+        dos.writeDouble(wLng)
+        dos.writeDouble(nLat)
+        dos.writeDouble(eLng)
+        dos.writeLong(now)
+        dos.writeInt(nodeCount)
+        dos.writeInt(edgeCount)
+        dos.writeInt(nameCount)
+    }
+
+    internal fun readTsrHeaderFromStream(
+        fileName: String,
+        sizeBytes: Long,
+        input: InputStream
+    ): OfflineRoadRegion? {
         return runCatching {
-            DataInputStream(GZIPInputStream(BufferedInputStream(FileInputStream(file)))).use { dis ->
+            DataInputStream(GZIPInputStream(BufferedInputStream(input, 8192))).use { dis ->
                 val magic = dis.readInt()
                 if (magic != MAGIC) return null
                 val name = dis.readUTF()
@@ -187,7 +251,7 @@ object OfflineRoutingEngine {
                 val nodeCount = dis.readInt()
                 val edgeCount = dis.readInt()
                 OfflineRoadRegion(
-                    fileName = file.name,
+                    fileName = fileName,
                     name = name,
                     minLat = minLat,
                     minLng = minLng,
@@ -195,13 +259,146 @@ object OfflineRoutingEngine {
                     maxLng = maxLng,
                     nodeCount = nodeCount,
                     edgeCount = edgeCount,
-                    sizeBytes = len,
+                    sizeBytes = sizeBytes,
                     downloadedAt = downloadedAt
-                ).also { reg ->
-                    headerCache[file.name] = CachedHeader(lm, len, reg)
-                }
+                )
             }
         }.getOrNull()
+    }
+
+    internal fun streamOverpassNodes(
+        input: InputStream,
+        onCheckCancel: () -> Unit = {},
+        onNode: (id: Long, lat: Double, lon: Double) -> Unit
+    ): Pair<Boolean, String?> {
+        var parsedElements = false
+        var remarkErr: String? = null
+        JsonReader(InputStreamReader(BufferedInputStream(input, 32 * 1024), Charsets.UTF_8)).use { reader ->
+            reader.beginObject()
+            while (reader.hasNext()) {
+                onCheckCancel()
+                when (reader.nextName()) {
+                    "remark" -> remarkErr = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); null }
+                    "elements" -> {
+                        parsedElements = true
+                        reader.beginArray()
+                        while (reader.hasNext()) {
+                            onCheckCancel()
+                            var elemType = ""
+                            var id = 0L
+                            var lat = Double.NaN
+                            var lon = Double.NaN
+                            reader.beginObject()
+                            while (reader.hasNext()) {
+                                when (reader.nextName()) {
+                                    "type" -> elemType = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
+                                    "id" -> id = if (reader.peek() == JsonToken.NUMBER) reader.nextLong() else { reader.skipValue(); 0L }
+                                    "lat" -> lat = if (reader.peek() == JsonToken.NUMBER) reader.nextDouble() else { reader.skipValue(); Double.NaN }
+                                    "lon" -> lon = if (reader.peek() == JsonToken.NUMBER) reader.nextDouble() else { reader.skipValue(); Double.NaN }
+                                    else -> reader.skipValue()
+                                }
+                            }
+                            reader.endObject()
+                            if (elemType == "node" && id != 0L && !lat.isNaN() && !lon.isNaN()) {
+                                onNode(id, lat, lon)
+                            }
+                        }
+                        reader.endArray()
+                    }
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+        }
+        return parsedElements to remarkErr
+    }
+
+    internal fun streamOverpassWays(
+        input: InputStream,
+        onCheckCancel: () -> Unit = {},
+        onWay: (wid: Long, hw: String, access: String, roadName: String, onewayTag: String, junction: String, nodeIds: List<Long>) -> Unit
+    ) {
+        val wayNodeIds = ArrayList<Long>(64)
+        JsonReader(InputStreamReader(BufferedInputStream(input, 32 * 1024), Charsets.UTF_8)).use { reader ->
+            reader.beginObject()
+            while (reader.hasNext()) {
+                onCheckCancel()
+                if (reader.nextName() == "elements") {
+                    reader.beginArray()
+                    while (reader.hasNext()) {
+                        onCheckCancel()
+                        var elemType = ""
+                        var wid = 0L
+                        var hw = ""
+                        var access = ""
+                        var roadName = ""
+                        var onewayTag = ""
+                        var junction = ""
+                        wayNodeIds.clear()
+
+                        reader.beginObject()
+                        while (reader.hasNext()) {
+                            when (reader.nextName()) {
+                                "type" -> elemType = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
+                                "id" -> wid = if (reader.peek() == JsonToken.NUMBER) reader.nextLong() else { reader.skipValue(); 0L }
+                                "nodes" -> {
+                                    if (reader.peek() == JsonToken.BEGIN_ARRAY) {
+                                        reader.beginArray()
+                                        while (reader.hasNext()) {
+                                            if (reader.peek() == JsonToken.NUMBER) wayNodeIds.add(reader.nextLong()) else reader.skipValue()
+                                        }
+                                        reader.endArray()
+                                    } else {
+                                        reader.skipValue()
+                                    }
+                                }
+                                "tags" -> {
+                                    if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                                        reader.beginObject()
+                                        while (reader.hasNext()) {
+                                            when (reader.nextName()) {
+                                                "highway" -> hw = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
+                                                "access" -> access = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
+                                                "name" -> roadName = if (reader.peek() == JsonToken.STRING) reader.nextString().trim() else { reader.skipValue(); "" }
+                                                "oneway" -> onewayTag = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
+                                                "junction" -> junction = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
+                                                else -> reader.skipValue()
+                                            }
+                                        }
+                                        reader.endObject()
+                                    } else {
+                                        reader.skipValue()
+                                    }
+                                }
+                                else -> reader.skipValue()
+                            }
+                        }
+                        reader.endObject()
+                        if (elemType == "way" && wid != 0L && hw.isNotEmpty() && wayNodeIds.size >= 2) {
+                            onWay(wid, hw, access, roadName, onewayTag, junction, wayNodeIds)
+                        }
+                    }
+                    reader.endArray()
+                } else {
+                    reader.skipValue()
+                }
+            }
+            reader.endObject()
+        }
+    }
+
+    private fun readHeader(file: File): OfflineRoadRegion? {
+        val lm = file.lastModified()
+        val len = file.length()
+        val cached = headerCache[file.name]
+        if (cached != null && cached.lastModified == lm && cached.sizeBytes == len) {
+            return cached.region
+        }
+        return FileInputStream(file).use { fis ->
+            readTsrHeaderFromStream(file.name, len, fis)?.also { reg ->
+                headerCache[file.name] = CachedHeader(lm, len, reg)
+            }
+        }
     }
 
     private fun loadGraph(ctx: Context, fileName: String): RoadGraph? = synchronized(graphCacheLock) {
@@ -327,6 +524,7 @@ object OfflineRoutingEngine {
         Thread {
             val stageDir = stagingDir(ctx, jobKey)
             val stageDbFile = File(stageDir, "stage.db")
+            var activePartFile: File? = null
             var stageDb: SQLiteDatabase? = null
             val openStmts = ArrayList<SQLiteStatement>(5)
             var finishedCleanly = false
@@ -371,6 +569,10 @@ object OfflineRoutingEngine {
                     runCatching { prev.join(5000L) }
                 }
                 checkCancelled()
+                if (!hasEnoughStorage(ctx, MIN_FREE_BYTES_ROADS)) {
+                    resultError = "Not enough free storage to download offline roads"
+                    invokeDone = true
+                } else {
                 val sLat = minOf(minLat, maxLat)
                 val nLat = maxOf(minLat, maxLat)
                 val wLng = minOf(minLng, maxLng)
@@ -639,71 +841,37 @@ object OfflineRoutingEngine {
                 }
 
                 fun streamChunkIntoDb(chunkFile: File, chunkLabel: String, basePct: Int): Boolean {
-                    var parsedElements = false
-                    var remarkErr: String? = null
-
                     // Pass 1: Stream nodes into SQLite chunk_nodes (batched transactions)
                     emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (45 / chunks.size), force = true)
-                    JsonReader(InputStreamReader(BufferedInputStream(FileInputStream(chunkFile), 32 * 1024), Charsets.UTF_8)).use { reader ->
-                        reader.beginObject()
-                        while (reader.hasNext()) {
-                            checkCancelled()
-                            when (reader.nextName()) {
-                                "remark" -> remarkErr = reader.nextString()
-                                "elements" -> {
-                                    parsedElements = true
-                                    reader.beginArray()
+                    var ops = 0
+                    var inTx = true
+                    db.beginTransaction()
+                    val (parsedElements, remarkErr) = try {
+                        FileInputStream(chunkFile).use { fis ->
+                            streamOverpassNodes(fis, ::checkCancelled) { id, lat, lon ->
+                                stmtChunkNode.clearBindings()
+                                stmtChunkNode.bindLong(1, id)
+                                stmtChunkNode.bindDouble(2, lat)
+                                stmtChunkNode.bindDouble(3, lon)
+                                stmtChunkNode.executeInsert()
+                                ops++
+                                if (ops >= 1000) {
+                                    db.setTransactionSuccessful()
+                                    db.endTransaction()
                                     db.beginTransaction()
-                                    var inTx = true
-                                    var ops = 0
-                                    try {
-                                        while (reader.hasNext()) {
-                                            checkCancelled()
-                                            var elemType = ""
-                                            var id = 0L
-                                            var lat = Double.NaN
-                                            var lon = Double.NaN
-                                            reader.beginObject()
-                                            while (reader.hasNext()) {
-                                                when (reader.nextName()) {
-                                                    "type" -> elemType = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
-                                                    "id" -> id = if (reader.peek() == JsonToken.NUMBER) reader.nextLong() else { reader.skipValue(); 0L }
-                                                    "lat" -> lat = if (reader.peek() == JsonToken.NUMBER) reader.nextDouble() else { reader.skipValue(); Double.NaN }
-                                                    "lon" -> lon = if (reader.peek() == JsonToken.NUMBER) reader.nextDouble() else { reader.skipValue(); Double.NaN }
-                                                    else -> reader.skipValue()
-                                                }
-                                            }
-                                            reader.endObject()
-                                            if (elemType == "node" && id != 0L && !lat.isNaN() && !lon.isNaN()) {
-                                                stmtChunkNode.clearBindings()
-                                                stmtChunkNode.bindLong(1, id)
-                                                stmtChunkNode.bindDouble(2, lat)
-                                                stmtChunkNode.bindDouble(3, lon)
-                                                stmtChunkNode.executeInsert()
-                                                ops++
-                                                if (ops >= 1000) {
-                                                    db.setTransactionSuccessful()
-                                                    db.endTransaction()
-                                                    db.beginTransaction()
-                                                    ops = 0
-                                                    emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (55 / chunks.size))
-                                                }
-                                            }
-                                        }
-                                        if (inTx) {
-                                            db.setTransactionSuccessful()
-                                            db.endTransaction()
-                                            inTx = false
-                                        }
-                                    } finally {
-                                        if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
-                                    }
-                                    reader.endArray()
+                                    ops = 0
+                                    emitProgress("Indexing road nodes ($chunkLabel)...", basePct + (55 / chunks.size))
                                 }
-                                else -> reader.skipValue()
+                            }
+                        }.also {
+                            if (inTx) {
+                                db.setTransactionSuccessful()
+                                db.endTransaction()
+                                inTx = false
                             }
                         }
-                        reader.endObject()
+                    } finally {
+                        if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
                     }
                     if (!parsedElements) {
                         throw IllegalStateException(remarkErr ?: "Overpass returned invalid JSON")
@@ -711,162 +879,100 @@ object OfflineRoutingEngine {
 
                     // Pass 2: Stream ways into SQLite nodes/edges
                     emitProgress("Processing roads ($chunkLabel)...", basePct + (62 / chunks.size), force = true)
-                    val wayNodeIds = ArrayList<Long>(64)
                     val wayNodeMap = HashMap<Long, NodePt>(64)
                     val missingIds = ArrayList<Long>(64)
                     val stillMissingIds = ArrayList<Long>(64)
                     val seenMissing = HashSet<Long>(64)
                     val inClauseSb = StringBuilder(256)
-                    JsonReader(InputStreamReader(BufferedInputStream(FileInputStream(chunkFile), 32 * 1024), Charsets.UTF_8)).use { reader ->
-                        reader.beginObject()
-                        while (reader.hasNext()) {
-                            checkCancelled()
-                            if (reader.nextName() == "elements") {
-                                reader.beginArray()
-                                db.beginTransaction()
-                                var inTx = true
-                                var ops = 0
-                                try {
-                                    while (reader.hasNext()) {
-                                        checkCancelled()
-                                        var elemType = ""
-                                        var wid = 0L
-                                        var hw = ""
-                                        var access = ""
-                                        var roadName = ""
-                                        var onewayTag = ""
-                                        var junction = ""
-                                        wayNodeIds.clear()
+                    ops = 0
+                    inTx = true
+                    db.beginTransaction()
+                    try {
+                        FileInputStream(chunkFile).use { fis ->
+                            streamOverpassWays(fis, ::checkCancelled) { wid, hw, access, roadName, onewayTag, junction, wayNodeIds ->
+                                if (access == "private" || access == "no") return@streamOverpassWays
 
-                                        reader.beginObject()
-                                        while (reader.hasNext()) {
-                                            when (reader.nextName()) {
-                                                "type" -> elemType = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
-                                                "id" -> wid = if (reader.peek() == JsonToken.NUMBER) reader.nextLong() else { reader.skipValue(); 0L }
-                                                "nodes" -> {
-                                                    if (reader.peek() == JsonToken.BEGIN_ARRAY) {
-                                                        reader.beginArray()
-                                                        while (reader.hasNext()) {
-                                                            if (reader.peek() == JsonToken.NUMBER) wayNodeIds.add(reader.nextLong()) else reader.skipValue()
-                                                        }
-                                                        reader.endArray()
-                                                    } else {
-                                                        reader.skipValue()
-                                                    }
-                                                }
-                                                "tags" -> {
-                                                    if (reader.peek() == JsonToken.BEGIN_OBJECT) {
-                                                        reader.beginObject()
-                                                        while (reader.hasNext()) {
-                                                            when (reader.nextName()) {
-                                                                "highway" -> hw = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
-                                                                "access" -> access = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
-                                                                "name" -> roadName = if (reader.peek() == JsonToken.STRING) reader.nextString().trim() else { reader.skipValue(); "" }
-                                                                "oneway" -> onewayTag = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
-                                                                "junction" -> junction = if (reader.peek() == JsonToken.STRING) reader.nextString() else { reader.skipValue(); "" }
-                                                                else -> reader.skipValue()
-                                                            }
-                                                        }
-                                                        reader.endObject()
-                                                    } else {
-                                                        reader.skipValue()
-                                                    }
-                                                }
-                                                else -> reader.skipValue()
-                                            }
-                                        }
-                                        reader.endObject()
+                                stmtWayInsert.clearBindings()
+                                stmtWayInsert.bindLong(1, wid)
+                                if (stmtWayInsert.executeInsert() == -1L) return@streamOverpassWays
 
-                                        if (elemType != "way" || wid == 0L || hw.isEmpty() || wayNodeIds.size < 2) continue
-                                        if (access == "private" || access == "no") continue
-
-                                        stmtWayInsert.clearBindings()
-                                        stmtWayInsert.bindLong(1, wid)
-                                        if (stmtWayInsert.executeInsert() == -1L) continue
-
-                                        val (carOk, bikeOk, walkOk, carSpeed) = when (hw) {
-                                            "motorway", "motorway_link" -> Quad(true, false, false, 95f)
-                                            "trunk", "trunk_link" -> Quad(true, true, true, 80f)
-                                            "primary", "primary_link" -> Quad(true, true, true, 65f)
-                                            "secondary", "secondary_link" -> Quad(true, true, true, 55f)
-                                            "tertiary", "tertiary_link" -> Quad(true, true, true, 45f)
-                                            "unclassified", "road" -> Quad(true, true, true, 40f)
-                                            "residential" -> Quad(true, true, true, 30f)
-                                            "living_street", "service" -> Quad(true, true, true, 20f)
-                                            "track" -> Quad(true, true, true, 16f)
-                                            "cycleway" -> Quad(false, true, true, 15f)
-                                            "path", "footway" -> Quad(false, true, true, 10f)
-                                            else -> Quad(false, false, false, 15f)
-                                        }
-
-                                        val isOneWayFwd = onewayTag == "yes" || onewayTag == "true" || onewayTag == "1" ||
-                                            junction == "roundabout" || hw == "motorway" || hw == "motorway_link"
-                                        val isOneWayRev = onewayTag == "-1"
-                                        val fwdFlags = (if (carOk && !isOneWayRev) FLAG_CAR else 0) or
-                                            (if (bikeOk && !isOneWayRev) FLAG_BIKE else 0) or
-                                            (if (walkOk) FLAG_WALK else 0)
-                                        val revFlags = (if (carOk && !isOneWayFwd) FLAG_CAR else 0) or
-                                            (if (bikeOk && !isOneWayFwd) FLAG_BIKE else 0) or
-                                            (if (walkOk) FLAG_WALK else 0)
-                                        if (fwdFlags == 0 && revFlags == 0) continue
-
-                                        val nIdx = resolveNameIdx(roadName)
-                                        resolveWayNodes(wayNodeIds, wayNodeMap, missingIds, stillMissingIds, seenMissing, inClauseSb)
-                                        var prev: NodePt? = null
-                                        for (k in 0 until wayNodeIds.size) {
-                                            val curr = wayNodeMap[wayNodeIds[k]]
-                                            if (prev != null && curr != null && prev.idx != curr.idx) {
-                                                val d = RoutingEngine.haversineMeters(
-                                                    prev.lat.toDouble(), prev.lng.toDouble(),
-                                                    curr.lat.toDouble(), curr.lng.toDouble()
-                                                ).toFloat().coerceAtLeast(0.5f)
-                                                if (fwdFlags != 0) {
-                                                    stmtEdgeInsert.clearBindings()
-                                                    stmtEdgeInsert.bindLong(1, prev.idx.toLong())
-                                                    stmtEdgeInsert.bindLong(2, curr.idx.toLong())
-                                                    stmtEdgeInsert.bindDouble(3, d.toDouble())
-                                                    stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
-                                                    stmtEdgeInsert.bindLong(5, fwdFlags.toLong())
-                                                    stmtEdgeInsert.bindLong(6, nIdx.toLong())
-                                                    stmtEdgeInsert.executeInsert()
-                                                    ops++
-                                                }
-                                                if (revFlags != 0) {
-                                                    stmtEdgeInsert.clearBindings()
-                                                    stmtEdgeInsert.bindLong(1, curr.idx.toLong())
-                                                    stmtEdgeInsert.bindLong(2, prev.idx.toLong())
-                                                    stmtEdgeInsert.bindDouble(3, d.toDouble())
-                                                    stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
-                                                    stmtEdgeInsert.bindLong(5, revFlags.toLong())
-                                                    stmtEdgeInsert.bindLong(6, nIdx.toLong())
-                                                    stmtEdgeInsert.executeInsert()
-                                                    ops++
-                                                }
-                                            }
-                                            if (curr != null) prev = curr
-                                        }
-                                        if (ops >= 1000) {
-                                            db.setTransactionSuccessful()
-                                            db.endTransaction()
-                                            db.beginTransaction()
-                                            ops = 0
-                                            emitProgress("Processing roads ($chunkLabel)...", basePct + (72 / chunks.size))
-                                        }
-                                    }
-                                    if (inTx) {
-                                        db.setTransactionSuccessful()
-                                        db.endTransaction()
-                                        inTx = false
-                                    }
-                                } finally {
-                                    if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
+                                val (carOk, bikeOk, walkOk, carSpeed) = when (hw) {
+                                    "motorway", "motorway_link" -> Quad(true, false, false, 95f)
+                                    "trunk", "trunk_link" -> Quad(true, true, true, 80f)
+                                    "primary", "primary_link" -> Quad(true, true, true, 65f)
+                                    "secondary", "secondary_link" -> Quad(true, true, true, 55f)
+                                    "tertiary", "tertiary_link" -> Quad(true, true, true, 45f)
+                                    "unclassified", "road" -> Quad(true, true, true, 40f)
+                                    "residential" -> Quad(true, true, true, 30f)
+                                    "living_street", "service" -> Quad(true, true, true, 20f)
+                                    "track" -> Quad(true, true, true, 16f)
+                                    "cycleway" -> Quad(false, true, true, 15f)
+                                    "path", "footway" -> Quad(false, true, true, 10f)
+                                    else -> Quad(false, false, false, 15f)
                                 }
-                                reader.endArray()
-                            } else {
-                                reader.skipValue()
+
+                                val isOneWayFwd = onewayTag == "yes" || onewayTag == "true" || onewayTag == "1" ||
+                                    junction == "roundabout" || hw == "motorway" || hw == "motorway_link"
+                                val isOneWayRev = onewayTag == "-1"
+                                val fwdFlags = (if (carOk && !isOneWayRev) FLAG_CAR else 0) or
+                                    (if (bikeOk && !isOneWayRev) FLAG_BIKE else 0) or
+                                    (if (walkOk) FLAG_WALK else 0)
+                                val revFlags = (if (carOk && !isOneWayFwd) FLAG_CAR else 0) or
+                                    (if (bikeOk && !isOneWayFwd) FLAG_BIKE else 0) or
+                                    (if (walkOk) FLAG_WALK else 0)
+                                if (fwdFlags == 0 && revFlags == 0) return@streamOverpassWays
+
+                                val nIdx = resolveNameIdx(roadName)
+                                resolveWayNodes(wayNodeIds, wayNodeMap, missingIds, stillMissingIds, seenMissing, inClauseSb)
+                                var prev: NodePt? = null
+                                for (k in 0 until wayNodeIds.size) {
+                                    val curr = wayNodeMap[wayNodeIds[k]]
+                                    if (prev != null && curr != null && prev.idx != curr.idx) {
+                                        val d = RoutingEngine.haversineMeters(
+                                            prev.lat.toDouble(), prev.lng.toDouble(),
+                                            curr.lat.toDouble(), curr.lng.toDouble()
+                                        ).toFloat().coerceAtLeast(0.5f)
+                                        if (fwdFlags != 0) {
+                                            stmtEdgeInsert.clearBindings()
+                                            stmtEdgeInsert.bindLong(1, prev.idx.toLong())
+                                            stmtEdgeInsert.bindLong(2, curr.idx.toLong())
+                                            stmtEdgeInsert.bindDouble(3, d.toDouble())
+                                            stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
+                                            stmtEdgeInsert.bindLong(5, fwdFlags.toLong())
+                                            stmtEdgeInsert.bindLong(6, nIdx.toLong())
+                                            stmtEdgeInsert.executeInsert()
+                                            ops++
+                                        }
+                                        if (revFlags != 0) {
+                                            stmtEdgeInsert.clearBindings()
+                                            stmtEdgeInsert.bindLong(1, curr.idx.toLong())
+                                            stmtEdgeInsert.bindLong(2, prev.idx.toLong())
+                                            stmtEdgeInsert.bindDouble(3, d.toDouble())
+                                            stmtEdgeInsert.bindDouble(4, carSpeed.toDouble())
+                                            stmtEdgeInsert.bindLong(5, revFlags.toLong())
+                                            stmtEdgeInsert.bindLong(6, nIdx.toLong())
+                                            stmtEdgeInsert.executeInsert()
+                                            ops++
+                                        }
+                                    }
+                                    if (curr != null) prev = curr
+                                }
+                                if (ops >= 1000) {
+                                    db.setTransactionSuccessful()
+                                    db.endTransaction()
+                                    db.beginTransaction()
+                                    ops = 0
+                                    emitProgress("Processing roads ($chunkLabel)...", basePct + (72 / chunks.size))
+                                }
                             }
                         }
-                        reader.endObject()
+                        if (inTx) {
+                            db.setTransactionSuccessful()
+                            db.endTransaction()
+                            inTx = false
+                        }
+                    } finally {
+                        if (inTx && db.inTransaction()) runCatching { db.endTransaction() }
                     }
                     return true
                 }
@@ -918,25 +1024,21 @@ object OfflineRoutingEngine {
                 if (!fetchedAny || nodeCount == 0 || edgeCount == 0) {
                     resultError = if (!fetchedAny) lastErr else "No routable roads found in this area"
                     invokeDone = true
+                } else if (!hasEnoughStorage(ctx, maxOf(64L * 1024L * 1024L, stageDbFile.length() * 2L))) {
+                    resultError = "Not enough free storage to save offline road graph"
+                    invokeDone = true
                 } else {
                     emitProgress("Saving offline roads ($nodeCount nodes)...", 85, force = true)
                     val fileName = if (packId != null) packFileName(packId) else "${safeName(regionName)}_${System.currentTimeMillis() % 10000}.tsr"
                     val outFile = File(dir(ctx), fileName)
                     val partFile = File(dir(ctx), "$fileName.part")
+                    activePartFile = partFile
                     partFile.delete()
                     val now = System.currentTimeMillis()
 
-                    DataOutputStream(GZIPOutputStream(BufferedOutputStream(FileOutputStream(partFile), 32 * 1024))).use { dos ->
-                        dos.writeInt(MAGIC)
-                        dos.writeUTF(regionName)
-                        dos.writeDouble(sLat)
-                        dos.writeDouble(wLng)
-                        dos.writeDouble(nLat)
-                        dos.writeDouble(eLng)
-                        dos.writeLong(now)
-                        dos.writeInt(nodeCount)
-                        dos.writeInt(edgeCount)
-                        dos.writeInt(nameCount)
+                    FileOutputStream(partFile).use { fos ->
+                        DataOutputStream(GZIPOutputStream(BufferedOutputStream(fos, 32 * 1024))).use { dos ->
+                            writeTsrHeader(dos, regionName, sLat, wLng, nLat, eLng, now, nodeCount, edgeCount, nameCount)
 
                         var lastNameIdx = -1
                         while (true) {
@@ -1001,6 +1103,8 @@ object OfflineRoutingEngine {
                         }
                         dos.flush()
                     }
+                        runCatching { fos.fd.sync() }
+                    }
 
                     checkCancelled()
                     if (outFile.exists()) outFile.delete()
@@ -1029,6 +1133,7 @@ object OfflineRoutingEngine {
                     resultRegion = meta
                     invokeDone = true
                 }
+                }
             } catch (_: CancelledSignal) {
                 wasCancelled = true
                 resultError = "Cancelled"
@@ -1051,12 +1156,11 @@ object OfflineRoutingEngine {
                 File(stageDir, "stage.db-shm").delete()
                 if (finishedCleanly) {
                     stageDir.deleteRecursively()
-                    File(dir(ctx), "${if (packId != null) packFileName(packId) else "${safeName(regionName)}"}.part").delete()
-                } else if (!wasCancelled) {
-                    // Clean up partial .tsr output if write aborted, keeping completed chunk_*.json for resume
-                    if (packId != null) File(dir(ctx), "${packFileName(packId)}.part").delete()
-                } else if (packId != null) {
-                    File(dir(ctx), "${packFileName(packId)}.part").delete()
+                }
+                // Unconditionally remove any aborted/completed .part output file regardless of packId
+                activePartFile?.takeIf { it.exists() }?.delete()
+                if (packId != null) {
+                    File(dir(ctx), "${packFileName(packId)}.part").takeIf { it.exists() }?.delete()
                 }
                 job.activeConn = null
                 activeDownloads.remove(jobKey, job)

@@ -67,6 +67,8 @@ class OfflineMapManager private constructor(context: Context) {
         const val STYLE_DARK_URL = "https://tiles.openfreemap.org/styles/fiord"
         const val PACK_KURDISTAN_ID = "kurdistan_north"
         const val PACK_SOUTHERN_IRAQ_ID = "iraq_south"
+        private const val MIN_FREE_BYTES_KURDISTAN = 350L * 1024L * 1024L
+        private const val MIN_FREE_BYTES_SOUTH = 250L * 1024L * 1024L
 
         val REGIONAL_PACKS = listOf(
             OfflinePackSpec(
@@ -118,9 +120,48 @@ class OfflineMapManager private constructor(context: Context) {
     private val activeTilePacks = ConcurrentHashMap.newKeySet<String>()
     private val pendingDownloads = ConcurrentHashMap<String, Pair<OfflinePackSpec, Float>>()
     private val lastProgressEmitMs = ConcurrentHashMap<String, Long>()
+    private data class RoadDiskSnapshot(val region: OfflineRoadRegion?, val hasPartial: Boolean)
+    private val roadDiskCache = ConcurrentHashMap<String, RoadDiskSnapshot>()
+    private val diskRefreshInFlight = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var regionsLoaded = false
     @Volatile private var uiListener: (() -> Unit)? = null
     @Volatile private var serviceListener: (() -> Unit)? = null
+
+    init {
+        REGIONAL_PACKS.forEach { refreshRoadDiskCacheAsync(it.id) }
+    }
+
+    private fun getCachedRoadSnapshot(packId: String): RoadDiskSnapshot {
+        roadDiskCache[packId]?.let { return it }
+        refreshRoadDiskCacheAsync(packId)
+        return RoadDiskSnapshot(null, false)
+    }
+
+    private fun refreshRoadDiskCacheAsync(
+        packId: String,
+        force: Boolean = false,
+        onDone: ((RoadDiskSnapshot) -> Unit)? = null
+    ) {
+        if (!force && !diskRefreshInFlight.add(packId)) return
+        if (force) diskRefreshInFlight.add(packId)
+        RoutingEngine.ioExecutor.execute {
+            try {
+                val snap = RoadDiskSnapshot(
+                    region = OfflineRoutingEngine.getPackRegion(appCtx, packId),
+                    hasPartial = OfflineRoutingEngine.hasPartialPackData(appCtx, packId)
+                )
+                roadDiskCache[packId] = snap
+                runOnMain {
+                    if (states.containsKey(packId) || uiListener != null || regionsLoaded) {
+                        syncRoadFields(packId)
+                    }
+                    onDone?.invoke(snap)
+                }
+            } finally {
+                diskRefreshInFlight.remove(packId)
+            }
+        }
+    }
 
     private fun runOnMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -203,9 +244,10 @@ class OfflineMapManager private constructor(context: Context) {
     }
 
     private fun buildIdleState(packId: String): OfflinePackState {
-        val road = OfflineRoutingEngine.getPackRegion(appCtx, packId)
+        val snap = getCachedRoadSnapshot(packId)
+        val road = snap.region
         val roadDl = OfflineRoutingEngine.isDownloading(packId)
-        val partialRoad = OfflineRoutingEngine.hasPartialPackData(appCtx, packId)
+        val partialRoad = snap.hasPartial
         val roadNote = roadProgressNotes[packId].orEmpty()
         val rErr = roadErrors[packId]
         val mErr = mapErrors[packId]
@@ -242,6 +284,7 @@ class OfflineMapManager private constructor(context: Context) {
     }
 
     fun refreshAll(onReady: (() -> Unit)? = null) {
+        REGIONAL_PACKS.forEach { refreshRoadDiskCacheAsync(it.id, force = true) }
         manager.listOfflineRegions(object : OfflineManager.ListOfflineRegionsCallback {
             override fun onList(offlineRegions: Array<OfflineRegion>?) {
                 val foundIds = mutableSetOf<String>()
@@ -326,11 +369,26 @@ class OfflineMapManager private constructor(context: Context) {
             return
         }
 
+        val reqBytes = if (pack.id == PACK_KURDISTAN_ID) MIN_FREE_BYTES_KURDISTAN else MIN_FREE_BYTES_SOUTH
+        if (!OfflineRoutingEngine.hasEnoughStorage(appCtx, reqBytes)) {
+            val freeStr = formatSize(OfflineRoutingEngine.availableStorageBytes(appCtx))
+            val msg = "Not enough free storage (need ${formatSize(reqBytes)}, $freeStr free)"
+            mapErrors[pack.id] = msg
+            states[pack.id] = cur.copy(
+                isDownloading = false,
+                isRoadQueued = false,
+                mapError = msg,
+                statusText = msg
+            )
+            notifyListeners()
+            return
+        }
+
         // Guarantee mutual exclusion with road downloader
         if (OfflineRoutingEngine.isDownloading(pack.id)) {
             OfflineRoutingEngine.cancelDownload(pack.id)
         }
-        val needRoads = OfflineRoutingEngine.getPackRegion(appCtx, pack.id) == null
+        val needRoads = getCachedRoadSnapshot(pack.id).region == null && !cur.hasRoadGraph
         autoChainRoads[pack.id] = needRoads
 
         if (!regionsLoaded) {
@@ -353,6 +411,13 @@ class OfflineMapManager private constructor(context: Context) {
 
     fun downloadRoadGraphOnly(pack: OfflinePackSpec) {
         if (OfflineRoutingEngine.isDownloading(pack.id)) return
+        if (!OfflineRoutingEngine.hasEnoughStorage(appCtx, OfflineRoutingEngine.MIN_FREE_BYTES_ROADS)) {
+            val freeStr = formatSize(OfflineRoutingEngine.availableStorageBytes(appCtx))
+            val msg = "Not enough free storage for offline roads (need ${formatSize(OfflineRoutingEngine.MIN_FREE_BYTES_ROADS)}, $freeStr free)"
+            roadErrors[pack.id] = msg
+            syncRoadFields(pack.id, forceNotDownloading = true)
+            return
+        }
         // Never download tiles and roads simultaneously
         activeTilePacks.remove(pack.id)
         autoChainRoads.remove(pack.id)
@@ -402,8 +467,12 @@ class OfflineMapManager private constructor(context: Context) {
                     roadProgressPercents.remove(packId)
                     if (reg != null) {
                         roadErrors.remove(packId)
+                        roadDiskCache[packId] = RoadDiskSnapshot(reg, false)
                     } else if (err != null && err != "Cancelled") {
                         roadErrors[packId] = err
+                        refreshRoadDiskCacheAsync(packId, force = true)
+                    } else {
+                        refreshRoadDiskCacheAsync(packId, force = true)
                     }
                     syncRoadFields(packId, forceNotDownloading = !OfflineRoutingEngine.isDownloading(packId))
                     if (!hasAnyActiveDownload()) {
@@ -420,9 +489,10 @@ class OfflineMapManager private constructor(context: Context) {
         forceNotDownloading: Boolean = false
     ) {
         val cur = states[packId] ?: buildIdleState(packId)
-        val road = OfflineRoutingEngine.getPackRegion(appCtx, packId)
+        val snap = getCachedRoadSnapshot(packId)
+        val road = snap.region
         val roadDl = if (forceNotDownloading) false else (isStarting || OfflineRoutingEngine.isDownloading(packId))
-        val partialRoad = OfflineRoutingEngine.hasPartialPackData(appCtx, packId)
+        val partialRoad = snap.hasPartial
         val note = roadProgressNotes[packId].orEmpty()
         val rErr = roadErrors[packId]
         val queued = !roadDl && road == null && (autoChainRoads[packId] == true)
@@ -512,12 +582,14 @@ class OfflineMapManager private constructor(context: Context) {
                     region.setDownloadState(OfflineRegion.STATE_INACTIVE)
                     region.setObserver(null)
                     val chainRoads = autoChainRoads[packId] == true
-                    if (chainRoads && OfflineRoutingEngine.getPackRegion(appCtx, packId) == null && !OfflineRoutingEngine.isDownloading(packId)) {
+                    val hasRoad = getCachedRoadSnapshot(packId).region != null
+                    if (chainRoads && !hasRoad && !OfflineRoutingEngine.isDownloading(packId)) {
                         updateStateFromStatus(packId, status, forceEmit = true)
                         val pack = REGIONAL_PACKS.firstOrNull { it.id == packId }
                         if (pack != null) {
                             mainHandler.postDelayed({
-                                if (autoChainRoads[pack.id] == true && !OfflineRoutingEngine.isDownloading(pack.id) && OfflineRoutingEngine.getPackRegion(appCtx, pack.id) == null) {
+                                val stillNoRoad = getCachedRoadSnapshot(pack.id).region == null
+                                if (autoChainRoads[pack.id] == true && !OfflineRoutingEngine.isDownloading(pack.id) && stillNoRoad) {
                                     startEmbeddedRoadDownload(pack.id, pack.title, pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
                                     OfflineDownloadService.startOrUpdate(appCtx)
                                 } else {
@@ -620,33 +692,38 @@ class OfflineMapManager private constructor(context: Context) {
         roadErrors.remove(packId)
         roadProgressNotes.remove(packId)
         roadProgressPercents.remove(packId)
-        val removedRoads = OfflineRoutingEngine.deletePackRegion(appCtx, packId)
-        val reg = regionHandles[packId]
-        if (reg == null) {
-            states[packId] = buildIdleState(packId)
-            notifyListeners()
-            if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
-            onDone(if (removedRoads) "Offline roads removed" else "Already removed")
-            return
-        }
-        reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
-        reg.setObserver(null)
-        reg.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
-            override fun onDelete() {
-                regionHandles.remove(packId)
-                states[packId] = buildIdleState(packId)
-                notifyListeners()
-                if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
-                onDone("Offline map & routing deleted")
-            }
+        roadDiskCache[packId] = RoadDiskSnapshot(null, false)
+        RoutingEngine.ioExecutor.execute {
+            val removedRoads = OfflineRoutingEngine.deletePackRegion(appCtx, packId)
+            runOnMain {
+                val reg = regionHandles[packId]
+                if (reg == null) {
+                    states[packId] = buildIdleState(packId)
+                    notifyListeners()
+                    if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                    onDone(if (removedRoads) "Offline roads removed" else "Already removed")
+                    return@runOnMain
+                }
+                reg.setDownloadState(OfflineRegion.STATE_INACTIVE)
+                reg.setObserver(null)
+                reg.delete(object : OfflineRegion.OfflineRegionDeleteCallback {
+                    override fun onDelete() {
+                        regionHandles.remove(packId)
+                        states[packId] = buildIdleState(packId)
+                        notifyListeners()
+                        if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                        onDone("Offline map & routing deleted")
+                    }
 
-            override fun onError(error: String) {
-                states[packId] = buildIdleState(packId)
-                notifyListeners()
-                if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
-                onDone("Delete error: $error")
+                    override fun onError(error: String) {
+                        states[packId] = buildIdleState(packId)
+                        notifyListeners()
+                        if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                        onDone("Delete error: $error")
+                    }
+                })
             }
-        })
+        }
     }
 
     fun clearAmbientCache(onDone: (String) -> Unit) {
@@ -676,9 +753,10 @@ class OfflineMapManager private constructor(context: Context) {
         val done = status.completedResourceCount
         val pct = if (req > 0) ((done * 100L) / req).toInt().coerceIn(0, 100) else 0
         val sizeStr = formatSize(status.completedResourceSize)
-        val road = OfflineRoutingEngine.getPackRegion(appCtx, packId)
+        val snap = getCachedRoadSnapshot(packId)
+        val road = snap.region
         val roadDl = OfflineRoutingEngine.isDownloading(packId)
-        val partialRoad = OfflineRoutingEngine.hasPartialPackData(appCtx, packId)
+        val partialRoad = snap.hasPartial
         val note = roadProgressNotes[packId].orEmpty()
         val rErr = roadErrors[packId]
         val mErr = mapErrors[packId]

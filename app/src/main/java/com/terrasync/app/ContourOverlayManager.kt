@@ -167,6 +167,12 @@ class ContourOverlayManager {
         seq.incrementAndGet()
     }
 
+    fun destroy() {
+        cancelPending()
+        tileCache.evictAll()
+        contourExecutor.shutdownNow()
+    }
+
     fun scheduleUpdate(map: MapLibreMap?, enabled: Boolean, isVectorMode: Boolean) {
         pendingRunnable?.let { mainHandler.removeCallbacks(it) }
         pendingRunnable = null

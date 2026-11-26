@@ -65,7 +65,15 @@ object GeoIntentParser {
     }
 
     private fun parseGeoScheme(uri: Uri): ParsedLocationIntent? {
-        val ssp = uri.schemeSpecificPart.orEmpty()
+        return parseGeoString(uri.schemeSpecificPart.orEmpty(), uri.toString())
+    }
+
+    internal fun parseGeoString(rawInput: String, originalUrl: String = rawInput): ParsedLocationIntent? {
+        val ssp = if (rawInput.startsWith("geo:", ignoreCase = true)) {
+            rawInput.substring(4)
+        } else {
+            rawInput
+        }
         val qIdx = ssp.indexOf('?')
         val coordsPart = (if (qIdx >= 0) ssp.substring(0, qIdx) else ssp).trim()
         val queryPart = if (qIdx >= 0) ssp.substring(qIdx + 1) else ""
@@ -141,7 +149,7 @@ object GeoIntentParser {
             label = finalLabel,
             searchQuery = searchQuery,
             sourceHint = "Shared Location",
-            originalUrl = uri.toString()
+            originalUrl = originalUrl
         )
     }
 
@@ -461,6 +469,11 @@ object GeoIntentParser {
         }.getOrNull()
     }
 
+    private fun decodePercentOrSpace(raw: String, plusAsSpace: Boolean): String {
+        val prepped = if (plusAsSpace) raw else raw.replace("+", "%2B")
+        return runCatching { java.net.URLDecoder.decode(prepped, "UTF-8") }.getOrDefault(raw)
+    }
+
     private fun parseQueryString(query: String): Map<String, String> {
         if (query.isBlank()) return emptyMap()
         val out = LinkedHashMap<String, String>()
@@ -468,8 +481,8 @@ object GeoIntentParser {
             if (part.isBlank()) return@forEach
             val eq = part.indexOf('=')
             if (eq > 0) {
-                val k = Uri.decode(part.substring(0, eq)).lowercase(Locale.US)
-                val v = Uri.decode(part.substring(eq + 1).replace('+', ' '))
+                val k = decodePercentOrSpace(part.substring(0, eq), plusAsSpace = true).lowercase(Locale.US)
+                val v = decodePercentOrSpace(part.substring(eq + 1), plusAsSpace = true)
                 out[k] = v
             }
         }
@@ -477,7 +490,7 @@ object GeoIntentParser {
     }
 
     private fun decodeUrlSegment(raw: String): String {
-        return Uri.decode(raw.replace('+', ' ')).trim()
+        return decodePercentOrSpace(raw, plusAsSpace = true).trim()
     }
 
     private fun cleanLabel(raw: String): String {

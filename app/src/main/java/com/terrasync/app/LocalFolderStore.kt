@@ -1,9 +1,14 @@
 package com.terrasync.app
 
 import android.content.Context
+import com.google.gson.stream.JsonWriter
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedWriter
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.OutputStreamWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -53,6 +58,8 @@ object LocalFolderStore {
         return synchronized(lock) {
             cachedSnapshot?.let { return it }
             val f = storeFile(ctx)
+            val staleTmp = File(ctx.filesDir, "$FILE_NAME.tmp")
+            if (staleTmp.exists()) runCatching { staleTmp.delete() }
             val loaded = if (!f.exists()) {
                 LocalStoreSnapshot(emptyList(), emptyList(), emptyList())
             } else {
@@ -136,53 +143,75 @@ object LocalFolderStore {
 
     private fun persistSnapshotToDisk(appCtx: Context, sortedSnap: LocalStoreSnapshot) {
         runCatching {
-            val root = JSONObject()
-            val lArr = JSONArray()
-            sortedSnap.layers.forEach { l ->
-                lArr.put(JSONObject().apply {
-                    put("id", l.id)
-                    put("name", l.name)
-                    put("createdBy", l.createdBy)
-                    put("creatorDeviceId", l.creatorDeviceId)
-                    put("updatedAt", l.updatedAt)
-                })
-            }
-            val pArr = JSONArray()
-            sortedSnap.pins.forEach { p ->
-                pArr.put(JSONObject().apply {
-                    put("id", p.id)
-                    put("layerId", p.layerId)
-                    put("name", p.name)
-                    put("description", p.description)
-                    put("lat", p.lat)
-                    put("lng", p.lng)
-                    put("status", p.status)
-                    put("issueReason", p.issueReason)
-                    put("updatedAt", p.updatedAt)
-                    put("isEdited", p.isEdited)
-                    put("editedBy", p.editedBy)
-                    put("editedAt", p.editedAt)
-                    put("editHistory", p.editHistory)
-                })
-            }
-            val tArr = JSONArray()
-            sortedSnap.tracks.forEach { t ->
-                tArr.put(JSONObject().apply {
-                    put("id", t.id)
-                    put("layerId", t.layerId)
-                    put("name", t.name)
-                    put("coords", t.coords)
-                    put("updatedAt", t.updatedAt)
-                })
-            }
-            root.put("layers", lArr)
-            root.put("pins", pArr)
-            root.put("tracks", tArr)
             val tmp = File(appCtx.filesDir, "$FILE_NAME.tmp")
-            tmp.writeText(root.toString(), Charsets.UTF_8)
+            FileOutputStream(tmp).use { fos ->
+                JsonWriter(BufferedWriter(OutputStreamWriter(fos, Charsets.UTF_8), 32 * 1024)).use { jw ->
+                    jw.beginObject()
+                    jw.name("layers")
+                    jw.beginArray()
+                    sortedSnap.layers.forEach { l ->
+                        jw.beginObject()
+                        jw.name("id").value(l.id)
+                        jw.name("name").value(l.name)
+                        jw.name("createdBy").value(l.createdBy)
+                        jw.name("creatorDeviceId").value(l.creatorDeviceId)
+                        jw.name("updatedAt").value(l.updatedAt)
+                        jw.endObject()
+                    }
+                    jw.endArray()
+
+                    jw.name("pins")
+                    jw.beginArray()
+                    sortedSnap.pins.forEach { p ->
+                        jw.beginObject()
+                        jw.name("id").value(p.id)
+                        jw.name("layerId").value(p.layerId)
+                        jw.name("name").value(p.name)
+                        jw.name("description").value(p.description)
+                        jw.name("lat").value(if (p.lat.isFinite()) p.lat else 0.0)
+                        jw.name("lng").value(if (p.lng.isFinite()) p.lng else 0.0)
+                        jw.name("status").value(p.status)
+                        jw.name("issueReason").value(p.issueReason)
+                        jw.name("updatedAt").value(p.updatedAt)
+                        jw.name("isEdited").value(p.isEdited)
+                        jw.name("editedBy").value(p.editedBy)
+                        jw.name("editedAt").value(p.editedAt)
+                        jw.name("editHistory").value(p.editHistory)
+                        jw.endObject()
+                    }
+                    jw.endArray()
+
+                    jw.name("tracks")
+                    jw.beginArray()
+                    sortedSnap.tracks.forEach { t ->
+                        jw.beginObject()
+                        jw.name("id").value(t.id)
+                        jw.name("layerId").value(t.layerId)
+                        jw.name("name").value(t.name)
+                        jw.name("coords").value(t.coords)
+                        jw.name("updatedAt").value(t.updatedAt)
+                        jw.endObject()
+                    }
+                    jw.endArray()
+                    jw.endObject()
+                    jw.flush()
+                }
+                fos.fd.sync()
+            }
             val dst = storeFile(appCtx)
             if (!tmp.renameTo(dst)) {
-                tmp.copyTo(dst, overwrite = true)
+                val backupTmp = File(appCtx.filesDir, "$FILE_NAME.tmp2")
+                FileInputStream(tmp).use { input ->
+                    FileOutputStream(backupTmp).use { output ->
+                        input.copyTo(output, bufferSize = 32 * 1024)
+                        output.flush()
+                        output.fd.sync()
+                    }
+                }
+                if (!backupTmp.renameTo(dst)) {
+                    backupTmp.copyTo(dst, overwrite = true)
+                    backupTmp.delete()
+                }
                 tmp.delete()
             }
         }

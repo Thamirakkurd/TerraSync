@@ -231,6 +231,9 @@ class MainActivity : AppCompatActivity() {
     private var isFullScreenMapMode: Boolean = false
     private var isCompassVisible: Boolean = false
     private var isSwappingSheetInPlace: Boolean = false
+    private var derivedSpeedMps: Float = 0f
+    private var lastSpeedLoc: Location? = null
+    private var lastSpeedFixElapsedMs: Long = 0L
     private lateinit var speedBadge: LinearLayout
     private lateinit var tvSpeedValue: TextView
     private lateinit var tvSpeedUnit: TextView
@@ -448,6 +451,7 @@ class MainActivity : AppCompatActivity() {
         repo = SyncRepo(applicationContext)
         RoutingEngine.appContext = applicationContext
         LocalFolderStore.preloadAsync(applicationContext)
+        RoutingEngine.ioExecutor.execute { OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext) }
         setContentView(R.layout.activity_main)
 
         visibleStatuses = DevicePrefs.getVisibleStatuses(this).toMutableSet()
@@ -727,8 +731,12 @@ class MainActivity : AppCompatActivity() {
             override fun afterTextChanged(s: Editable?) {}
         })
 
+        val dlgScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(box)
+        }
         val dlg = themedDialogBuilder("Field Operator Stamp")
-            .setView(box)
+            .setView(dlgScroll)
             .setCancelable(false)
             .setPositiveButton("Save & Continue", null)
             .setNegativeButton("Skip for now") { _, _ ->
@@ -1394,21 +1402,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnTabSearch.setOnClickListener {
+            if (activeOpenNavTab == 0 && pageOverlayContainer.visibility == View.VISIBLE && pageBackStack.isEmpty()) return@setOnClickListener
             activeOpenNavTab = 0
             syncNavDockPills()
             openFullPage(::buildSearchPage)
         }
         btnTabBookmarks.setOnClickListener {
+            if (activeOpenNavTab == 1 && pageOverlayContainer.visibility == View.VISIBLE && pageBackStack.isEmpty()) return@setOnClickListener
             activeOpenNavTab = 1
             syncNavDockPills()
             openFullPage(::buildBookmarksAndTracksPage)
         }
         btnTabSettings.setOnClickListener {
+            if (activeOpenNavTab == 2 && pageOverlayContainer.visibility == View.VISIBLE && pageBackStack.isEmpty()) return@setOnClickListener
             activeOpenNavTab = 2
             syncNavDockPills()
             openFullPage(::buildSettingsPage)
         }
         btnTabAbout.setOnClickListener {
+            if (activeOpenNavTab == 3 && pageOverlayContainer.visibility == View.VISIBLE && pageBackStack.isEmpty()) return@setOnClickListener
             activeOpenNavTab = 3
             syncNavDockPills()
             openFullPage(::buildAboutPage)
@@ -2879,6 +2891,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hideInScreenSheet() {
+        hideSoftKeyboard()
         sheetOpenSeq++
         sheetBehavior.state = BottomSheetBehavior.STATE_HIDDEN
     }
@@ -2893,6 +2906,7 @@ class MainActivity : AppCompatActivity() {
     // --- Polished Pin Card (Stacked Cycler, Route To / Route From, Owner-Only Delete) ---
 
     private fun showPinCard(pin: PinItem, animateSwap: Boolean = false, swapForward: Boolean = true) {
+        hideSoftKeyboard()
         sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
@@ -3675,6 +3689,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showTappedPlaceCard(title: String, subtitle: String, lat: Double, lng: Double) {
+        hideSoftKeyboard()
         sheetQuickSelectPinId = null
         val p = currentPalette()
         val night = p.isDark
@@ -4349,7 +4364,8 @@ class MainActivity : AppCompatActivity() {
         val nextInstr = if (isRerouting) "Recalculating route..." else step.instruction
         UiAnimations.animateCrossfadeText(tvNavArrow, step.arrow, slideDp = 5f)
         UiAnimations.animateCrossfadeText(tvNavInstruction, nextInstr, slideDp = 5f)
-        tvNavMeta.text = "${formatDistanceShort(distToStep, unit)} • ${formatDistanceShort(remainingRoadMeters, unit)} (${etaMin}m) • ${route.engineLabel}"
+        val engineSuffix = if (route.engineLabel.contains("Offline", ignoreCase = true)) " • Offline" else ""
+        tvNavMeta.text = "${formatDistanceShort(distToStep, unit)} • ${formatDistanceShort(remainingRoadMeters, unit)} (${etaMin}m)$engineSuffix"
 
         val speakDist = if (loc.hasSpeed() && loc.speed > 16f) 450.0 else 280.0
         if (!isRerouting && navCurrentStepIdx != lastSpokenStepIdx && distToStep < speakDist) {
@@ -4523,6 +4539,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopLiveGpsUpdates() {
+        derivedSpeedMps = 0f
+        lastSpeedLoc = null
+        lastSpeedFixElapsedMs = 0L
         if (!gpsTrackingActive) return
         runCatching {
             val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -4561,9 +4580,14 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val unit = cachedSpeedUnit
-        val reliableSpeed = loc != null && loc.hasSpeed() &&
+        val accurateFix = loc != null &&
             (loc.provider == LocationManager.GPS_PROVIDER || !loc.hasAccuracy() || loc.accuracy <= 35f)
-        val rawKmh = if (reliableSpeed) (loc!!.speed * 3.6f).roundToInt().coerceAtLeast(0) else 0
+        val rawMps = when {
+            accurateFix && loc!!.hasSpeed() -> loc.speed
+            accurateFix && derivedSpeedMps > 0f -> derivedSpeedMps
+            else -> 0f
+        }
+        val rawKmh = (rawMps * 3.6f).roundToInt().coerceAtLeast(0)
         val kmh = if (rawKmh < 2) 0 else rawKmh
         val displayVal = if (unit == SpeedUnit.IMPERIAL) (kmh * 0.621371f).roundToInt() else kmh
         val shouldShow = activeNavRoute != null || kmh >= 4
@@ -4577,6 +4601,22 @@ class MainActivity : AppCompatActivity() {
     private fun onNewLocation(loc: Location) {
         if (!isBetterLocation(loc, currentLocation)) return
         lastLiveLocationFixMs = System.currentTimeMillis()
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+        if (loc.hasSpeed()) {
+            derivedSpeedMps = loc.speed
+        } else if (lastSpeedLoc != null && (!loc.hasAccuracy() || loc.accuracy <= 35f)) {
+            val dtSec = (nowElapsed - lastSpeedFixElapsedMs) / 1000f
+            if (dtSec in 0.35f..5.0f) {
+                val dist = lastSpeedLoc!!.distanceTo(loc)
+                derivedSpeedMps = if (dist >= 1.5f) (dist / dtSec).coerceAtMost(55f) else 0f
+            } else if (dtSec > 5.0f) {
+                derivedSpeedMps = 0f
+            }
+        } else if (lastSpeedLoc == null) {
+            derivedSpeedMps = 0f
+        }
+        lastSpeedLoc = loc
+        lastSpeedFixElapsedMs = nowElapsed
         val prevLoc = currentLocation
         val prevLat = if (prevLoc == null) loc.latitude else displayedLat
         val prevLng = if (prevLoc == null) loc.longitude else displayedLng
@@ -4830,7 +4870,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(p.textPrimary)
             setTypeface(null, Typeface.BOLD)
             maxLines = 1
-            ellipsize = TextUtils.TruncateAt.MIDDLE
+            ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = dp(6)
                 marginEnd = dp(8)
@@ -5167,7 +5207,7 @@ class MainActivity : AppCompatActivity() {
                                 setTextColor(txtPrimary)
                                 setTypeface(null, Typeface.BOLD)
                                 maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.MIDDLE
+                                ellipsize = TextUtils.TruncateAt.END
                             })
                             val fName = folderNameById[pin.layerId] ?: "Folder"
                             val st = PinStatus.fromRaw(pin.status)
@@ -5190,7 +5230,7 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 )
                                 maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.MIDDLE
+                                ellipsize = TextUtils.TruncateAt.END
                             })
                             row.addView(col)
 
@@ -5416,7 +5456,7 @@ class MainActivity : AppCompatActivity() {
                     setTypeface(null, Typeface.BOLD)
                     setTextColor(txtPrimary)
                     maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.MIDDLE
+                    ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
                 if (isLocal) {
@@ -6578,7 +6618,7 @@ class MainActivity : AppCompatActivity() {
                     setTextColor(txtPrimary)
                     setTypeface(null, Typeface.BOLD)
                     maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.MIDDLE
+                    ellipsize = TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
                 if (sameCount >= 2) {
@@ -6845,8 +6885,14 @@ class MainActivity : AppCompatActivity() {
                 UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     val cur = if (label.startsWith("Start")) chosenStartMin else chosenEndMin
+                    val pickerTheme = if (p.isDark) {
+                        android.R.style.Theme_Material_Dialog_Alert
+                    } else {
+                        android.R.style.Theme_Material_Light_Dialog_Alert
+                    }
                     android.app.TimePickerDialog(
                         this@MainActivity,
+                        pickerTheme,
                         { _, h, m ->
                             val total = h * 60 + m
                             onPicked(total)
@@ -7004,7 +7050,7 @@ class MainActivity : AppCompatActivity() {
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(txtPrimary)
                 maxLines = 1
-                ellipsize = TextUtils.TruncateAt.MIDDLE
+                ellipsize = TextUtils.TruncateAt.END
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginEnd = dp(8)
                 }
@@ -7284,8 +7330,8 @@ class MainActivity : AppCompatActivity() {
                         textSize = 14.5f
                         setTypeface(null, Typeface.BOLD)
                         setTextColor(txtPrimary)
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.MIDDLE
+                        maxLines = 2
+                        ellipsize = TextUtils.TruncateAt.END
                         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                     })
                     if (entry.isOutsideWorkHours) {
@@ -7611,8 +7657,8 @@ class MainActivity : AppCompatActivity() {
                                 text = pin.name
                                 textSize = 14.5f
                                 setTypeface(null, Typeface.BOLD)
-                                maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.MIDDLE
+                                maxLines = 2
+                                ellipsize = TextUtils.TruncateAt.END
                                 setTextColor(txtPrimary)
                             })
                             col.addView(TextView(this@MainActivity).apply {
@@ -9144,7 +9190,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 12.5f
             setTextColor(p.textSecondary)
             maxLines = 1
-            ellipsize = TextUtils.TruncateAt.MIDDLE
+            ellipsize = TextUtils.TruncateAt.END
         })
         header.addView(titleCol)
         header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
@@ -9541,29 +9587,50 @@ class MainActivity : AppCompatActivity() {
     private fun handleImportUri(uri: Uri) {
         val fileName = getDisplayName(uri).substringBeforeLast('.')
         val localId = LocalFolderStore.newLocalLayerId()
+        val stamp = DevicePrefs.getDeviceStamp(this)
+        val devId = DevicePrefs.getDeviceId(this)
+        val existingNameKeys = buildSet {
+            layers.forEach { add(normalizeLayerNameKey(it.name)) }
+            DevicePrefs.getCachedLayerNames(this@MainActivity).forEach { add(normalizeLayerNameKey(it)) }
+        }
+        val appCtx = applicationContext
 
         RoutingEngine.ioExecutor.execute {
             val parsed = runCatching {
                 contentResolver.openInputStream(uri)?.use { KmlParser.parse(it, localId) }
             }.getOrNull()
 
+            if (parsed == null || (parsed.pins.isEmpty() && parsed.tracks.isEmpty())) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        Toast.makeText(this, "No pins or tracks found in file", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                return@execute
+            }
+
+            val rawDocName = parsed.documentName.trim()
+            val preferredBase = when {
+                rawDocName.isNotBlank() && !rawDocName.equals("Document", true) && !rawDocName.equals("KML", true) -> rawDocName
+                fileName.isNotBlank() -> fileName.replace('_', ' ').trim()
+                else -> "Imported Folder"
+            }.ifBlank { "Imported Folder" }
+
+            val chosenName = if (normalizeLayerNameKey(preferredBase) !in existingNameKeys) {
+                preferredBase
+            } else {
+                val stem = preferredBase.replace(Regex("\\s*\\(\\d+\\)$"), "").trim().ifBlank { preferredBase }
+                var n = 2
+                while (normalizeLayerNameKey("$stem ($n)") in existingNameKeys) {
+                    n++
+                }
+                "$stem ($n)"
+            }
+
+            LocalFolderStore.saveNewLayer(appCtx, localId, chosenName, stamp, devId, parsed)
+
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                if (parsed == null || (parsed.pins.isEmpty() && parsed.tracks.isEmpty())) {
-                    Toast.makeText(this, "No pins or tracks found in file", Toast.LENGTH_SHORT).show()
-                    return@runOnUiThread
-                }
-                val rawDocName = parsed.documentName.trim()
-                val preferredBase = when {
-                    rawDocName.isNotBlank() && !rawDocName.equals("Document", true) && !rawDocName.equals("KML", true) -> rawDocName
-                    fileName.isNotBlank() -> fileName.replace('_', ' ').trim()
-                    else -> "Imported Folder"
-                }
-                val chosenName = makeUniqueLayerName(preferredBase)
-                val stamp = DevicePrefs.getDeviceStamp(this)
-                val devId = DevicePrefs.getDeviceId(this)
-
-                LocalFolderStore.saveNewLayer(this, localId, chosenName, stamp, devId, parsed)
                 DevicePrefs.addCachedLayerName(this, chosenName)
                 DevicePrefs.setLayerVisible(this, localId, true)
                 applyMergedFoldersAndRender()
@@ -10060,7 +10127,7 @@ class MainActivity : AppCompatActivity() {
         pageOverlayContainer.animate().cancel()
         pulseAnimator?.cancel()
         gpsAnim?.cancel()
-        contourManager.cancelPending()
+        contourManager.destroy()
         offlineMaps.setStateListener(null)
         tts?.stop()
         tts?.shutdown()

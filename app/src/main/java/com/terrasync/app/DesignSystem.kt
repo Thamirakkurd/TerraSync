@@ -8,6 +8,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Build
+import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
@@ -27,6 +28,7 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
+import java.lang.ref.WeakReference
 
 /**
  * TerraSync Two-Material-Worlds Visual Design System
@@ -652,6 +654,9 @@ object DesignSystem {
      * header + circular close button, crisp outlined icons, generous 52dp one-handed tap targets,
      * and distinct red styling for destructive actions.
      */
+    @Volatile private var activeActionSheetRef: WeakReference<BottomSheetDialog>? = null
+    @Volatile private var lastActionSheetMs: Long = 0L
+
     fun showActionBottomSheet(
         ctx: Context,
         palette: ThemePalette,
@@ -661,8 +666,23 @@ object DesignSystem {
         dimAmount: Float? = null,
         extraContent: ((LinearLayout) -> Unit)? = null
     ): BottomSheetDialog {
+        val now = SystemClock.elapsedRealtime()
+        val existing = activeActionSheetRef?.get()
+        if (existing != null && existing.isShowing) {
+            if (now - lastActionSheetMs < 450L) {
+                return existing
+            }
+            runCatching { existing.dismiss() }
+        }
         val d = ctx.resources.displayMetrics.density
         val dialog = BottomSheetDialog(ctx)
+        lastActionSheetMs = now
+        activeActionSheetRef = WeakReference(dialog)
+        dialog.setOnDismissListener {
+            if (activeActionSheetRef?.get() === dialog) {
+                activeActionSheetRef = null
+            }
+        }
 
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -716,7 +736,7 @@ object DesignSystem {
             setTypeface(null, Typeface.BOLD)
             setTextColor(palette.textPrimary)
             maxLines = 2
-            ellipsize = TextUtils.TruncateAt.MIDDLE
+            ellipsize = TextUtils.TruncateAt.END
         })
         if (!subtitle.isNullOrBlank()) {
             titleCol.addView(TextView(ctx).apply {

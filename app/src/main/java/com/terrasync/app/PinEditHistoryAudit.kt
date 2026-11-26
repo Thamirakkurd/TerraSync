@@ -116,6 +116,66 @@ object PinEditHistoryAudit {
         return sb.toString()
     }
 
+    fun countOutsideWorkingHours(
+        layerPins: List<PinItem>,
+        workStartMin: Int,
+        workEndMin: Int
+    ): Int {
+        if (workStartMin == workEndMin) return 0
+        var count = 0
+        val scratchCal = Calendar.getInstance()
+        for (pin in layerPins) {
+            val hist = pin.editHistory
+            if (hist.isNotBlank()) {
+                var idx = 0
+                var start = 0
+                val len = hist.length
+                while (start <= len) {
+                    val nl = hist.indexOf('\n', start).let { if (it < 0) len else it }
+                    val rawLine = hist.substring(start, nl).trim()
+                    start = nl + 1
+                    if (rawLine.isEmpty()) {
+                        if (nl == len) break
+                        continue
+                    }
+                    val bulletIdx = rawLine.indexOf('•')
+                    val timePart = if (bulletIdx > 0) rawLine.substring(0, bulletIdx).trim() else ""
+                    val match = TIME_PREFIX_REGEX.matchEntire(timePart)
+                    var minOfDay: Int? = null
+                    if (match != null) {
+                        val hh = match.groupValues[2].toIntOrNull()
+                        val mm = match.groupValues[3].toIntOrNull()
+                        if (hh != null && mm != null && hh in 0..23 && mm in 0..59) {
+                            minOfDay = hh * 60 + mm
+                        }
+                    } else if (idx == 0 && pin.editedAt > 0L) {
+                        scratchCal.timeInMillis = pin.editedAt
+                        minOfDay = scratchCal.get(Calendar.HOUR_OF_DAY) * 60 + scratchCal.get(Calendar.MINUTE)
+                    }
+                    if (isOutsideWorkingHours(minOfDay, workStartMin, workEndMin)) {
+                        count++
+                    }
+                    idx++
+                    if (nl == len) break
+                }
+            } else if (pin.isEdited || PinStatus.fromRaw(pin.status) != PinStatus.PENDING || pin.issueReason.isNotBlank()) {
+                val ts = when {
+                    pin.editedAt > 0L -> pin.editedAt
+                    pin.updatedAt > 0L -> pin.updatedAt
+                    else -> 0L
+                }
+                if (ts > 0L) {
+                    scratchCal.timeInMillis = ts
+                    val minOfDay = scratchCal.get(Calendar.HOUR_OF_DAY) * 60 + scratchCal.get(Calendar.MINUTE)
+                    if (isOutsideWorkingHours(minOfDay, workStartMin, workEndMin)) {
+                        count++
+                    }
+                }
+            }
+        }
+        return count
+    }
+
     fun collectFolderHistory(
         layerPins: List<PinItem>,
         workStartMin: Int,

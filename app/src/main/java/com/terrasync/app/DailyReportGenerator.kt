@@ -35,6 +35,7 @@ object DailyReportGenerator {
         """(?i)(?:[\s,;•|/\-–—]+|\(\s*)(team[\s_-]*\d+|supervisor)\s*\)?$"""
     )
     private val TITLE_SEG_SPLIT_REGEX = Regex("""\s+[-–—|]\s+""")
+    private val TEAM_GROUP_SEP_REGEX = Regex("""[\s_-]+""")
 
     private data class KnownCategoryRule(
         val canonical: String,
@@ -99,7 +100,7 @@ object DailyReportGenerator {
     fun teamGroupKey(normalizedDisplay: String): String {
         return collapseWhitespace(normalizedDisplay)
             .lowercase(Locale.ROOT)
-            .replace(Regex("[\\s_-]+"), " ")
+            .replace(TEAM_GROUP_SEP_REGEX, " ")
             .trim()
     }
 
@@ -257,12 +258,21 @@ object DailyReportGenerator {
         allKnownPinsForDeviceMap: List<PinItem> = pins
     ): DailyFieldReport {
         val uniquePins = deduplicatePins(pins)
-        val doneCnt = uniquePins.count { PinStatus.fromRaw(it.status) == PinStatus.DONE }
-        val issueCnt = uniquePins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+        val dupSkipped = (pins.size - uniquePins.size).coerceAtLeast(0)
+        var doneCnt = 0
+        var issueCnt = 0
+        for (pin in uniquePins) {
+            when (PinStatus.fromRaw(pin.status)) {
+                PinStatus.DONE -> doneCnt++
+                PinStatus.ISSUE -> issueCnt++
+                PinStatus.PENDING -> Unit
+            }
+        }
         val pendingCnt = uniquePins.size - doneCnt - issueCnt
-        val text = generate(
+        val text = generateFromUnique(
             folderName = folderName,
-            pins = pins,
+            uniquePins = uniquePins,
+            dupSkipped = dupSkipped,
             isCloudLive = isCloudLive,
             workStartMin = workStartMin,
             workEndMin = workEndMin,
@@ -289,9 +299,35 @@ object DailyReportGenerator {
         configuredDeviceAliases: Map<String, String> = emptyMap(),
         allKnownPinsForDeviceMap: List<PinItem> = pins
     ): String {
+        val uniquePins = deduplicatePins(pins)
+        val dupSkipped = (pins.size - uniquePins.size).coerceAtLeast(0)
+        return generateFromUnique(
+            folderName = folderName,
+            uniquePins = uniquePins,
+            dupSkipped = dupSkipped,
+            isCloudLive = isCloudLive,
+            workStartMin = workStartMin,
+            workEndMin = workEndMin,
+            syncBadgeOverride = syncBadgeOverride,
+            configuredDeviceAliases = configuredDeviceAliases,
+            allKnownPinsForDeviceMap = allKnownPinsForDeviceMap
+        )
+    }
+
+    private fun generateFromUnique(
+        folderName: String,
+        uniquePins: List<PinItem>,
+        dupSkipped: Int,
+        isCloudLive: Boolean = false,
+        workStartMin: Int? = null,
+        workEndMin: Int? = null,
+        syncBadgeOverride: String? = null,
+        configuredDeviceAliases: Map<String, String> = emptyMap(),
+        allKnownPinsForDeviceMap: List<PinItem> = uniquePins
+    ): String {
         val now = SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.US).format(Date())
         val syncBadge = syncBadgeOverride ?: if (isCloudLive) "Live Cloud" else "Local"
-        if (pins.isEmpty()) {
+        if (uniquePins.isEmpty()) {
             return buildString {
                 appendLine("*${flattenSingleLine(folderName)} — Daily Field Report*")
                 appendLine("_${now} • ${syncBadge}_")
@@ -300,8 +336,6 @@ object DailyReportGenerator {
             }.trim()
         }
 
-        val uniquePins = deduplicatePins(pins)
-        val dupSkipped = (pins.size - uniquePins.size).coerceAtLeast(0)
         val total = uniquePins.size
 
         val deviceToTeam = buildDeviceToTeamMap(
@@ -408,8 +442,7 @@ object DailyReportGenerator {
             appendLine("• ⚠ Issue: *$issueCount*")
             appendLine("• ⏳ Pending: *$pendingTotal* ($pendingUntouched untouched, $pendingTouched touched)")
             if (workStartMin != null && workEndMin != null) {
-                val allEdits = PinEditHistoryAudit.collectFolderHistory(uniquePins, workStartMin, workEndMin, deviceToTeam)
-                val lateCount = allEdits.count { it.isOutsideWorkHours }
+                val lateCount = PinEditHistoryAudit.countOutsideWorkingHours(uniquePins, workStartMin, workEndMin)
                 val window = "${PinEditHistoryAudit.formatMinutes(workStartMin)}–${PinEditHistoryAudit.formatMinutes(workEndMin)}"
                 val editWord = if (lateCount == 1) "edit" else "edits"
                 appendLine("• ⏰ Outside Working Hours ($window): *$lateCount* $editWord")

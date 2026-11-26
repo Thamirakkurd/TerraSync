@@ -29,6 +29,9 @@ jobs:
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > app/release-keystore.p12
           fi
 
+      - name: Run Unit Tests (-Xmx128m Stress & Regression)
+        run: gradle testDebugUnitTest --no-daemon
+
       - name: Build Signed Release APK
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
