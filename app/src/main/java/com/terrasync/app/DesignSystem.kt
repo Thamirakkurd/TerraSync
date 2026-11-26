@@ -114,10 +114,10 @@ object DesignSystem {
             val frosted = Color.parseColor("#222421")
             val frostedTray = Color.parseColor("#222421")
             val navPill = Color.parseColor("#2E302C")
-            val tonal = Color.parseColor("#2B2D29")
+            val tonal = Color.parseColor("#1F211E")
             val primary = Color.parseColor("#238E5E")
             val primarySoft = Color.parseColor("#26238E5E")
-            val border = Color.parseColor("#30332E")
+            val border = Color.parseColor("#343832")
             val textPri = Color.parseColor("#F4F4F0")
             val textBdy = Color.parseColor("#C4C6C0")
             val textMut = Color.parseColor("#8F928C")
@@ -331,7 +331,7 @@ object DesignSystem {
         applyDirectionalShadow(view, palette)
     }
 
-    /** Flat tonal grouped container (#F1F1EE light / #2B2D29 dark) with zero inner drop shadow. */
+    /** Flat tonal grouped container (#F1F1EE light / #1F211E dark) with crisp dark border stroke. */
     fun applyGroupedCardSurface(
         ctx: Context,
         view: View,
@@ -344,8 +344,8 @@ object DesignSystem {
             fillColor = fillOverride ?: palette.surfaceTonal,
             radiusDp = radiusDp,
             topOnly = false,
-            strokeColor = if (palette.isDark) palette.borderSubtle else Color.TRANSPARENT,
-            strokeDp = if (palette.isDark) 0.75f else 0f
+            strokeColor = if (palette.isDark) palette.cardBorder else Color.TRANSPARENT,
+            strokeDp = if (palette.isDark) 1f else 0f
         )
         view.elevation = 0f
         view.clipToOutline = true

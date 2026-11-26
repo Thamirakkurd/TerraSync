@@ -8,7 +8,11 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -22,8 +26,13 @@ import android.provider.OpenableColumns
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.text.Editable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -99,6 +108,7 @@ class MainActivity : AppCompatActivity() {
         private const val ROUTE_PILL_LAYER = "terrasync-route-pill-layer"
         private const val ROUTE_PILL_ICON = "route-time-pill"
         private const val RULER_LINE_SOURCE = "terrasync-ruler-line-source"
+        private const val RULER_LINE_CASING_LAYER = "terrasync-ruler-line-casing-layer"
         private const val RULER_LINE_LAYER = "terrasync-ruler-line-layer"
         private const val RULER_POINTS_SOURCE = "terrasync-ruler-points-source"
         private const val RULER_POINTS_CIRCLE_LAYER = "terrasync-ruler-points-circle-layer"
@@ -1424,8 +1434,8 @@ class MainActivity : AppCompatActivity() {
         DesignSystem.applyFloatingSurface(this, rulerCard, p, radiusDp = 24f, elevationDp = 8f)
         tvRulerDistance.setTextColor(p.textPrimary)
         tvRulerSubtitle.setTextColor(p.textMuted)
-        btnRulerReset.setTextColor(p.accentPrimary)
-        UiAnimations.applyRoundedRipple(this, btnRulerReset, p.accentPrimarySoft, 12f, night)
+        btnRulerReset.setTextColor(p.accentWarm)
+        UiAnimations.applyRoundedRipple(this, btnRulerReset, p.accentWarmContainer, 18f, night)
         UiAnimations.attachSnappyPress(btnRulerReset)
         btnRulerUndo.setColorFilter(iconTint)
         UiAnimations.attachSnappyPress(btnRulerUndo)
@@ -1507,27 +1517,201 @@ class MainActivity : AppCompatActivity() {
 
         btnStyleToggle.setOnClickListener {
             val p = currentPalette()
+            val d = resources.displayMetrics.density
             DesignSystem.showActionBottomSheet(
                 ctx = this,
                 palette = p,
                 title = "Map Layers",
                 subtitle = "Style and visual map overlays",
                 dimAmount = 0.18f,
-                actions = MapStyleMode.entries.map { mode ->
-                    SheetActionItem(
-                        title = mode.label,
-                        subtitle = if (mode == MapStyleMode.VECTOR) "Crisp vector roads, terrain & bilingual labels" else "High-resolution aerial imagery + road overlay",
-                        iconRes = if (mode == MapStyleMode.VECTOR) R.drawable.ic_map else R.drawable.ic_layers,
-                        checked = mode == mapStyleMode
-                    ) {
-                        if (mapStyleMode != mode) {
-                            mapStyleMode = mode
-                            DevicePrefs.setMapStyleMode(this, mode)
-                            applyMapChromeTheme()
-                            loadMapStyle()
-                            Toast.makeText(this, mode.label, Toast.LENGTH_SHORT).show()
+                actions = emptyList(),
+                headerContent = { listCol, dismiss ->
+                    val swatchRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            bottomMargin = dp(4)
                         }
                     }
+
+                    MapStyleMode.entries.forEachIndexed { idx, mode ->
+                        val active = mode == mapStyleMode
+                        val isSat = mode == MapStyleMode.SATELLITE
+                        val card = LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(6), dp(6), dp(6), dp(8))
+                            isClickable = true
+                            isFocusable = true
+                            background = DesignSystem.buildOpaqueDrawable(
+                                ctx = this@MainActivity,
+                                fillColor = if (active) p.accentPrimarySoft else p.surfaceTonal,
+                                radiusDp = 18f,
+                                strokeColor = if (active) p.accentPrimary else p.borderSubtle,
+                                strokeDp = if (active) 2f else 1f
+                            )
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                if (idx == 0) marginEnd = dp(10)
+                            }
+                            UiAnimations.attachSnappyPress(this, 0.97f)
+                            setOnClickListener {
+                                dismiss()
+                                if (mapStyleMode != mode) {
+                                    mapStyleMode = mode
+                                    DevicePrefs.setMapStyleMode(this@MainActivity, mode)
+                                    applyMapChromeTheme()
+                                    loadMapStyle()
+                                    Toast.makeText(this@MainActivity, mode.label, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+
+                        val previewFrame = FrameLayout(this).apply {
+                            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(78))
+                            background = GradientDrawable().apply {
+                                cornerRadius = dp(12).toFloat()
+                            }
+                            clipToOutline = true
+                        }
+                        val swatchGraphic = object : View(this) {
+                            private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+                            private val roadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                style = Paint.Style.STROKE
+                                strokeCap = Paint.Cap.ROUND
+                                strokeJoin = Paint.Join.ROUND
+                            }
+                            private val riverPath = Path()
+                            private val patchPath = Path()
+
+                            override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                                super.onSizeChanged(w, h, oldw, oldh)
+                                val wf = w.toFloat()
+                                val hf = h.toFloat()
+                                riverPath.reset()
+                                riverPath.moveTo(-4f * d, hf * 0.72f)
+                                riverPath.cubicTo(wf * 0.30f, hf * 0.50f, wf * 0.62f, hf * 0.88f, wf + 4f * d, hf * 0.38f)
+
+                                patchPath.reset()
+                                patchPath.moveTo(wf * 0.58f, 0f)
+                                patchPath.lineTo(wf, 0f)
+                                patchPath.lineTo(wf, hf * 0.56f)
+                                patchPath.cubicTo(wf * 0.76f, hf * 0.44f, wf * 0.64f, hf * 0.24f, wf * 0.58f, 0f)
+                                patchPath.close()
+                            }
+
+                            override fun onDraw(canvas: Canvas) {
+                                val wf = width.toFloat()
+                                val hf = height.toFloat()
+                                if (wf <= 0f || hf <= 0f) return
+                                val nightPreview = p.isDark
+
+                                if (isSat) {
+                                    canvas.drawColor(Color.parseColor("#243227"))
+                                    paint.style = Paint.Style.FILL
+                                    paint.color = Color.parseColor("#2E4130")
+                                    canvas.drawPath(patchPath, paint)
+                                    paint.color = Color.parseColor("#3B4732")
+                                    canvas.drawCircle(wf * 0.22f, hf * 0.28f, wf * 0.28f, paint)
+                                    paint.color = Color.parseColor("#1D332B")
+                                    canvas.drawCircle(wf * 0.82f, hf * 0.84f, wf * 0.26f, paint)
+
+                                    roadPaint.color = Color.parseColor("#1B3B45")
+                                    roadPaint.strokeWidth = 8.5f * d
+                                    canvas.drawPath(riverPath, roadPaint)
+
+                                    roadPaint.color = Color.parseColor("#73FFFFFF")
+                                    roadPaint.strokeWidth = 1.8f * d
+                                    canvas.drawLine(0f, hf * 0.32f, wf, hf * 0.24f, roadPaint)
+                                    canvas.drawLine(wf * 0.36f, 0f, wf * 0.50f, hf, roadPaint)
+
+                                    roadPaint.color = Color.parseColor("#CCEB9E38")
+                                    roadPaint.strokeWidth = 2.6f * d
+                                    canvas.drawLine(0f, hf * 0.54f, wf, hf * 0.48f, roadPaint)
+                                } else {
+                                    canvas.drawColor(Color.parseColor(if (nightPreview) "#1F2622" else "#EDEFE9"))
+                                    paint.style = Paint.Style.FILL
+                                    paint.color = Color.parseColor(if (nightPreview) "#24382C" else "#D5E8D0")
+                                    canvas.drawPath(patchPath, paint)
+                                    paint.color = Color.parseColor(if (nightPreview) "#242A26" else "#E2E4DD")
+                                    canvas.drawRect(wf * 0.08f, hf * 0.14f, wf * 0.30f, hf * 0.38f, paint)
+                                    canvas.drawRect(wf * 0.42f, hf * 0.58f, wf * 0.64f, hf * 0.82f, paint)
+
+                                    roadPaint.color = Color.parseColor(if (nightPreview) "#20404D" else "#B8DDF0")
+                                    roadPaint.strokeWidth = 7.5f * d
+                                    canvas.drawPath(riverPath, roadPaint)
+
+                                    roadPaint.color = Color.parseColor(if (nightPreview) "#3B423D" else "#FFFFFF")
+                                    roadPaint.strokeWidth = 2.8f * d
+                                    canvas.drawLine(0f, hf * 0.30f, wf, hf * 0.22f, roadPaint)
+                                    canvas.drawLine(wf * 0.36f, 0f, wf * 0.48f, hf, roadPaint)
+                                    canvas.drawLine(wf * 0.72f, 0f, wf * 0.64f, hf, roadPaint)
+
+                                    roadPaint.color = Color.parseColor(if (nightPreview) "#A86C2B" else "#F2C478")
+                                    roadPaint.strokeWidth = 3.6f * d
+                                    canvas.drawLine(0f, hf * 0.54f, wf, hf * 0.48f, roadPaint)
+                                }
+
+                                // Tiny Organic pin accents
+                                fun drawPinDot(cx: Float, cy: Float, fillHex: String) {
+                                    paint.color = Color.WHITE
+                                    canvas.drawCircle(cx, cy, 4.3f * d, paint)
+                                    paint.color = Color.parseColor(fillHex)
+                                    canvas.drawCircle(cx, cy, 3.0f * d, paint)
+                                }
+                                drawPinDot(wf * 0.31f, hf * 0.45f, "#2E8B47")
+                                drawPinDot(wf * 0.68f, hf * 0.33f, "#F0651F")
+                            }
+                        }.apply {
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                        previewFrame.addView(swatchGraphic)
+
+                        if (active) {
+                            val badge = FrameLayout(this).apply {
+                                layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP or Gravity.END).apply {
+                                    topMargin = dp(6)
+                                    marginEnd = dp(6)
+                                }
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    setColor(p.accentPrimary)
+                                }
+                            }
+                            badge.addView(ImageView(this).apply {
+                                setImageResource(R.drawable.ic_check)
+                                setColorFilter(Color.WHITE)
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                                layoutParams = FrameLayout.LayoutParams(dp(13), dp(13), Gravity.CENTER)
+                            })
+                            previewFrame.addView(badge)
+                        }
+                        card.addView(previewFrame)
+
+                        card.addView(TextView(this).apply {
+                            text = mode.label
+                            textSize = 13.5f
+                            setTypeface(null, Typeface.BOLD)
+                            setTextColor(if (active) p.accentPrimary else p.textPrimary)
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            setPadding(dp(4), dp(8), dp(4), dp(1))
+                        })
+                        card.addView(TextView(this).apply {
+                            text = if (isSat) "Aerial imagery + roads" else "Vector roads & terrain"
+                            textSize = 11.5f
+                            setTextColor(p.textMuted)
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            setPadding(dp(4), 0, dp(4), 0)
+                        })
+
+                        swatchRow.addView(card)
+                    }
+                    listCol.addView(swatchRow)
                 },
                 extraContent = { listCol ->
                     listCol.addView(DesignSystem.createSectionHeader(this, "Visual Overlays", p).apply {
@@ -1692,6 +1876,12 @@ class MainActivity : AppCompatActivity() {
 
         sheetContent.removeAllViews()
 
+        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
+        val visibleFolderPins = pins.filter { it.layerId !in hiddenLayerIds }
+        val cntDone = visibleFolderPins.count { PinStatus.fromRaw(it.status) == PinStatus.DONE }
+        val cntIssue = visibleFolderPins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
+        val cntPending = visibleFolderPins.size - cntDone - cntIssue
+
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1700,153 +1890,233 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(2)
-                bottomMargin = dp(16)
+                bottomMargin = dp(14)
             }
         }
-        header.addView(TextView(this).apply {
+        val titleCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+        }
+        titleCol.addView(TextView(this).apply {
             text = "Filter Pins"
             textSize = 19.5f
             letterSpacing = -0.01f
             setTypeface(null, Typeface.BOLD)
             setTextColor(p.textPrimary)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
+        titleCol.addView(TextView(this).apply {
+            text = "${visibleFolderPins.size} pins in visible folders"
+            textSize = 12.5f
+            setTextColor(p.textMuted)
+            DesignSystem.applyTabularNumerals(this)
+            setPadding(0, dp(2), 0, 0)
+        })
+        header.addView(titleCol)
+
+        val btnResetFilter = TextView(this).apply {
+            text = "Reset"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(p.accentPrimary)
+            setPadding(dp(11), dp(6), dp(11), dp(6))
+            UiAnimations.applyRoundedRipple(this@MainActivity, this, p.accentPrimarySoft, 14f, night)
+            UiAnimations.attachSnappyPress(this)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = dp(6)
+            }
+        }
+        header.addView(btnResetFilter)
         header.addView(DesignSystem.createSheetCloseButton(this, p) { hideInScreenSheet() })
         sheetContent.addView(header)
 
-        val card = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 4, bottomMarginDp = 12)
-        var updatingUi = false
-        lateinit var swAll: MaterialSwitch
-        val statusSwitches = mutableMapOf<String, MaterialSwitch>()
+        val pillsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(12)
+            }
+        }
 
-        fun syncSwitchesAndMap() {
+        data class FilterPillUi(
+            val key: String,
+            val card: LinearLayout,
+            val tvCount: TextView,
+            val tvLabel: TextView,
+            val solidColor: Int,
+            val softColor: Int
+        )
+
+        val pillItems = mutableListOf<FilterPillUi>()
+        var updatingUi = false
+        lateinit var swUnsent: MaterialSwitch
+
+        fun refreshFilterVisuals() {
             updatingUi = true
-            swAll.isChecked = visibleStatuses.containsAll(ALL_STATUSES)
-            statusSwitches.forEach { (key, sw) -> sw.isChecked = visibleStatuses.contains(key) }
+            pillItems.forEach { item ->
+                val active = visibleStatuses.contains(item.key)
+                item.card.background = if (active) {
+                    DesignSystem.buildOpaqueDrawable(
+                        ctx = this,
+                        fillColor = item.softColor,
+                        radiusDp = 16f,
+                        strokeColor = item.solidColor,
+                        strokeDp = 1.5f
+                    )
+                } else {
+                    DesignSystem.buildOpaqueDrawable(
+                        ctx = this,
+                        fillColor = p.surfaceTonal,
+                        radiusDp = 16f,
+                        strokeColor = p.borderSubtle,
+                        strokeDp = 1f
+                    )
+                }
+                item.tvCount.setTextColor(if (active) item.solidColor else p.textMuted)
+                item.tvLabel.setTextColor(if (active) p.textPrimary else p.textMuted)
+                item.tvLabel.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
+                item.card.alpha = if (active) 1f else 0.72f
+            }
+            swUnsent.isChecked = hideSentPins
+            btnResetFilter.visibility =
+                if (!visibleStatuses.containsAll(ALL_STATUSES) || hideSentPins) View.VISIBLE else View.GONE
             updatingUi = false
+        }
+
+        fun applyFilterChanges() {
+            refreshFilterVisuals()
             DevicePrefs.setVisibleStatuses(this, visibleStatuses)
+            DevicePrefs.setHideSentPins(this, hideSentPins)
             updateFilterIconTint()
             updateSentToggleUi()
             renderMapData()
         }
 
-        fun makeFilterRow(dotColor: Int?, title: String, subtitle: String?, initialChecked: Boolean, onToggle: (Boolean) -> Unit): MaterialSwitch {
-            if (card.childCount > 0) {
-                card.addView(DesignSystem.createHairlineDivider(this, p))
-            }
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(54)
-                setPadding(dp(2), dp(6), dp(2), dp(6))
-                UiAnimations.applyRowRipple(this@MainActivity, this, night)
-            }
-            if (dotColor != null) {
-                row.addView(View(this).apply {
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(dotColor)
-                    }
-                    layoutParams = LinearLayout.LayoutParams(dp(12), dp(12)).apply { marginEnd = dp(12) }
-                })
-            }
-            val textCol = LinearLayout(this).apply {
+        val statusDefs = listOf(
+            listOf("pending", AppStrings.pending(this), cntPending, p.amber, p.amberSoft),
+            listOf("done", AppStrings.done(this), cntDone, p.green, p.greenSoft),
+            listOf("issue", AppStrings.issue(this), cntIssue, p.red, p.redSoft)
+        )
+        statusDefs.forEachIndexed { idx, def ->
+            val key = def[0] as String
+            val labelText = def[1] as String
+            val count = def[2] as Int
+            val solidColor = def[3] as Int
+            val softColor = def[4] as Int
+
+            val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                minimumHeight = dp(68)
+                setPadding(dp(8), dp(10), dp(8), dp(10))
+                isClickable = true
+                isFocusable = true
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(10)
+                    if (idx < statusDefs.lastIndex) marginEnd = dp(8)
                 }
+                UiAnimations.attachSnappyPress(this, 0.95f)
             }
-            textCol.addView(TextView(this).apply {
-                text = title
-                textSize = 15f
-                setTypeface(null, if (dotColor == null) Typeface.BOLD else Typeface.NORMAL)
-                setTextColor(p.textPrimary)
+            val topLine = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            topLine.addView(View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(solidColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(6) }
             })
-            if (!subtitle.isNullOrBlank()) {
-                textCol.addView(TextView(this).apply {
-                    text = subtitle
-                    textSize = 12f
-                    setTextColor(p.textSecondary)
-                    DesignSystem.applyTabularNumerals(this)
-                })
+            val tvCount = TextView(this).apply {
+                text = "$count"
+                textSize = 17f
+                setTypeface(null, Typeface.BOLD)
+                DesignSystem.applyTabularNumerals(this)
             }
-            val sw = MaterialSwitch(this).apply {
-                isChecked = initialChecked
-                DesignSystem.styleMaterialSwitch(this, p)
-                setOnCheckedChangeListener { _, checked -> onToggle(checked) }
+            topLine.addView(tvCount)
+            card.addView(topLine)
+
+            val tvLabel = TextView(this).apply {
+                text = labelText
+                textSize = 12f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setPadding(0, dp(3), 0, 0)
             }
-            row.setOnClickListener { sw.toggle() }
-            row.addView(textCol)
-            row.addView(sw)
-            card.addView(row)
-            return sw
-        }
+            card.addView(tvLabel)
 
-        val hiddenLayerIds = DevicePrefs.getHiddenLayerIds(this)
-        val visibleFolderPins = pins.filter { it.layerId !in hiddenLayerIds }
-        val cntDone = visibleFolderPins.count { PinStatus.fromRaw(it.status) == PinStatus.DONE }
-        val cntIssue = visibleFolderPins.count { PinStatus.fromRaw(it.status) == PinStatus.ISSUE }
-        val cntPending = visibleFolderPins.size - cntDone - cntIssue
-
-        swAll = makeFilterRow(
-            dotColor = null,
-            title = "All Statuses",
-            subtitle = "${visibleFolderPins.size} pins in visible folders",
-            initialChecked = visibleStatuses.containsAll(ALL_STATUSES)
-        ) { checked ->
-            if (updatingUi) return@makeFilterRow
-            visibleStatuses.clear()
-            if (checked) visibleStatuses.addAll(ALL_STATUSES)
-            syncSwitchesAndMap()
-        }
-
-        listOf(
-            Triple("pending", "${AppStrings.pending(this)} ($cntPending)", p.amber),
-            Triple("done", "${AppStrings.done(this)} ($cntDone)", p.green),
-            Triple("issue", "${AppStrings.issue(this)} ($cntIssue)", p.red)
-        ).forEach { (key, label, colorInt) ->
-            statusSwitches[key] = makeFilterRow(
-                dotColor = colorInt,
-                title = label,
-                subtitle = null,
-                initialChecked = visibleStatuses.contains(key)
-            ) { checked ->
-                if (updatingUi) return@makeFilterRow
-                if (checked) visibleStatuses.add(key) else visibleStatuses.remove(key)
-                syncSwitchesAndMap()
+            card.setOnClickListener {
+                if (visibleStatuses.contains(key)) visibleStatuses.remove(key) else visibleStatuses.add(key)
+                UiAnimations.animateScalePop(card, 0.94f, 140L)
+                applyFilterChanges()
             }
-        }
 
+            pillItems += FilterPillUi(key, card, tvCount, tvLabel, solidColor, softColor)
+            pillsRow.addView(card)
+        }
+        sheetContent.addView(pillsRow)
+
+        val unsentCard = DesignSystem.createGroupedCard(
+            this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 4, bottomMarginDp = 4
+        )
         val sentCount = activeLocalSentCount()
-        makeFilterRow(
-            dotColor = null,
-            title = "Unsent Only",
-            subtitle = "Hide $sentCount pin${if (sentCount == 1) "" else "s"} marked sent on this phone",
-            initialChecked = hideSentPins
-        ) { checked ->
-            hideSentPins = checked
-            DevicePrefs.setHideSentPins(this@MainActivity, checked)
-            updateSentToggleUi()
-            renderMapData()
+        val unsentRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(54)
+            setPadding(dp(2), dp(6), dp(2), dp(6))
+            UiAnimations.applyRowRipple(this@MainActivity, this, night)
+        }
+        val unsentTextCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(10)
+            }
+        }
+        unsentTextCol.addView(TextView(this).apply {
+            text = "Unsent Only"
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(p.textPrimary)
+        })
+        unsentTextCol.addView(TextView(this).apply {
+            text = "Hide $sentCount pin${if (sentCount == 1) "" else "s"} marked sent on this phone"
+            textSize = 12f
+            setTextColor(p.textSecondary)
+            DesignSystem.applyTabularNumerals(this)
+        })
+        swUnsent = MaterialSwitch(this).apply {
+            isChecked = hideSentPins
+            DesignSystem.styleMaterialSwitch(this, p)
+            setOnCheckedChangeListener { _, checked ->
+                if (updatingUi) return@setOnCheckedChangeListener
+                hideSentPins = checked
+                applyFilterChanges()
+            }
+        }
+        unsentRow.setOnClickListener { swUnsent.toggle() }
+        unsentRow.addView(unsentTextCol)
+        unsentRow.addView(swUnsent)
+        unsentCard.addView(unsentRow)
+        sheetContent.addView(unsentCard)
+
+        btnResetFilter.setOnClickListener {
+            visibleStatuses.clear()
+            visibleStatuses.addAll(ALL_STATUSES)
+            hideSentPins = false
+            applyFilterChanges()
         }
 
-        sheetContent.addView(card)
-
-        sheetContent.addView(MaterialButton(this).apply {
-            text = "Done"
-            textSize = 14f
-            isAllCaps = false
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(12)
-            DesignSystem.applyPrimaryCtaButton(this, p)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
-            UiAnimations.attachSnappyPress(this)
-            setOnClickListener { hideInScreenSheet() }
-        })
-
+        refreshFilterVisuals()
         UiAnimations.animateSheetContentReveal(sheetContent)
-        showInScreenSheet(peekDp = 420, expandToFit = true)
+        showInScreenSheet(peekDp = 280, expandToFit = true)
     }
 
     private fun setupBackNavigation() {
@@ -2326,12 +2596,21 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Ruler Measurement Layers (Line + Numbered Waypoints)
+        // Ruler Measurement Layers (Terracotta line + white casing + numbered waypoints)
         if (style.getSource(RULER_LINE_SOURCE) == null) {
             style.addSource(GeoJsonSource(RULER_LINE_SOURCE))
             style.addLayer(
+                LineLayer(RULER_LINE_CASING_LAYER, RULER_LINE_SOURCE).withProperties(
+                    PropertyFactory.lineColor("#FFFFFF"),
+                    PropertyFactory.lineOpacity(0.90f),
+                    PropertyFactory.lineWidth(6.4f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                )
+            )
+            style.addLayer(
                 LineLayer(RULER_LINE_LAYER, RULER_LINE_SOURCE).withProperties(
-                    PropertyFactory.lineColor("#2563EB"),
+                    PropertyFactory.lineColor("#F0651F"),
                     PropertyFactory.lineWidth(3.8f),
                     PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                     PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
@@ -2344,8 +2623,8 @@ class MainActivity : AppCompatActivity() {
                 CircleLayer(RULER_POINTS_CIRCLE_LAYER, RULER_POINTS_SOURCE).withProperties(
                     PropertyFactory.circleColor("#FFFFFF"),
                     PropertyFactory.circleRadius(12.5f),
-                    PropertyFactory.circleStrokeColor("#2563EB"),
-                    PropertyFactory.circleStrokeWidth(2.6f)
+                    PropertyFactory.circleStrokeColor("#F0651F"),
+                    PropertyFactory.circleStrokeWidth(2.8f)
                 )
             )
             style.addLayer(
@@ -2353,7 +2632,7 @@ class MainActivity : AppCompatActivity() {
                     PropertyFactory.textField(Expression.get("num")),
                     PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
                     PropertyFactory.textSize(12f),
-                    PropertyFactory.textColor("#1E3A8A"),
+                    PropertyFactory.textColor("#B8440E"),
                     PropertyFactory.textAllowOverlap(true),
                     PropertyFactory.textIgnorePlacement(true)
                 )
@@ -3054,7 +3333,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun addRulerPoint(latLng: LatLng) {
         rulerPoints.add(latLng)
-        fireStatusPulse(latLng.latitude, latLng.longitude, "#2563EB")
+        fireStatusPulse(latLng.latitude, latLng.longitude, "#F0651F")
         updateRulerUi()
         renderRulerOverlay()
     }
@@ -3102,7 +3381,7 @@ class MainActivity : AppCompatActivity() {
             else -> "Total distance between ${rulerPoints.size} points"
         }
         btnRulerUndo.alpha = if (rulerPoints.isNotEmpty()) 1.0f else 0.35f
-        btnRulerReset.visibility = if (rulerPoints.isNotEmpty()) View.VISIBLE else View.INVISIBLE
+        btnRulerReset.visibility = if (rulerPoints.isNotEmpty()) View.VISIBLE else View.GONE
     }
 
     // --- Route From Origin Helpers ---
@@ -6342,6 +6621,91 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun formatWhatsAppReportPreview(raw: String, p: ThemePalette): CharSequence {
+        val sb = SpannableStringBuilder()
+        val display = raw.replace("⏳", "○").replace("⏰", "◷")
+        val lines = display.split('\n')
+
+        fun appendGlyphAware(seg: String) {
+            for (ch in seg) {
+                val start = sb.length
+                sb.append(ch)
+                val symColor = when (ch) {
+                    '✓' -> p.green
+                    '⚠', '◷' -> p.red
+                    '○' -> p.amber
+                    else -> null
+                }
+                if (symColor != null) {
+                    sb.setSpan(ForegroundColorSpan(symColor), start, start + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
+        }
+
+        lines.forEachIndexed { lineIdx, rawLine ->
+            if (lineIdx > 0) sb.append('\n')
+            val line = rawLine.trimEnd('\r')
+            val startPos = sb.length
+
+            if (line.length >= 3 && line.startsWith('*') && line.endsWith('*') && line.indexOf('*', 1) == line.length - 1) {
+                val inner = line.substring(1, line.length - 1)
+                appendGlyphAware(inner)
+                val endPos = sb.length
+                sb.setSpan(StyleSpan(Typeface.BOLD), startPos, endPos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(
+                    RelativeSizeSpan(if (lineIdx == 0) 1.10f else 1.04f),
+                    startPos,
+                    endPos,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                val headingColor = when {
+                    inner.contains('✓') -> p.green
+                    inner.contains('⚠') -> p.red
+                    else -> p.textPrimary
+                }
+                sb.setSpan(ForegroundColorSpan(headingColor), startPos, endPos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            } else if (line.length >= 3 && line.startsWith('_') && line.endsWith('_') && line.indexOf('_', 1) == line.length - 1) {
+                val inner = line.substring(1, line.length - 1)
+                sb.append(inner)
+                val endPos = sb.length
+                sb.setSpan(StyleSpan(Typeface.ITALIC), startPos, endPos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(RelativeSizeSpan(0.92f), startPos, endPos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(ForegroundColorSpan(p.textMuted), startPos, endPos, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            } else {
+                var i = 0
+                while (i < line.length) {
+                    val ch = line[i]
+                    if (ch == '*') {
+                        val close = line.indexOf('*', i + 1)
+                        if (close > i + 1) {
+                            val s = sb.length
+                            appendGlyphAware(line.substring(i + 1, close))
+                            val e = sb.length
+                            sb.setSpan(StyleSpan(Typeface.BOLD), s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            sb.setSpan(ForegroundColorSpan(p.textPrimary), s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            i = close + 1
+                            continue
+                        }
+                    } else if (ch == '_' && (i == 0 || !line[i - 1].isLetterOrDigit())) {
+                        val close = line.indexOf('_', i + 1)
+                        if (close > i + 1 && (close == line.length - 1 || !line[close + 1].isLetterOrDigit())) {
+                            val s = sb.length
+                            sb.append(line.substring(i + 1, close))
+                            val e = sb.length
+                            sb.setSpan(StyleSpan(Typeface.ITALIC), s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            sb.setSpan(ForegroundColorSpan(p.textMuted), s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            i = close + 1
+                            continue
+                        }
+                    }
+                    appendGlyphAware(ch.toString())
+                    i++
+                }
+            }
+        }
+        return sb
+    }
+
     private fun showDailyWhatsAppReportDialog(
         layer: LayerItem,
         layerPins: List<PinItem>,
@@ -6370,7 +6734,7 @@ class MainActivity : AppCompatActivity() {
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(6))
+            setPadding(dp(20), dp(8), dp(20), dp(14))
         }
         val tvScopeBanner = TextView(this).apply {
             textSize = 12f
@@ -6383,7 +6747,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(10) }
+            ).apply { bottomMargin = dp(8) }
             visibility = if (mapFilterHidesSome) View.VISIBLE else View.GONE
         }
         container.addView(tvScopeBanner)
@@ -6420,7 +6784,106 @@ class MainActivity : AppCompatActivity() {
         scopeToggleRow.addView(btnScopeVisible)
         container.addView(scopeToggleRow)
 
-        val scroll = ScrollView(this).apply {
+        // Visual Summary Strip (Visited progress bar + tinted Done / Issue / Pending chips)
+        val summaryCard = DesignSystem.createGroupedCard(
+            this, p, radiusDp = 14f, paddingHDp = 12, paddingVDp = 10, bottomMarginDp = 10
+        )
+        val progHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        progHeader.addView(TextView(this).apply {
+            text = "Visited Progress"
+            textSize = 11.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(p.textMuted)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val tvProgressPct = TextView(this).apply {
+            text = "0% (0 / 0)"
+            textSize = 12.5f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(p.textPrimary)
+            DesignSystem.applyTabularNumerals(this)
+        }
+        progHeader.addView(tvProgressPct)
+        summaryCard.addView(progHeader)
+
+        val barTrack = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = GradientDrawable().apply {
+                setColor(p.borderSubtle)
+                cornerRadius = dp(4).toFloat()
+            }
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(7)).apply {
+                topMargin = dp(6)
+                bottomMargin = dp(8)
+            }
+        }
+        val segDone = View(this).apply {
+            setBackgroundColor(p.green)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0f)
+        }
+        val segIssue = View(this).apply {
+            setBackgroundColor(p.red)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0f)
+        }
+        val segPending = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        }
+        barTrack.addView(segDone)
+        barTrack.addView(segIssue)
+        barTrack.addView(segPending)
+        summaryCard.addView(barTrack)
+
+        val chipsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        fun makeStatChip(fgColor: Int, bgColor: Int, addEndGap: Boolean): TextView {
+            return TextView(this).apply {
+                textSize = 11f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(fgColor)
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setPadding(dp(6), dp(5), dp(6), dp(5))
+                DesignSystem.applyTabularNumerals(this)
+                background = GradientDrawable().apply {
+                    setColor(bgColor)
+                    cornerRadius = dp(10).toFloat()
+                }
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (addEndGap) marginEnd = dp(6)
+                }
+            }
+        }
+        val chipDone = makeStatChip(p.green, p.greenSoft, addEndGap = true).apply { text = "✓ 0 Done" }
+        val chipIssue = makeStatChip(p.red, p.redSoft, addEndGap = true).apply { text = "⚠ 0 Issue" }
+        val chipPending = makeStatChip(p.amber, p.amberSoft, addEndGap = false).apply { text = "○ 0 Pending" }
+        chipsRow.addView(chipDone)
+        chipsRow.addView(chipIssue)
+        chipsRow.addView(chipPending)
+        summaryCard.addView(chipsRow)
+        container.addView(summaryCard)
+
+        val maxScrollPx = (resources.displayMetrics.heightPixels * 0.42f).toInt().coerceAtLeast(dp(180))
+        val scroll = object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val cappedSpec = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+                    MeasureSpec.makeMeasureSpec(maxScrollPx, MeasureSpec.AT_MOST)
+                } else {
+                    MeasureSpec.makeMeasureSpec(
+                        minOf(MeasureSpec.getSize(heightMeasureSpec), maxScrollPx),
+                        MeasureSpec.AT_MOST
+                    )
+                }
+                super.onMeasure(widthMeasureSpec, cappedSpec)
+            }
+        }.apply {
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -6429,9 +6892,9 @@ class MainActivity : AppCompatActivity() {
         val tvReport = TextView(this).apply {
             text = "Generating report..."
             textSize = 13.5f
-            setTextColor(p.textPrimary)
+            setTextColor(p.textBody)
             setTextIsSelectable(true)
-            setLineSpacing(dp(2).toFloat(), 1.12f)
+            setLineSpacing(dp(2).toFloat(), 1.16f)
             DesignSystem.applyTabularNumerals(this)
         }
         scroll.addView(tvReport)
@@ -6469,7 +6932,21 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (isFinishing || isDestroyed || mySeq != genSeq) return@runOnUiThread
                     activeReportText = report.whatsappText
-                    tvReport.text = report.whatsappText
+                    tvReport.text = formatWhatsAppReportPreview(report.whatsappText, p)
+
+                    val visited = report.doneCount + report.issueCount
+                    val total = report.totalPins
+                    val pct = if (total > 0) ((visited * 100.0) / total).roundToInt() else 0
+                    tvProgressPct.text = "$pct% ($visited / $total)"
+                    chipDone.text = "✓ ${report.doneCount} Done"
+                    chipIssue.text = "⚠ ${report.issueCount} Issue"
+                    chipPending.text = "○ ${report.pendingCount} Pending"
+
+                    (segDone.layoutParams as LinearLayout.LayoutParams).weight = report.doneCount.toFloat()
+                    (segIssue.layoutParams as LinearLayout.LayoutParams).weight = report.issueCount.toFloat()
+                    (segPending.layoutParams as LinearLayout.LayoutParams).weight =
+                        if (total > 0) report.pendingCount.toFloat() else 1f
+                    barTrack.requestLayout()
                 }
             }
         }
@@ -6478,25 +6955,101 @@ class MainActivity : AppCompatActivity() {
         btnScopeVisible.setOnClickListener { computeAndDisplay(true) }
         computeAndDisplay(false)
 
-        showThemedDialog(
+        var reportDialog: AlertDialog? = null
+        val ctaRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(12)
+            }
+        }
+        val btnCopy = MaterialButton(this).apply {
+            text = "Copy"
+            textSize = 13f
+            isAllCaps = false
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(8), 0, dp(8), 0)
+            cornerRadius = dp(18)
+            DesignSystem.applySecondaryTonalButton(this, p)
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(6) }
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener {
+                val textToCopy = activeReportText.ifBlank { tvReport.text.toString() }
+                copyToClipboard("Daily Report", textToCopy)
+                reportDialog?.dismiss()
+            }
+        }
+        val btnKml = MaterialButton(this).apply {
+            text = "KML"
+            textSize = 13f
+            isAllCaps = false
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(8), 0, dp(8), 0)
+            cornerRadius = dp(18)
+            DesignSystem.applySecondaryTonalButton(this, p)
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(6) }
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener {
+                val textToShare = activeReportText.ifBlank { tvReport.text.toString() }
+                KmlCsvExporter.exportAndShareKml(this@MainActivity, layer, activeScopedPins, layerTracks, "", textToShare)
+                reportDialog?.dismiss()
+            }
+        }
+        val btnShare = MaterialButton(this).apply {
+            text = "Share"
+            textSize = 13.5f
+            setTypeface(null, Typeface.BOLD)
+            isAllCaps = false
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            setPadding(dp(10), 0, dp(10), 0)
+            cornerRadius = dp(18)
+            setTextColor(Color.WHITE)
+            backgroundTintList = ColorStateList.valueOf(p.accentPrimary)
+            icon = ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_share)
+            iconTint = ColorStateList.valueOf(Color.WHITE)
+            iconSize = dp(15)
+            iconPadding = dp(6)
+            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+            elevation = 0f
+            stateListAnimator = null
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1.35f)
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener {
+                val textToShare = activeReportText.ifBlank { tvReport.text.toString() }
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, textToShare)
+                }
+                reportDialog?.dismiss()
+                safeStartActivity(Intent.createChooser(share, "Share Daily Report"))
+            }
+        }
+        ctaRow.addView(btnCopy)
+        ctaRow.addView(btnKml)
+        ctaRow.addView(btnShare)
+        container.addView(ctaRow)
+
+        reportDialog = showThemedDialog(
             themedDialogBuilder("Daily Field Report")
                 .setView(container)
-                .setPositiveButton("Share") { _, _ ->
-                    val textToShare = activeReportText.ifBlank { tvReport.text.toString() }
-                    val share = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, textToShare)
-                    }
-                    safeStartActivity(Intent.createChooser(share, "Share Daily Report"))
-                }
-                .setNeutralButton("Copy") { _, _ ->
-                    val textToCopy = activeReportText.ifBlank { tvReport.text.toString() }
-                    copyToClipboard("Daily Report", textToCopy)
-                }
-                .setNegativeButton("KML + Text") { _, _ ->
-                    val textToShare = activeReportText.ifBlank { tvReport.text.toString() }
-                    KmlCsvExporter.exportAndShareKml(this, layer, activeScopedPins, layerTracks, "", textToShare)
-                }
                 .create()
         )
     }
@@ -7632,11 +8185,11 @@ class MainActivity : AppCompatActivity() {
                 text = if (isLocal) "LOCAL" else if (isOwner) "CLOUD OWNER" else "CLOUD"
                 textSize = 10f
                 setTypeface(null, Typeface.BOLD)
-                setTextColor(if (isLocal) p.textSecondary else p.green)
-                setPadding(dp(7), dp(3), dp(7), dp(3))
+                setTextColor(if (isLocal) p.accentPrimary else p.green)
+                setPadding(dp(8), dp(3), dp(8), dp(3))
                 background = GradientDrawable().apply {
-                    setColor(if (isLocal) p.chipSurface else p.greenSoft)
-                    cornerRadius = dp(6).toFloat()
+                    setColor(if (isLocal) p.accentPrimarySoft else p.greenSoft)
+                    cornerRadius = dp(8).toFloat()
                 }
             })
             summaryCard.addView(folderRow)
@@ -7667,15 +8220,20 @@ class MainActivity : AppCompatActivity() {
             hoursRow.addView(MaterialButton(this).apply {
                 text = "Change"
                 textSize = 12f
+                setTypeface(null, Typeface.BOLD)
                 isAllCaps = false
                 insetTop = 0
                 insetBottom = 0
                 minWidth = 0
                 minimumWidth = 0
-                setPadding(dp(12), 0, dp(12), 0)
-                cornerRadius = dp(10)
+                setPadding(dp(14), 0, dp(14), 0)
+                cornerRadius = dp(18)
+                setTextColor(p.accentPrimary)
+                backgroundTintList = ColorStateList.valueOf(p.accentPrimarySoft)
+                strokeWidth = 0
+                elevation = 0f
+                stateListAnimator = null
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
-                DesignSystem.styleSegmentedButton(this, false, p)
                 UiAnimations.attachSnappyPress(this)
                 setOnClickListener {
                     showWorkingHoursDialog { renderAudit() }
@@ -7726,10 +8284,15 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, dp(2), 0, dp(8))
             }
             listOf(
-                Triple("all", "All (${allEntries.size})", p.accent),
-                Triple("after_hours", "⏰ After Hours ($afterHoursCnt)", p.red),
-                Triple("in_hours", "✓ In Hours ($inHoursCnt)", p.green)
-            ).forEachIndexed { idx, (key, lbl, activeCol) ->
+                listOf("all", "All (${allEntries.size})", p.accent, 0),
+                listOf("after_hours", "After Hours ($afterHoursCnt)", p.red, R.drawable.ic_history),
+                listOf("in_hours", "In Hours ($inHoursCnt)", p.green, R.drawable.ic_check)
+            ).forEachIndexed { idx, spec ->
+                val key = spec[0] as String
+                val lbl = spec[1] as String
+                val activeCol = spec[2] as Int
+                val iconRes = spec[3] as Int
+                val selected = timeFilter == key
                 filterRow.addView(MaterialButton(this).apply {
                     text = lbl
                     textSize = 12f
@@ -7739,12 +8302,19 @@ class MainActivity : AppCompatActivity() {
                     minWidth = 0
                     minimumWidth = 0
                     setPadding(dp(12), 0, dp(12), 0)
-                    cornerRadius = dp(10)
+                    cornerRadius = dp(12)
                     DesignSystem.applyTabularNumerals(this)
                     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                         if (idx < 2) marginEnd = dp(6)
                     }
-                    DesignSystem.styleSegmentedButton(this, timeFilter == key, p, activeCol)
+                    DesignSystem.styleSegmentedButton(this, selected, p, activeCol)
+                    if (iconRes != 0) {
+                        icon = ContextCompat.getDrawable(this@MainActivity, iconRes)
+                        iconSize = dp(14)
+                        iconPadding = dp(5)
+                        iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+                        iconTint = ColorStateList.valueOf(if (selected) Color.WHITE else activeCol)
+                    }
                     UiAnimations.attachSnappyPress(this)
                     setOnClickListener {
                         timeFilter = key
@@ -7838,13 +8408,13 @@ class MainActivity : AppCompatActivity() {
                 val dayCard = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 8)
                 dayEntries.forEachIndexed { idx, entry ->
                     if (idx > 0) {
-                        dayCard.addView(DesignSystem.createHairlineDivider(this, p, 14, 14))
+                        dayCard.addView(DesignSystem.createHairlineDivider(this, p, 84, 14))
                     }
                     val row = LinearLayout(this).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.CENTER_VERTICAL
                         minimumHeight = dp(58)
-                        setPadding(dp(14), dp(10), dp(10), dp(10))
+                        setPadding(dp(12), 0, dp(10), 0)
                         if (entry.isOutsideWorkHours) {
                             setBackgroundColor(p.redSoft)
                         } else {
@@ -7857,39 +8427,62 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    // Left timestamp + status dot column
+                    // Left timestamp column
                     val timeCol = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
                         gravity = Gravity.CENTER_HORIZONTAL
-                        layoutParams = LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                            marginEnd = dp(10)
+                        setPadding(0, dp(12), 0, dp(12))
+                        layoutParams = LinearLayout.LayoutParams(dp(46), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            marginEnd = dp(6)
                         }
                     }
                     timeCol.addView(TextView(this).apply {
                         text = entry.clockTime
-                        textSize = 14f
+                        textSize = 13.5f
                         setTypeface(null, Typeface.BOLD)
                         setTextColor(if (entry.isOutsideWorkHours) p.red else txtPrimary)
                         DesignSystem.applyTabularNumerals(this)
                     })
+                    row.addView(timeCol)
+
+                    // Continuous vertical timeline rail + status dot
                     val dotColor = when (entry.actionStatus) {
                         "done" -> p.green
                         "issue" -> p.red
                         "pending" -> p.amber
                         else -> p.accent
                     }
-                    timeCol.addView(View(this).apply {
+                    val railCol = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(dp(16), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                            marginEnd = dp(8)
+                        }
+                    }
+                    railCol.addView(View(this).apply {
+                        setBackgroundColor(if (idx > 0) p.borderSubtle else Color.TRANSPARENT)
+                        layoutParams = LinearLayout.LayoutParams(dp(2), 0, 1f)
+                    })
+                    railCol.addView(View(this).apply {
                         background = GradientDrawable().apply {
                             shape = GradientDrawable.OVAL
                             setColor(dotColor)
                         }
-                        layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { topMargin = dp(4) }
+                        layoutParams = LinearLayout.LayoutParams(dp(9), dp(9)).apply {
+                            topMargin = dp(3)
+                            bottomMargin = dp(3)
+                        }
                     })
-                    row.addView(timeCol)
+                    railCol.addView(View(this).apply {
+                        setBackgroundColor(if (idx < dayEntries.lastIndex) p.borderSubtle else Color.TRANSPARENT)
+                        layoutParams = LinearLayout.LayoutParams(dp(2), 0, 1f)
+                    })
+                    row.addView(railCol)
 
                     // Center details column
                     val infoCol = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
+                        setPadding(0, dp(10), 0, dp(10))
                         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                             marginEnd = dp(6)
                         }
@@ -7901,8 +8494,10 @@ class MainActivity : AppCompatActivity() {
                     titleRow.addView(TextView(this).apply {
                         text = entry.pin.name
                         textSize = 14.5f
+                        textDirection = View.TEXT_DIRECTION_LOCALE
                         setTypeface(null, Typeface.BOLD)
                         setTextColor(txtPrimary)
+                        setLineSpacing(dp(1).toFloat(), 1.05f)
                         maxLines = 2
                         ellipsize = TextUtils.TruncateAt.END
                         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -8694,25 +9289,121 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 mapCard.addView(DesignSystem.createHairlineDivider(this, p))
-                addSegmentedBlock(
-                    mapCard,
-                    title = "Map Pin Style",
-                    subtitle = "Switch instantly between white Concept Droplet rings and Classic Teardrop pins",
-                    options = MapPinStyle.entries.map { it.id to it.label },
-                    selectedId = DevicePrefs.getMapPinStyle(this).id,
-                    activeColor = { p.accentPrimary }
-                ) { id ->
-                    val chosen = MapPinStyle.fromId(id)
-                    if (DevicePrefs.getMapPinStyle(this) != chosen) {
-                        DevicePrefs.setMapPinStyle(this, chosen)
-                        map?.style?.let { st ->
-                            if (st.isFullyLoaded) {
-                                MapCartography.registerPinBitmaps(this, st)
-                                renderMapData()
-                            }
+                mapCard.addView(TextView(this).apply {
+                    text = "Map Pin Style"
+                    textSize = 14.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                    setPadding(0, dp(8), 0, dp(2))
+                })
+                mapCard.addView(TextView(this).apply {
+                    text = "Switch instantly between white Concept Droplet rings and Classic Teardrop pins"
+                    textSize = 12f
+                    setTextColor(txtSub)
+                    setPadding(0, 0, 0, dp(8))
+                })
+                val pinRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 0, 0, dp(10))
+                }
+                data class PinStyleCardUi(
+                    val style: MapPinStyle,
+                    val card: LinearLayout,
+                    val previewRow: LinearLayout,
+                    val label: TextView
+                )
+                val pinCards = mutableListOf<PinStyleCardUi>()
+                var selectedPinStyle = DevicePrefs.getMapPinStyle(this)
+
+                fun syncPinStyleCards(popSelected: Boolean) {
+                    pinCards.forEach { item ->
+                        val active = item.style == selectedPinStyle
+                        item.card.background = if (active) {
+                            DesignSystem.buildOpaqueDrawable(
+                                ctx = this,
+                                fillColor = p.accentPrimarySoft,
+                                radiusDp = 14f,
+                                strokeColor = p.accentPrimary,
+                                strokeDp = 1.75f
+                            )
+                        } else {
+                            DesignSystem.buildOpaqueDrawable(
+                                ctx = this,
+                                fillColor = p.surfaceFloating,
+                                radiusDp = 14f,
+                                strokeColor = p.borderSubtle,
+                                strokeDp = 1f
+                            )
+                        }
+                        item.label.setTextColor(if (active) p.accentPrimary else p.textPrimary)
+                        item.label.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
+                        if (active && popSelected) {
+                            UiAnimations.animateScalePop(item.previewRow, 0.85f, 160L)
                         }
                     }
                 }
+
+                MapPinStyle.entries.forEachIndexed { idx, styleOption ->
+                    val styleCard = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER
+                        setPadding(dp(10), dp(10), dp(10), dp(10))
+                        isClickable = true
+                        isFocusable = true
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            if (idx < MapPinStyle.entries.lastIndex) marginEnd = dp(8)
+                        }
+                        UiAnimations.attachSnappyPress(this, 0.96f)
+                    }
+                    val previewCluster = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { bottomMargin = dp(6) }
+                    }
+                    listOf("#E69500", "#2E8B47").forEachIndexed { pinIdx, hex ->
+                        val bmp = if (styleOption == MapPinStyle.CONCEPT) {
+                            MapBitmaps.createConceptDropletPin(this, hex, scale = 0.85f)
+                        } else {
+                            MapBitmaps.createBookmarkPin(this, hex, scale = 0.85f)
+                        }
+                        previewCluster.addView(ImageView(this).apply {
+                            setImageBitmap(bmp)
+                            scaleType = ImageView.ScaleType.FIT_CENTER
+                            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply {
+                                if (pinIdx == 0) marginEnd = dp(4)
+                            }
+                        })
+                    }
+                    val lblView = TextView(this).apply {
+                        text = styleOption.label
+                        textSize = 12.5f
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        gravity = Gravity.CENTER
+                    }
+                    styleCard.addView(previewCluster)
+                    styleCard.addView(lblView)
+                    styleCard.setOnClickListener {
+                        if (selectedPinStyle != styleOption) {
+                            selectedPinStyle = styleOption
+                            syncPinStyleCards(popSelected = true)
+                            DevicePrefs.setMapPinStyle(this, styleOption)
+                            map?.style?.let { st ->
+                                if (st.isFullyLoaded) {
+                                    MapCartography.registerPinBitmaps(this, st)
+                                    renderMapData()
+                                }
+                            }
+                        }
+                    }
+                    pinCards += PinStyleCardUi(styleOption, styleCard, previewCluster, lblView)
+                    pinRow.addView(styleCard)
+                }
+                syncPinStyleCards(popSelected = false)
+                mapCard.addView(pinRow)
 
                 addCardSwitch(
                     mapCard,
@@ -9222,22 +9913,81 @@ class MainActivity : AppCompatActivity() {
                     onDownloadRoadsOnly: () -> Unit
                 ) {
                     val card = DesignSystem.createGroupedCard(this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12)
-                    card.addView(TextView(this).apply {
+                    val topRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val iconBadge = FrameLayout(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                            marginEnd = dp(10)
+                        }
+                    }
+                    val iconView = ImageView(this).apply {
+                        setImageResource(R.drawable.ic_map)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        layoutParams = FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER)
+                    }
+                    iconBadge.addView(iconView)
+                    topRow.addView(iconBadge)
+
+                    topRow.addView(TextView(this).apply {
                         text = title
-                        textSize = 15f
+                        textSize = 15.5f
                         setTextColor(txtPrimary)
                         setTypeface(null, Typeface.BOLD)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginEnd = dp(8)
+                        }
                     })
+                    val tvStatusPill = TextView(this).apply {
+                        textSize = 10.5f
+                        setTypeface(null, Typeface.BOLD)
+                        setPadding(dp(8), dp(3), dp(8), dp(3))
+                        DesignSystem.applyTabularNumerals(this)
+                    }
+                    topRow.addView(tvStatusPill)
+                    card.addView(topRow)
+
                     card.addView(TextView(this).apply {
                         text = subtitle
                         textSize = 12f
                         setTextColor(txtSub)
-                        setPadding(0, dp(2), 0, dp(8))
+                        setPadding(0, dp(6), 0, dp(8))
                     })
+
+                    val chipRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, 0, 0, dp(4))
+                    }
+                    fun makePackChip(initialText: String, addEndGap: Boolean): TextView {
+                        return TextView(this).apply {
+                            text = initialText
+                            textSize = 11f
+                            setTypeface(null, Typeface.BOLD)
+                            setPadding(dp(8), dp(3), dp(8), dp(3))
+                            DesignSystem.applyTabularNumerals(this)
+                            layoutParams = LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            ).apply {
+                                if (addEndGap) marginEnd = dp(6)
+                            }
+                        }
+                    }
+                    val tvTileChip = makePackChip("Vector Tiles", addEndGap = true)
+                    val tvRoadChip = makePackChip("Road Graph", addEndGap = false)
+                    chipRow.addView(tvTileChip)
+                    chipRow.addView(tvRoadChip)
+                    card.addView(chipRow)
+
                     val tvStatus = TextView(this).apply {
                         textSize = 12.5f
                         setTextColor(p.textSecondary)
                         DesignSystem.applyTabularNumerals(this)
+                        visibility = View.GONE
+                        setPadding(0, dp(4), 0, 0)
                     }
                     card.addView(tvStatus)
 
@@ -9329,13 +10079,77 @@ class MainActivity : AppCompatActivity() {
                         val hasAnyContent = st.hasAnyData
                         val sizeStr = offlineMaps.formatSize(st.sizeBytes)
 
+                        val (pillLabel, pillFg, pillBg) = when {
+                            st.mapError != null && !st.isDownloaded -> Triple("Tile Error", p.red, p.redSoft)
+                            st.roadError != null && !st.hasRoadGraph -> Triple("Roads Error", p.red, p.redSoft)
+                            busy -> Triple("Downloading", p.accentPrimary, p.accentPrimarySoft)
+                            fullyReady -> Triple("Offline Ready", p.green, p.greenSoft)
+                            st.isDownloaded || st.hasRoadGraph || hasPartialTiles -> Triple("Partial", p.amber, p.amberSoft)
+                            else -> Triple("Online Only", p.textMuted, p.surfaceFloating)
+                        }
+                        tvStatusPill.text = pillLabel
+                        tvStatusPill.setTextColor(pillFg)
+                        tvStatusPill.background = DesignSystem.buildOpaqueDrawable(
+                            ctx = this@MainActivity,
+                            fillColor = pillBg,
+                            radiusDp = 10f,
+                            strokeColor = if (!hasAnyContent && !busy && st.mapError == null && st.roadError == null) p.borderSubtle else Color.TRANSPARENT,
+                            strokeDp = 1f
+                        )
+                        iconBadge.background = DesignSystem.buildOpaqueDrawable(
+                            ctx = this@MainActivity,
+                            fillColor = if (fullyReady || busy) p.accentPrimarySoft else p.surfaceFloating,
+                            radiusDp = 10f,
+                            strokeColor = p.borderSubtle,
+                            strokeDp = if (fullyReady || busy) 0f else 1f
+                        )
+                        iconView.setColorFilter(if (fullyReady || busy) p.accentPrimary else p.textMuted)
+
+                        fun styleChip(chip: TextView, label: String, ready: Boolean, failed: Boolean) {
+                            chip.text = label
+                            chip.setTextColor(
+                                when {
+                                    failed -> p.red
+                                    ready -> p.green
+                                    else -> p.textMuted
+                                }
+                            )
+                            chip.background = DesignSystem.buildOpaqueDrawable(
+                                ctx = this@MainActivity,
+                                fillColor = when {
+                                    failed -> p.redSoft
+                                    ready -> p.greenSoft
+                                    else -> p.surfaceFloating
+                                },
+                                radiusDp = 8f,
+                                strokeColor = if (!ready && !failed) p.borderSubtle else Color.TRANSPARENT,
+                                strokeDp = 1f
+                            )
+                        }
+                        styleChip(
+                            tvTileChip,
+                            when {
+                                st.isDownloaded -> "Tiles • $sizeStr"
+                                hasPartialTiles -> "Tiles • ${st.progressPercent}%"
+                                else -> "Vector Tiles"
+                            },
+                            ready = st.isDownloaded,
+                            failed = st.mapError != null && !st.isDownloaded
+                        )
+                        styleChip(
+                            tvRoadChip,
+                            when {
+                                st.hasRoadGraph -> "Roads • ${offlineMaps.formatSize(st.roadSizeBytes)}"
+                                st.isRoadQueued -> "Roads • Queued"
+                                else -> "Road Graph"
+                            },
+                            ready = st.hasRoadGraph,
+                            failed = st.roadError != null && !st.hasRoadGraph
+                        )
+
                         val (mapText, mapColor, mapBold) = when {
                             st.mapError != null && !st.isDownloaded ->
                                 Triple("Map Tiles: ${st.mapError}", p.red, true)
-                            !hasAnyContent && st.roadError == null ->
-                                Triple("Not downloaded (online only)", p.textSecondary, false)
-                            st.isDownloaded ->
-                                Triple("Map Tiles: Ready ($sizeStr)", p.accentPrimary, true)
                             st.isDownloading -> {
                                 val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
                                 val sizePart = if (st.sizeBytes > 0L) " • $sizeStr" else ""
@@ -9345,25 +10159,25 @@ class MainActivity : AppCompatActivity() {
                                 val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
                                 Triple("Map Tiles: Paused ${st.progressPercent}%$countPart • $sizeStr", if (p.isDark) p.amber else Color.parseColor("#B36B00"), false)
                             }
-                            else ->
-                                Triple("Map Tiles: Not downloaded", p.textSecondary, false)
+                            else -> Triple("", p.textSecondary, false)
                         }
-                        tvStatus.text = mapText
-                        tvStatus.setTextColor(mapColor)
-                        tvStatus.setTypeface(null, if (mapBold) Typeface.BOLD else Typeface.NORMAL)
+                        if (mapText.isNotEmpty()) {
+                            tvStatus.text = mapText
+                            tvStatus.setTextColor(mapColor)
+                            tvStatus.setTypeface(null, if (mapBold) Typeface.BOLD else Typeface.NORMAL)
+                            tvStatus.visibility = View.VISIBLE
+                        } else {
+                            tvStatus.visibility = View.GONE
+                        }
 
-                        if (hasAnyContent || st.roadError != null || st.isRoadQueued) {
+                        if (st.roadError != null || st.isRoadDownloading || st.isRoadQueued) {
                             val (roadText, roadColor, roadBold) = when {
                                 st.roadError != null ->
                                     Triple("Roads failed: ${st.roadError}", p.red, true)
                                 st.isRoadDownloading ->
                                     Triple("Road Routing: ${st.roadStatusText.ifBlank { "Downloading..." }}", p.accentPrimary, true)
-                                st.hasRoadGraph ->
-                                    Triple("Road Routing: Ready (${offlineMaps.formatSize(st.roadSizeBytes)})", p.accentPrimary, true)
-                                st.isRoadQueued ->
-                                    Triple("Road Routing: Queued after map tiles finish", p.textSecondary, false)
                                 else ->
-                                    Triple("Road Routing: Not downloaded yet", p.textSecondary, false)
+                                    Triple("Road Routing: Queued after map tiles finish", p.textSecondary, false)
                             }
                             tvRoadStatus.text = roadText
                             tvRoadStatus.setTextColor(roadColor)
@@ -9472,25 +10286,90 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-                body.addView(MaterialButton(this).apply {
-                    text = "Clear Temporary Map Cache"
-                    textSize = 13f
-                    isAllCaps = false
-                    insetTop = 0
-                    insetBottom = 0
-                    cornerRadius = dp(12)
-                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
-                        topMargin = dp(2)
-                        bottomMargin = dp(4)
-                    }
-                    DesignSystem.styleSegmentedButton(this, false, p)
-                    UiAnimations.attachSnappyPress(this)
-                    setOnClickListener {
-                        offlineMaps.clearAmbientCache { msg ->
-                            runOnUiThread { Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show() }
+                val tvCacheSize = TextView(this).apply {
+                    text = "…"
+                    textSize = 11.5f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(p.textSecondary)
+                    DesignSystem.applyTabularNumerals(this)
+                    setPadding(dp(9), dp(4), dp(9), dp(4))
+                    background = DesignSystem.buildOpaqueDrawable(
+                        ctx = this@MainActivity,
+                        fillColor = p.surfaceFloating,
+                        radiusDp = 10f,
+                        strokeColor = p.borderSubtle,
+                        strokeDp = 1f
+                    )
+                }
+
+                fun refreshCacheSize() {
+                    RoutingEngine.ioExecutor.execute {
+                        val bytes = offlineMaps.estimateAmbientCacheBytes()
+                        val label = offlineMaps.formatSize(bytes)
+                        runOnUiThread {
+                            if (!isFinishing && !isDestroyed) {
+                                tvCacheSize.text = label
+                            }
                         }
                     }
+                }
+
+                val cacheCard = DesignSystem.createGroupedCard(
+                    this, p, radiusDp = 16f, paddingHDp = 14, paddingVDp = 12, bottomMarginDp = 4
+                ).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    isClickable = true
+                    isFocusable = true
+                    UiAnimations.attachSnappyPress(this, 0.985f)
+                    setOnClickListener {
+                        offlineMaps.clearAmbientCache { msg ->
+                            runOnUiThread {
+                                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                                refreshCacheSize()
+                            }
+                        }
+                    }
+                }
+                val trashBadge = FrameLayout(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginEnd = dp(12) }
+                    background = DesignSystem.buildOpaqueDrawable(
+                        ctx = this@MainActivity,
+                        fillColor = p.surfaceFloating,
+                        radiusDp = 18f,
+                        strokeColor = p.borderSubtle,
+                        strokeDp = 1f
+                    )
+                }
+                trashBadge.addView(ImageView(this).apply {
+                    setImageResource(R.drawable.ic_trash)
+                    setColorFilter(p.textMuted)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    layoutParams = FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER)
                 })
+                cacheCard.addView(trashBadge)
+
+                val cacheTextCol = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginEnd = dp(8)
+                    }
+                }
+                cacheTextCol.addView(TextView(this).apply {
+                    text = "Clear Temporary Map Cache"
+                    textSize = 14f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(txtPrimary)
+                })
+                cacheTextCol.addView(TextView(this).apply {
+                    text = "Free cached map tiles from online browsing"
+                    textSize = 12f
+                    setTextColor(txtSub)
+                })
+                cacheCard.addView(cacheTextCol)
+                cacheCard.addView(tvCacheSize)
+                body.addView(cacheCard)
+                refreshCacheSize()
 
                 offlineMaps.setStateListener {
                     runOnUiThread { packUpdaters.forEach { it() } }
@@ -9626,35 +10505,80 @@ class MainActivity : AppCompatActivity() {
         })
         body.addView(devCard)
 
-        listOf(
-            Triple("GitHub Profile (@Thamirakkurd)", "https://github.com/Thamirakkurd", p.actionDark),
-            Triple("TerraSync Repository", "https://github.com/Thamirakkurd/TerraSync", p.accentPrimary),
-            Triple("Releases & Updates", "https://github.com/Thamirakkurd/TerraSync/releases", p.surfaceTonal)
-        ).forEach { (label, url, bgColor) ->
-            body.addView(MaterialButton(this).apply {
-                text = label
-                textSize = 14f
-                isAllCaps = false
-                setTextColor(
-                    when (bgColor) {
-                        p.actionDark -> p.onActionDark
-                        p.surfaceTonal -> p.textPrimary
-                        else -> Color.WHITE
-                    }
-                )
-                setBackgroundColor(bgColor)
-                elevation = 0f
-                stateListAnimator = null
-                cornerRadius = dp(24)
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
-                    bottomMargin = dp(10)
-                }
-                UiAnimations.attachSnappyPress(this)
+        val linksCard = DesignSystem.createGroupedCard(
+            this, p, radiusDp = 16f, paddingHDp = 0, paddingVDp = 2, bottomMarginDp = 14
+        )
+        val linkSpecs = listOf(
+            listOf("GitHub Profile", "@Thamirakkurd", "https://github.com/Thamirakkurd", R.drawable.ic_info),
+            listOf("TerraSync Repository", "Source code & issue tracker", "https://github.com/Thamirakkurd/TerraSync", R.drawable.ic_layers),
+            listOf("Releases & Updates", "Latest signed APK builds", "https://github.com/Thamirakkurd/TerraSync/releases", R.drawable.ic_download)
+        )
+        linkSpecs.forEachIndexed { idx, spec ->
+            if (idx > 0) {
+                linksCard.addView(DesignSystem.createHairlineDivider(this, p, 62, 14))
+            }
+            val titleText = spec[0] as String
+            val subText = spec[1] as String
+            val url = spec[2] as String
+            val iconRes = spec[3] as Int
+
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(58)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                UiAnimations.applyRowRipple(this@MainActivity, this, p.isDark)
+                UiAnimations.attachSnappyPress(this, 0.985f)
                 setOnClickListener {
                     safeStartActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser app installed")
                 }
+            }
+            val badge = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginEnd = dp(12) }
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(p.accentPrimarySoft)
+                }
+            }
+            badge.addView(ImageView(this).apply {
+                setImageResource(iconRes)
+                setColorFilter(p.accentPrimary)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER)
             })
+            row.addView(badge)
+
+            val txtCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(8)
+                }
+            }
+            txtCol.addView(TextView(this).apply {
+                text = titleText
+                textSize = 14.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(txtPrimary)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            txtCol.addView(TextView(this).apply {
+                text = subText
+                textSize = 12f
+                setTextColor(txtSub)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            })
+            row.addView(txtCol)
+
+            row.addView(TextView(this).apply {
+                text = "›"
+                textSize = 20f
+                setTextColor(p.textMuted)
+            })
+            linksCard.addView(row)
         }
+        body.addView(linksCard)
 
         UiAnimations.staggerRevealChildren(body)
         return outer

@@ -426,28 +426,19 @@
             android:elevation="8dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="8dp"
+            android:paddingStart="14dp"
             android:paddingTop="10dp"
             android:paddingEnd="8dp"
             android:paddingBottom="10dp"
             android:visibility="gone">
 
-            <ImageButton
-                android:id="@+id/btnRulerUndo"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Undo Point"
-                android:padding="12dp"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_undo" />
-
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:gravity="center_horizontal"
-                android:orientation="vertical">
+                android:gravity="start|center_vertical"
+                android:orientation="vertical"
+                android:paddingEnd="8dp">
 
                 <TextView
                     android:id="@+id/tvRulerDistance"
@@ -456,40 +447,56 @@
                     android:fontFeatureSettings="tnum"
                     android:text="0 m"
                     android:textColor="#1C1E1B"
-                    android:textSize="22sp"
+                    android:textSize="20sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/tvRulerSubtitle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="1dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
                     android:text="Tap map to add measurement points"
                     android:textColor="#6E716B"
-                    android:textSize="12.5sp" />
-
-                <TextView
-                    android:id="@+id/btnRulerReset"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:gravity="center"
-                    android:minHeight="36dp"
-                    android:paddingStart="12dp"
-                    android:paddingEnd="12dp"
-                    android:text="Clear points"
-                    android:textColor="#18794E"
-                    android:textSize="13.5sp"
-                    android:textStyle="bold" />
+                    android:textSize="12sp" />
             </LinearLayout>
+
+            <TextView
+                android:id="@+id/btnRulerReset"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical"
+                android:layout_marginEnd="4dp"
+                android:gravity="center"
+                android:minHeight="36dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="Clear"
+                android:textColor="#F0651F"
+                android:textSize="12.5sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <ImageButton
+                android:id="@+id/btnRulerUndo"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center_vertical"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Undo Point"
+                android:padding="9dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_undo" />
 
             <ImageButton
                 android:id="@+id/btnRulerClose"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_gravity="center_vertical"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Close Ruler"
-                android:padding="12dp"
+                android:padding="9dp"
                 android:scaleType="fitCenter"
                 android:src="@drawable/ic_close" />
         </LinearLayout>

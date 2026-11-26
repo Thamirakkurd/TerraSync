@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -724,6 +725,22 @@ class OfflineMapManager private constructor(context: Context) {
                 })
             }
         }
+    }
+
+    fun estimateAmbientCacheBytes(): Long {
+        val dbBytes = listOf("mbgl-offline.db", "mbgl-offline.db-wal", "mbgl-offline.db-shm")
+            .sumOf { name -> File(appCtx.filesDir, name).takeIf { it.exists() }?.length() ?: 0L }
+        val offlinePackBytes = states.values.sumOf { it.sizeBytes }
+        val ambientDbBytes = (dbBytes - offlinePackBytes).coerceAtLeast(0L)
+        fun dirBytes(dir: File?): Long {
+            if (dir == null || !dir.exists()) return 0L
+            var sum = 0L
+            dir.walkTopDown().maxDepth(4).forEach { f ->
+                if (f.isFile) sum += f.length()
+            }
+            return sum
+        }
+        return ambientDbBytes + dirBytes(appCtx.cacheDir)
     }
 
     fun clearAmbientCache(onDone: (String) -> Unit) {
