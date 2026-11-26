@@ -242,4 +242,62 @@ class TerraSyncCoreStressTest {
         assertEquals(false, PinEditHistoryAudit.isHistoryLineOutsideWorkHours("26 Nov 23:45 • Team 1 → Done: Meter Linked", startMin, endMin))
         assertEquals(true, PinEditHistoryAudit.isHistoryLineOutsideWorkHours("26 Nov 14:10 • Team 1 → Issue: Closed", startMin, endMin))
     }
+
+    @Test
+    fun testSpeedFallbackEstimatorIgnoresFusedEchoAndResetsOnStop() {
+        var st = SpeedFallbackEstimator.SpeedSampleState()
+        // 1. Initial GPS fix (no native speed) establishes anchor cleanly at 0 m/s
+        st = SpeedFallbackEstimator.update(
+            prev = st, lat = 36.850500, lng = 42.948500, provider = "gps",
+            hasSpeed = false, speedMps = 0f, accurate = true, elapsedMs = 1_000L
+        )
+        assertEquals(0f, st.derivedSpeedMps, 0.001f)
+
+        // 2. GPS advances ~22.2 m eastward after 1.0 s -> ~22.2 m/s (~80 km/h)
+        st = SpeedFallbackEstimator.update(
+            prev = st, lat = 36.850500, lng = 42.948750, provider = "gps",
+            hasSpeed = false, speedMps = 0f, accurate = true, elapsedMs = 2_000L
+        )
+        assertTrue("Expected derivedSpeedMps > 15 m/s, got ${st.derivedSpeedMps}", st.derivedSpeedMps > 15f)
+        val computedSpeed = st.derivedSpeedMps
+
+        // 3. FUSED_PROVIDER echoes identical coordinate 0.4 s later -> must preserve derivedSpeedMps
+        st = SpeedFallbackEstimator.update(
+            prev = st, lat = 36.850500, lng = 42.948750, provider = "fused",
+            hasSpeed = false, speedMps = 0f, accurate = true, elapsedMs = 2_400L
+        )
+        assertEquals(computedSpeed, st.derivedSpeedMps, 0.001f)
+
+        // 4. Next moving GPS fix 1.0 s after step 2 calculates new positive speed
+        st = SpeedFallbackEstimator.update(
+            prev = st, lat = 36.850500, lng = 42.949000, provider = "gps",
+            hasSpeed = false, speedMps = 0f, accurate = true, elapsedMs = 3_000L
+        )
+        assertTrue("Expected continued positive speed, got ${st.derivedSpeedMps}", st.derivedSpeedMps > 15f)
+
+        // 5. Same provider stays stationary 1.2 s -> resets speed to 0
+        st = SpeedFallbackEstimator.update(
+            prev = st, lat = 36.850500, lng = 42.949000, provider = "gps",
+            hasSpeed = false, speedMps = 0f, accurate = true, elapsedMs = 4_200L
+        )
+        assertEquals(0f, st.derivedSpeedMps, 0.001f)
+    }
+
+    @Test
+    fun testWorkHourPresetsParseSerializeAndClamp() {
+        val defaults = DevicePrefs.parseWorkHourPresets(null)
+        assertEquals(3, defaults.size)
+        assertEquals(8 * 60 to 17 * 60, defaults[1])
+
+        val serialized = DevicePrefs.serializeWorkHourPresets(
+            listOf(
+                22 * 60 to 6 * 60,
+                22 * 60 to 6 * 60, // duplicate
+                9 * 60 to 9 * 60,   // equal start/end ignored
+                6 * 60 to 14 * 60
+            )
+        )
+        val parsed = DevicePrefs.parseWorkHourPresets(serialized)
+        assertEquals(listOf(22 * 60 to 6 * 60, 6 * 60 to 14 * 60), parsed)
+    }
 }

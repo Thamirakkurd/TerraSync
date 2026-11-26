@@ -12,12 +12,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: 8.9
 
@@ -29,8 +29,10 @@ jobs:
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > app/release-keystore.p12
           fi
 
-      - name: Run Unit Tests (-Xmx128m Stress & Regression)
-        run: gradle testDebugUnitTest --no-daemon
+      - name: Run Unit Tests (-Xmx128m Stress + Robolectric SQLite)
+        run: |
+          gradle testDebugUnitTest --tests "*TerraSyncCoreStressTest" -PunitTestMaxHeap=128m --no-daemon
+          gradle testDebugUnitTest --tests "*OfflineRoutingAndStoreRobolectricTest" -PunitTestMaxHeap=512m --no-daemon
 
       - name: Build Signed Release APK
         env:
@@ -47,7 +49,7 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "TerraSync-${VERSION}.apk"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: TerraSync-release
           path: TerraSync-*.apk

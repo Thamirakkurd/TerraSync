@@ -86,8 +86,9 @@ android {
     testOptions {
         unitTests {
             isReturnDefaultValues = true
+            isIncludeAndroidResources = true
             all {
-                it.maxHeapSize = "128m"
+                it.maxHeapSize = (project.findProperty("unitTestMaxHeap") as String?) ?: "512m"
             }
         }
     }
@@ -106,4 +107,6 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14")
+    testImplementation("androidx.test:core:1.6.1")
 }
