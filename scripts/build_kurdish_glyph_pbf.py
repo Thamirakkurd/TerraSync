@@ -286,26 +286,36 @@ def raster_to_sdf(alpha: bytes, w: int, h: int, buf: int = SDF_BUFFER) -> bytes:
 
 
 def shape_cluster_glyphs(
-    hb_font: hb.Font, text: str, target_cluster: int
+    hb_font: hb.Font, text: str, _target_cluster: int = 0
 ) -> List[Tuple[int, int, int, int]]:
-    """Return all (glyph_id, x_advance, x_offset, y_offset) in HarfBuzz font units for target_cluster."""
+    """
+    Shape a single target letter (optionally flanked by ZWJ U+200D for contextual joining)
+    with REMOVE_DEFAULT_IGNORABLES so ZWJ triggers init/medi/fina GSUB rules and is then
+    removed cleanly, returning only the target letter's glyphs (base + GPOS marks).
+    """
     buf = hb.Buffer()
     buf.add_str(text)
     buf.direction = "rtl"
     buf.script = "Arab"
     buf.language = "ckb"
-    if hasattr(hb, "BufferFlags") and hasattr(hb.BufferFlags, "REMOVE_DEFAULT_IGNORABLES"):
-        buf.flags = hb.BufferFlags.REMOVE_DEFAULT_IGNORABLES
+    buf.flags = hb.BufferFlags.REMOVE_DEFAULT_IGNORABLES
     hb.shape(hb_font, buf)
-    zwj_gid = hb_font.get_nominal_glyph(0x200D)
+    ignorable_gids = {
+        gid
+        for gid in (
+            hb_font.get_nominal_glyph(0x0020),
+            hb_font.get_nominal_glyph(0x200D),
+            hb_font.get_nominal_glyph(0x200C),
+        )
+        if gid is not None and gid != 0
+    }
     out: List[Tuple[int, int, int, int]] = []
     for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
-        if info.cluster == target_cluster:
-            if zwj_gid is not None and info.codepoint == zwj_gid:
-                continue
-            out.append((info.codepoint, pos.x_advance, pos.x_offset, pos.y_offset))
+        if info.codepoint in ignorable_gids:
+            continue
+        out.append((info.codepoint, pos.x_advance, pos.x_offset, pos.y_offset))
     if not out:
-        raise RuntimeError(f"Could not find cluster {target_cluster} in shaped output for {text!r}")
+        raise RuntimeError(f"HarfBuzz produced no visible glyphs for {text!r}")
     return out
 
 
