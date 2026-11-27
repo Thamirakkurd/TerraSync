@@ -70,4 +70,27 @@ class OfflineMapPipelineTest {
         assertFalse(MapTileInterceptor.isGzipBytes(out))
         assertEquals(String(plain, Charsets.UTF_8), String(out, Charsets.UTF_8))
     }
+
+    @Test
+    fun partialProgressReadsParallelCheckpointAndClearsCleanly() {
+        val dir = java.io.File.createTempFile("ts_dl_test", "").apply { delete(); mkdirs() }
+        try {
+            val part = java.io.File(dir, "pack_iraq_south.pmtiles.part")
+            java.io.RandomAccessFile(part, "rw").use { it.setLength(10_000L) }
+            val meta = ParallelFileDownloader.metaFileFor(part)
+            meta.writeText("""{"mode":"parallel","totalBytes":10000,"numParts":4,"partDone":[1000,1500,0,500]}""", Charsets.UTF_8)
+
+            val prog = ParallelFileDownloader.readPartialProgress(part)
+            assertNotNull(prog)
+            assertEquals(3000L, prog!!.downloadedBytes)
+            assertEquals(10_000L, prog.totalBytes)
+            assertEquals(29, prog.percent)
+
+            ParallelFileDownloader.clearPartialFiles(part)
+            assertFalse(part.exists())
+            assertFalse(meta.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

@@ -215,7 +215,7 @@ object LocalPmTilesStore {
         openArchives.remove(packId)?.closeQuietly()
         rebuildSortedArchives()
         val f = packFile(ctx, packId)
-        File(dir(ctx), "${f.name}.part").delete()
+        ParallelFileDownloader.clearPartialFiles(File(dir(ctx), "${f.name}.part"))
         return f.exists() && f.delete()
     }
 

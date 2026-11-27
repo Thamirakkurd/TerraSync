@@ -46,10 +46,11 @@ data class OfflinePackState(
     val roadSizeBytes: Long = 0L,
     val roadStatusText: String = "",
     val roadError: String? = null,
-    val hasPartialRoadData: Boolean = false
+    val hasPartialRoadData: Boolean = false,
+    val hasPartialMapData: Boolean = false
 ) {
     val hasAnyData: Boolean
-        get() = isDownloaded || isDownloading || completedResources > 0L ||
+        get() = isDownloaded || isDownloading || completedResources > 0L || hasPartialMapData ||
             hasRoadGraph || isRoadDownloading || hasPartialRoadData
 }
 
@@ -127,6 +128,7 @@ class OfflineMapManager private constructor(context: Context) {
     private val activeTilePacks = ConcurrentHashMap.newKeySet<String>()
     private val pmTilesDownloads = ConcurrentHashMap<String, ParallelFileDownloader.Handle>()
     private val pmTilesDiskCache = ConcurrentHashMap<String, LocalPmTilesStore.PackInfo>()
+    private val pmTilesPartialCache = ConcurrentHashMap<String, ParallelFileDownloader.PartialProgress>()
     private val pendingDownloads = ConcurrentHashMap<String, Pair<OfflinePackSpec, Float>>()
     private val lastProgressEmitMs = ConcurrentHashMap<String, Long>()
     private data class RoadDiskSnapshot(val region: OfflineRoadRegion?, val hasPartial: Boolean)
@@ -168,9 +170,17 @@ class OfflineMapManager private constructor(context: Context) {
         if (force) diskRefreshInFlight.add(packId)
         RoutingEngine.batchIoExecutor.execute {
             try {
-                LocalPmTilesStore.getPackInfo(appCtx, packId)?.let {
-                    pmTilesDiskCache[packId] = it
-                } ?: pmTilesDiskCache.remove(packId)
+                val pmInfo = LocalPmTilesStore.getPackInfo(appCtx, packId)
+                if (pmInfo != null) {
+                    pmTilesDiskCache[packId] = pmInfo
+                    pmTilesPartialCache.remove(packId)
+                } else {
+                    pmTilesDiskCache.remove(packId)
+                    val partFile = File(LocalPmTilesStore.dir(appCtx), "${LocalPmTilesStore.packFileName(packId)}.part")
+                    ParallelFileDownloader.readPartialProgress(partFile)?.let {
+                        pmTilesPartialCache[packId] = it
+                    } ?: pmTilesPartialCache.remove(packId)
+                }
                 val snap = RoadDiskSnapshot(
                     region = OfflineRoutingEngine.getPackRegion(appCtx, packId),
                     hasPartial = OfflineRoutingEngine.hasPartialPackData(appCtx, packId)
@@ -289,18 +299,31 @@ class OfflineMapManager private constructor(context: Context) {
         val rErr = roadErrors[packId]
         val mErr = mapErrors[packId]
         val pmPack = pmTilesDiskCache[packId]
+        val pmPartial = if (pmPack == null) pmTilesPartialCache[packId] else null
         val isMapReady = pmPack != null
-        val mapSize = pmPack?.sizeBytes ?: 0L
+        val mapSize = pmPack?.sizeBytes ?: pmPartial?.downloadedBytes ?: 0L
+        val pausedText = pmPartial?.let {
+            if (it.totalBytes > 0L) {
+                "Paused ${it.percent}% (${formatSize(it.downloadedBytes)} / ${formatSize(it.totalBytes)})"
+            } else {
+                "Paused ${it.percent}% (${formatSize(it.downloadedBytes)})"
+            }
+        }
         return OfflinePackState(
             isDownloaded = isMapReady,
             isDownloading = isPmTilesDownloading(packId),
-            progressPercent = if (isMapReady) 100 else 0,
+            progressPercent = when {
+                isMapReady -> 100
+                pmPartial != null -> pmPartial.percent
+                else -> 0
+            },
             sizeBytes = mapSize,
             statusText = when {
                 mErr != null && !isMapReady -> mErr
                 isMapReady && road != null ->
                     "Map ${formatSize(mapSize)} + Roads ${formatSize(road.sizeBytes)} (fully offline)"
                 isMapReady -> "Map Ready (${formatSize(mapSize)} • z${pmPack!!.header.minZoom}–${pmPack.header.maxZoom})"
+                pausedText != null -> pausedText
                 road != null -> "Roads ready (${formatSize(road.sizeBytes)}) • Map not downloaded"
                 else -> "Not downloaded (online only)"
             },
@@ -319,7 +342,8 @@ class OfflineMapManager private constructor(context: Context) {
                 else -> ""
             },
             roadError = rErr,
-            hasPartialRoadData = partialRoad
+            hasPartialRoadData = partialRoad,
+            hasPartialMapData = pmPartial != null
         )
     }
 
@@ -495,15 +519,16 @@ class OfflineMapManager private constructor(context: Context) {
         pmTilesDownloads[pack.id] = handle
 
         val cur = getState(pack.id)
+        val resuming = cur.hasPartialMapData && cur.progressPercent > 0
         states[pack.id] = cur.copy(
             isDownloading = true,
-            progressPercent = 0,
+            progressPercent = if (resuming) cur.progressPercent else 0,
             completedResources = 0L,
             requiredResources = 0L,
             mapError = null,
             roadError = null,
             isRoadQueued = autoChainRoads[pack.id] == true,
-            statusText = "Downloading ${pack.title} map..."
+            statusText = if (resuming) "Resuming ${pack.title} map..." else "Downloading ${pack.title} map..."
         )
         notifyListeners()
 
@@ -558,21 +583,30 @@ class OfflineMapManager private constructor(context: Context) {
                             partFile.copyTo(outFile, overwrite = true)
                             partFile.delete()
                         }
+                        ParallelFileDownloader.metaFileFor(partFile).delete()
+                        pmTilesPartialCache.remove(pack.id)
                         packInfo = LocalPmTilesStore.registerPack(appCtx, pack.id)
                         if (packInfo != null) {
                             prewarmOfflineMapAssets()
                             downloadedOk = true
                         }
                     } else {
-                        partFile.delete()
+                        ParallelFileDownloader.clearPartialFiles(partFile)
+                        pmTilesPartialCache.remove(pack.id)
                     }
                 }
             } catch (_: ParallelFileDownloader.CancelledException) {
                 cancelled = true
-                partFile.delete()
+                ParallelFileDownloader.readPartialProgress(partFile)?.let {
+                    pmTilesPartialCache[pack.id] = it
+                }
             } catch (_: Exception) {
-                partFile.delete()
-                if (handle.cancelled.get()) cancelled = true
+                if (handle.cancelled.get()) {
+                    cancelled = true
+                    ParallelFileDownloader.readPartialProgress(partFile)?.let {
+                        pmTilesPartialCache[pack.id] = it
+                    }
+                }
             } finally {
                 pmTilesDownloads.remove(pack.id, handle)
             }
@@ -938,13 +972,25 @@ class OfflineMapManager private constructor(context: Context) {
             reg.setObserver(null)
         }
         val cur = getState(packId)
+        val partFile = File(LocalPmTilesStore.dir(appCtx), "${LocalPmTilesStore.packFileName(packId)}.part")
+        val partial = ParallelFileDownloader.readPartialProgress(partFile)
+        if (partial != null) pmTilesPartialCache[packId] = partial
+        val hasPartialPm = !cur.isDownloaded && (partial != null || (cur.completedResources == 0L && cur.sizeBytes > 0L && cur.progressPercent > 0))
+        val pausedPct = partial?.percent ?: cur.progressPercent
+        val pausedBytes = partial?.downloadedBytes ?: cur.sizeBytes
+        val pausedTotal = partial?.totalBytes ?: -1L
         states[packId] = cur.copy(
             isDownloading = false,
             isRoadDownloading = false,
             isRoadQueued = false,
+            progressPercent = if (hasPartialPm) pausedPct else cur.progressPercent,
+            sizeBytes = if (hasPartialPm) pausedBytes else cur.sizeBytes,
+            hasPartialMapData = hasPartialPm,
             statusText = when {
                 cur.isDownloaded -> cur.statusText
                 cur.completedResources > 0L -> "Paused ${cur.progressPercent}% (${cur.completedResources}/${cur.requiredResources}) • ${formatSize(cur.sizeBytes)}"
+                hasPartialPm && pausedTotal > 0L -> "Paused $pausedPct% (${formatSize(pausedBytes)} / ${formatSize(pausedTotal)})"
+                hasPartialPm -> "Paused $pausedPct% (${formatSize(pausedBytes)})"
                 else -> "Not downloaded (online only)"
             }
         )
@@ -967,6 +1013,7 @@ class OfflineMapManager private constructor(context: Context) {
         activeTilePacks.remove(packId)
         pmTilesDownloads.remove(packId)?.cancelAll()
         pmTilesDiskCache.remove(packId)
+        pmTilesPartialCache.remove(packId)
         pendingDownloads.remove(packId)
         setRoadChainPending(packId, false)
         mapErrors.remove(packId)

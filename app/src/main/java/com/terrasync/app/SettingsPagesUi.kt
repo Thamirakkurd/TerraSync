@@ -1292,7 +1292,7 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
                     val st = offlineMaps.getState(packId)
                     val busy = st.isDownloading || st.isRoadDownloading
                     val fullyReady = st.isDownloaded && st.hasRoadGraph
-                    val hasPartialTiles = !st.isDownloaded && st.completedResources > 0L
+                    val hasPartialTiles = !st.isDownloaded && (st.completedResources > 0L || st.hasPartialMapData)
                     val hasAnyContent = st.hasAnyData
                     val sizeStr = offlineMaps.formatSize(st.sizeBytes)
 
@@ -1378,8 +1378,12 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
                             }
                         }
                         hasPartialTiles -> {
-                            val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
-                            Triple("Map Tiles: Paused ${st.progressPercent}%$countPart • $sizeStr", if (p.isDark) p.amber else Color.parseColor("#B36B00"), false)
+                            val pausedDetail = if (st.requiredResources > 0) {
+                                "Paused ${st.progressPercent}% (${st.completedResources}/${st.requiredResources}) • $sizeStr"
+                            } else {
+                                st.statusText.ifBlank { "Paused ${st.progressPercent}% • $sizeStr" }
+                            }
+                            Triple("Map Tiles: $pausedDetail", if (p.isDark) p.amber else Color.parseColor("#B36B00"), false)
                         }
                         else -> Triple("", p.textSecondary, false)
                     }

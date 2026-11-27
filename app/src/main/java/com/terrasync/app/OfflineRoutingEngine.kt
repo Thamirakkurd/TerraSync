@@ -225,7 +225,8 @@ object OfflineRoutingEngine {
                 if (entry.isFile && (entry.name.endsWith(".part") || entry.name.endsWith(".tmp"))) {
                     val stem = entry.name.substringBefore(".tsr")
                     val belongsToActive = activeKeys.any { stem == "pack_$it" || stem.startsWith("${it}_") }
-                    if (!belongsToActive) entry.delete()
+                    val hasResumeMeta = entry.name.endsWith(".part") && ParallelFileDownloader.metaFileFor(entry).exists()
+                    if (!belongsToActive && !hasResumeMeta) entry.delete()
                 } else if (entry.isDirectory && entry.name.startsWith("staging_")) {
                     val key = entry.name.removePrefix("staging_")
                     if (key !in activeKeys) {
@@ -282,7 +283,7 @@ object OfflineRoutingEngine {
         cancelDownload(packId)
         val fileName = packFileName(packId)
         val base = dir(ctx)
-        File(base, "$fileName.part").delete()
+        ParallelFileDownloader.clearPartialFiles(File(base, "$fileName.part"))
         File(base, "$fileName.tmp").delete()
         stagingDir(ctx, packId).deleteRecursively()
         return deleteRegion(ctx, fileName)
@@ -1180,13 +1181,10 @@ object OfflineRoutingEngine {
                                 partFile.delete()
                             }
                         } catch (_: ParallelFileDownloader.CancelledException) {
-                            partFile.delete()
                             throw CancelledSignal()
                         } catch (cs: CancelledSignal) {
-                            partFile.delete()
                             throw cs
                         } catch (e: CancellationException) {
-                            partFile.delete()
                             throw e
                         } catch (_: Exception) {
                             partFile.delete()
@@ -1409,9 +1407,11 @@ object OfflineRoutingEngine {
                 if (finishedCleanly) {
                     stageDir.deleteRecursively()
                 }
-                activePartFile?.takeIf { it.exists() }?.delete()
-                if (packId != null) {
-                    File(dir(ctx), "${packFileName(packId)}.part").takeIf { it.exists() }?.delete()
+                if (finishedCleanly) {
+                    activePartFile?.let { ParallelFileDownloader.clearPartialFiles(it) }
+                    if (packId != null) {
+                        ParallelFileDownloader.clearPartialFiles(File(dir(ctx), "${packFileName(packId)}.part"))
+                    }
                 }
                 job.activeCall = null
                 activeDownloads.remove(jobKey, job)
