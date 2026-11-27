@@ -2,6 +2,11 @@
 """
 Compile pre-built TerraSync TSR1 offline road graphs from Geofabrik Iraq OSM PBF.
 
+Applies topology-preserving Douglas-Peucker simplification on degree-2 geometry chains
+(keeping 100% of intersections, way endpoints, road names, and exact summed haversine
+distances) to keep downloads fast (~10-15 MB) and mobile RAM low while preserving full
+routing accuracy.
+
 Matches OfflineRoutingEngine.kt's exact TSR1 GZIP binary format:
   - MAGIC = 0x54535231 ("TSR1")
   - regionName (Java Modified UTF-8: uint16 len + bytes)
@@ -23,13 +28,14 @@ import struct
 import sys
 import time
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 import osmium
 
-GEOFABRIK_IRAQ_PBF_URL = "https://download.geofabrik.de/asia/iraq-latest.osm.pbf"
+GEOFABRIK_IRAQ_PBF_URL = "https://download.geofabrik.de/asia/iraq/iraq-latest.osm.pbf"
 
 MAGIC = 0x54535231  # TSR1
 FLAG_CAR = 1
@@ -72,7 +78,33 @@ ARTERIAL_HIGHWAYS: Set[str] = {
     "tertiary_link",
 }
 
-ALL_ROUTABLE_HIGHWAYS: Set[str] = set(HIGHWAY_PROFILES.keys())
+CORE_DRIVABLE_HIGHWAYS: Set[str] = ARTERIAL_HIGHWAYS | {
+    "unclassified",
+    "road",
+    "residential",
+    "living_street",
+    "cycleway",
+}
+
+MINOR_ACCESS_HIGHWAYS: Set[str] = {
+    "service",
+    "track",
+    "path",
+    "footway",
+}
+
+# Populated Kurdistan hubs where service/track/footway detail is kept in full
+KURDISTAN_DETAIL_BOXES: Tuple[Tuple[float, float, float, float], ...] = (
+    (36.74, 42.50, 37.24, 43.35),  # Duhok, Zakho, Semel
+    (36.60, 43.25, 37.15, 44.15),  # Akre, Shekhan, Bardarash, Amadiya
+    (36.02, 43.82, 36.38, 44.28),  # Erbil metro & Shaqlawa approach
+    (36.55, 44.35, 36.75, 44.65),  # Soran, Rawanduz, Choman
+    (35.42, 45.25, 35.70, 45.60),  # Sulaymaniyah metro
+    (35.10, 45.85, 35.30, 46.10),  # Halabja & Said Sadiq
+    (36.15, 44.75, 36.35, 45.05),  # Ranya & Qaladiza
+    (35.35, 44.25, 35.58, 44.52),  # Kirkuk metro
+    (34.55, 45.20, 34.72, 45.42),  # Kalar
+)
 
 
 def encode_java_mutf8(text: str) -> bytes:
@@ -92,7 +124,6 @@ def encode_java_mutf8(text: str) -> bytes:
             out.append(0x80 | ((cp >> 6) & 0x3F))
             out.append(0x80 | (cp & 0x3F))
         else:
-            # Supplementary codepoint -> UTF-16 surrogate pair encoded as two 3-byte sequences
             cp -= 0x10000
             hi = 0xD800 + (cp >> 10)
             lo = 0xDC00 + (cp & 0x3FF)
@@ -121,6 +152,76 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     return 2.0 * r * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
 
 
+def point_segment_distance_m(
+    p_lat: float,
+    p_lon: float,
+    a_lat: float,
+    a_lon: float,
+    b_lat: float,
+    b_lon: float,
+    cos_lat: float,
+) -> float:
+    """Fast local equirectangular point-to-segment distance in meters."""
+    px = (p_lon - a_lon) * 111320.0 * cos_lat
+    py = (p_lat - a_lat) * 111132.0
+    bx = (b_lon - a_lon) * 111320.0 * cos_lat
+    by = (b_lat - a_lat) * 111132.0
+    len_sq = bx * bx + by * by
+    if len_sq <= 1e-6:
+        return math.hypot(px, py)
+    t = (px * bx + py * by) / len_sq
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    dx = px - t * bx
+    dy = py - t * by
+    return math.hypot(dx, dy)
+
+
+def simplify_chain_indices(
+    pts: List[Tuple[int, float, float]],
+    start_idx: int,
+    end_idx: int,
+    tolerance_m: float,
+) -> List[int]:
+    """Iterative Douglas-Peucker returning kept point indices in [start_idx..end_idx]."""
+    if end_idx - start_idx <= 1:
+        return [start_idx, end_idx]
+
+    keep = [False] * (end_idx - start_idx + 1)
+    keep[0] = True
+    keep[-1] = True
+    if pts[start_idx][0] == pts[end_idx][0] and end_idx - start_idx >= 3:
+        mid = (start_idx + end_idx) // 2
+        keep[mid - start_idx] = True
+        stack = [(start_idx, mid), (mid, end_idx)]
+    else:
+        stack = [(start_idx, end_idx)]
+
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo <= 1:
+            continue
+        _, a_lat, a_lon = pts[lo]
+        _, b_lat, b_lon = pts[hi]
+        cos_lat = math.cos(math.radians((a_lat + b_lat) * 0.5))
+        max_dist = -1.0
+        max_idx = -1
+        for k in range(lo + 1, hi):
+            _, p_lat, p_lon = pts[k]
+            d = point_segment_distance_m(p_lat, p_lon, a_lat, a_lon, b_lat, b_lon, cos_lat)
+            if d > max_dist:
+                max_dist = d
+                max_idx = k
+        if max_dist > tolerance_m and max_idx != -1:
+            keep[max_idx - start_idx] = True
+            stack.append((lo, max_idx))
+            stack.append((max_idx, hi))
+
+    return [start_idx + i for i, flag in enumerate(keep) if flag]
+
+
 @dataclass
 class PackBuilder:
     pack_id: str
@@ -129,9 +230,13 @@ class PackBuilder:
     min_lng: float
     max_lat: float
     max_lng: float
-    allowed_highways: Set[str]
+    core_highways: Set[str]
+    minor_highways: Set[str] = field(default_factory=set)
+    minor_detail_boxes: Tuple[Tuple[float, float, float, float], ...] = ()
+    simplify_tolerance_m: float = 12.0
     pad_deg: float = 0.01
 
+    node_ref_counts: Counter = field(default_factory=Counter)
     node_map: Dict[int, int] = field(default_factory=dict)
     node_coords: List[Tuple[float, float]] = field(default_factory=list)
     name_map: Dict[str, int] = field(default_factory=lambda: {"": 0})
@@ -143,6 +248,28 @@ class PackBuilder:
             (self.min_lat - self.pad_deg) <= lat <= (self.max_lat + self.pad_deg)
             and (self.min_lng - self.pad_deg) <= lon <= (self.max_lng + self.pad_deg)
         )
+
+    def in_minor_detail_box(self, lat: float, lon: float) -> bool:
+        for s_lat, w_lng, n_lat, e_lng in self.minor_detail_boxes:
+            if s_lat <= lat <= n_lat and w_lng <= lon <= e_lng:
+                return True
+        return False
+
+    def accepts_way(self, hw: str, road_name: str, pts: List[Tuple[int, float, float]]) -> bool:
+        if hw in self.core_highways:
+            return any(self.in_bbox(lat, lon) for _, lat, lon in pts)
+        if hw in self.minor_highways:
+            if road_name:
+                return any(self.in_bbox(lat, lon) for _, lat, lon in pts)
+            return any(self.in_minor_detail_box(lat, lon) for _, lat, lon in pts)
+        return False
+
+    def count_way_nodes(self, hw: str, road_name: str, pts: List[Tuple[int, float, float]]) -> None:
+        if not self.accepts_way(hw, road_name, pts):
+            return
+        refs = self.node_ref_counts
+        for osm_id, _, _ in pts:
+            refs[osm_id] += 1
 
     def get_or_add_node(self, osm_id: int, lat: float, lon: float) -> int:
         idx = self.node_map.get(osm_id)
@@ -173,15 +300,55 @@ class PackBuilder:
         car_speed: float,
         pts: List[Tuple[int, float, float]],
     ) -> None:
-        if hw not in self.allowed_highways:
+        if not self.accepts_way(hw, road_name, pts):
             return
+
+        # Clip to contiguous sub-runs intersecting the pack bbox
+        n = len(pts)
+        in_flags = [self.in_bbox(lat, lon) for _, lat, lon in pts]
+        refs = self.node_ref_counts
         name_idx: int | None = None
-        for i in range(len(pts) - 1):
-            id1, lat1, lon1 = pts[i]
-            id2, lat2, lon2 = pts[i + 1]
-            if id1 == id2:
+
+        # Precompute cumulative exact haversine distance along original way geometry
+        cum_dist = [0.0] * n
+        for i in range(n - 1):
+            _, lat1, lon1 = pts[i]
+            _, lat2, lon2 = pts[i + 1]
+            cum_dist[i + 1] = cum_dist[i] + haversine_meters(lat1, lon1, lat2, lon2)
+
+        # Identify pinned indices: way ends, junctions (refcount >= 2), or bbox boundary crossings
+        pinned: List[int] = []
+        for i in range(n):
+            if (
+                i == 0
+                or i == n - 1
+                or refs.get(pts[i][0], 0) >= 2
+                or (i > 0 and in_flags[i] != in_flags[i - 1])
+                or (i + 1 < n and in_flags[i] != in_flags[i + 1])
+            ):
+                pinned.append(i)
+
+        # Simplify each unbranched chain between consecutive pinned nodes
+        kept_indices: List[int] = []
+        for p_idx in range(len(pinned) - 1):
+            lo = pinned[p_idx]
+            hi = pinned[p_idx + 1]
+            if not (in_flags[lo] or in_flags[hi]):
                 continue
-            if not (self.in_bbox(lat1, lon1) or self.in_bbox(lat2, lon2)):
+            chain = simplify_chain_indices(pts, lo, hi, self.simplify_tolerance_m)
+            if kept_indices and kept_indices[-1] == chain[0]:
+                kept_indices.extend(chain[1:])
+            else:
+                kept_indices.extend(chain)
+
+        for k in range(len(kept_indices) - 1):
+            i1 = kept_indices[k]
+            i2 = kept_indices[k + 1]
+            if not (in_flags[i1] or in_flags[i2]):
+                continue
+            id1, lat1, lon1 = pts[i1]
+            id2, lat2, lon2 = pts[i2]
+            if id1 == id2:
                 continue
             u = self.get_or_add_node(id1, lat1, lon1)
             v = self.get_or_add_node(id2, lat2, lon2)
@@ -189,7 +356,7 @@ class PackBuilder:
                 continue
             if name_idx is None:
                 name_idx = self.get_or_add_name(road_name)
-            dist = max(haversine_meters(lat1, lon1, lat2, lon2), 0.5)
+            dist = max(cum_dist[i2] - cum_dist[i1], 0.5)
             if fwd_flags:
                 self.edges.append((u, v, dist, car_speed, fwd_flags, name_idx))
             if rev_flags:
@@ -251,6 +418,66 @@ class PackBuilder:
         return out_path
 
 
+def _extract_way_info(w: osmium.osm.Way):
+    hw = w.tags.get("highway")
+    if not hw:
+        return None
+    profile = HIGHWAY_PROFILES.get(hw)
+    if profile is None:
+        return None
+    access = w.tags.get("access", "")
+    if access in ("private", "no"):
+        return None
+
+    car_ok, bike_ok, walk_ok, car_speed = profile
+    oneway = w.tags.get("oneway", "")
+    junction = w.tags.get("junction", "")
+    is_oneway_fwd = (
+        oneway in ("yes", "true", "1")
+        or junction == "roundabout"
+        or hw in ("motorway", "motorway_link")
+    )
+    is_oneway_rev = oneway == "-1"
+    fwd_flags = (
+        (FLAG_CAR if car_ok and not is_oneway_rev else 0)
+        | (FLAG_BIKE if bike_ok and not is_oneway_rev else 0)
+        | (FLAG_WALK if walk_ok else 0)
+    )
+    rev_flags = (
+        (FLAG_CAR if car_ok and not is_oneway_fwd else 0)
+        | (FLAG_BIKE if bike_ok and not is_oneway_fwd else 0)
+        | (FLAG_WALK if walk_ok else 0)
+    )
+    if fwd_flags == 0 and rev_flags == 0:
+        return None
+
+    pts: List[Tuple[int, float, float]] = []
+    for n in w.nodes:
+        if n.location.valid():
+            pts.append((n.ref, n.location.lat, n.location.lon))
+    if len(pts) < 2:
+        return None
+
+    road_name = (w.tags.get("name") or "").strip()
+    return hw, road_name, fwd_flags, rev_flags, car_speed, pts
+
+
+class NodeRefCountPass(osmium.SimpleHandler):
+    def __init__(self, builders: List[PackBuilder]) -> None:
+        super().__init__()
+        self.builders = builders
+        self.ways_seen = 0
+
+    def way(self, w: osmium.osm.Way) -> None:
+        info = _extract_way_info(w)
+        if info is None:
+            return
+        hw, road_name, _, _, _, pts = info
+        for builder in self.builders:
+            builder.count_way_nodes(hw, road_name, pts)
+        self.ways_seen += 1
+
+
 class RoadGraphExtractor(osmium.SimpleHandler):
     def __init__(self, builders: List[PackBuilder]) -> None:
         super().__init__()
@@ -258,46 +485,10 @@ class RoadGraphExtractor(osmium.SimpleHandler):
         self.ways_seen = 0
 
     def way(self, w: osmium.osm.Way) -> None:
-        hw = w.tags.get("highway")
-        if not hw:
+        info = _extract_way_info(w)
+        if info is None:
             return
-        profile = HIGHWAY_PROFILES.get(hw)
-        if profile is None:
-            return
-        access = w.tags.get("access", "")
-        if access in ("private", "no"):
-            return
-
-        car_ok, bike_ok, walk_ok, car_speed = profile
-        oneway = w.tags.get("oneway", "")
-        junction = w.tags.get("junction", "")
-        is_oneway_fwd = (
-            oneway in ("yes", "true", "1")
-            or junction == "roundabout"
-            or hw in ("motorway", "motorway_link")
-        )
-        is_oneway_rev = oneway == "-1"
-        fwd_flags = (
-            (FLAG_CAR if car_ok and not is_oneway_rev else 0)
-            | (FLAG_BIKE if bike_ok and not is_oneway_rev else 0)
-            | (FLAG_WALK if walk_ok else 0)
-        )
-        rev_flags = (
-            (FLAG_CAR if car_ok and not is_oneway_fwd else 0)
-            | (FLAG_BIKE if bike_ok and not is_oneway_fwd else 0)
-            | (FLAG_WALK if walk_ok else 0)
-        )
-        if fwd_flags == 0 and rev_flags == 0:
-            return
-
-        pts: List[Tuple[int, float, float]] = []
-        for n in w.nodes:
-            if n.location.valid():
-                pts.append((n.ref, n.location.lat, n.location.lon))
-        if len(pts) < 2:
-            return
-
-        road_name = (w.tags.get("name") or "").strip()
+        hw, road_name, fwd_flags, rev_flags, car_speed, pts = info
         for builder in self.builders:
             builder.add_way(hw, road_name, fwd_flags, rev_flags, car_speed, pts)
         self.ways_seen += 1
@@ -335,7 +526,10 @@ def main() -> int:
             min_lng=42.35,
             max_lat=37.38,
             max_lng=46.35,
-            allowed_highways=ALL_ROUTABLE_HIGHWAYS,
+            core_highways=CORE_DRIVABLE_HIGHWAYS,
+            minor_highways=MINOR_ACCESS_HIGHWAYS,
+            minor_detail_boxes=KURDISTAN_DETAIL_BOXES,
+            simplify_tolerance_m=12.0,
         ),
         PackBuilder(
             pack_id="iraq_south",
@@ -344,15 +538,25 @@ def main() -> int:
             min_lng=38.75,
             max_lat=34.45,
             max_lng=48.65,
-            allowed_highways=ARTERIAL_HIGHWAYS,
+            core_highways=ARTERIAL_HIGHWAYS,
+            simplify_tolerance_m=25.0,
         ),
     ]
 
     t0 = time.monotonic()
-    print(f"Extracting road graphs from {args.pbf} ...")
-    handler = RoadGraphExtractor(builders)
-    handler.apply_file(str(args.pbf), locations=True, idx="flex_mem")
-    print(f"Processed {handler.ways_seen:,} routable ways in {time.monotonic() - t0:.1f}s")
+    print(f"Pass 1/2: Counting junction nodes from {args.pbf} ...")
+    pass1 = NodeRefCountPass(builders)
+    pass1.apply_file(str(args.pbf), locations=True, idx="flex_mem")
+    print(f"Pass 1 complete ({pass1.ways_seen:,} ways) in {time.monotonic() - t0:.1f}s")
+
+    t1 = time.monotonic()
+    print(f"Pass 2/2: Extracting simplified road graphs from {args.pbf} ...")
+    pass2 = RoadGraphExtractor(builders)
+    pass2.apply_file(str(args.pbf), locations=True, idx="flex_mem")
+    print(f"Pass 2 complete ({pass2.ways_seen:,} ways) in {time.monotonic() - t1:.1f}s")
+
+    for b in builders:
+        b.node_ref_counts.clear()
 
     now_ms = int(time.time() * 1000)
     for builder in builders:

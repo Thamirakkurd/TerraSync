@@ -3,8 +3,6 @@ package com.terrasync.app
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.io.File
 import okhttp3.Request
@@ -83,55 +81,67 @@ class MapLayerRenderer(
         const val USER_LOC_SOURCE = "terrasync-userloc-source"
         const val USER_LOC_LAYER = "terrasync-userloc-layer"
 
-        private const val KURDISH_FONT_ASSET_URL = "asset://fonts/NotoSansArabic-Regular.ttf"
         private const val STYLE_CACHE_MAX_AGE_MS = 24L * 3600L * 1000L
 
-        private val KURDISH_UNICODE_RANGES = listOf(
-            "U+0600-06FF",
-            "U+0750-077F",
-            "U+08A0-08FF"
-        )
-
-        internal fun injectKurdishFontFaces(styleJson: String): String = runCatching {
+        /**
+         * Strips root-level "font-faces" from cached or fetched style JSON.
+         * MapLibre Native's HarfBuzz font-faces shaper hardcodes HB_DIRECTION_LTR and skips BiDi
+         * (upstream maplibre-native#4513), which reverses/scrambles Arabic & Kurdish labels.
+         * Standard PBF glyph rendering + ICU BiDi preserves correct RTL word order.
+         */
+        internal fun sanitizeStyleJson(styleJson: String): String = runCatching {
             val root = JsonParser.parseString(styleJson).asJsonObject
-            val fontFaces = if (root.has("font-faces") && root.get("font-faces").isJsonObject) {
-                root.getAsJsonObject("font-faces")
+            if (root.has("font-faces")) {
+                root.remove("font-faces")
+                root.toString()
             } else {
-                JsonObject().also { root.add("font-faces", it) }
+                styleJson
             }
-            fun makeFontEntry(): JsonArray {
-                val ranges = JsonArray().apply {
-                    for (r in KURDISH_UNICODE_RANGES) add(r)
-                }
-                val faceObj = JsonObject().apply {
-                    addProperty("url", KURDISH_FONT_ASSET_URL)
-                    add("unicode-range", ranges)
-                }
-                return JsonArray().apply { add(faceObj) }
-            }
-            fontFaces.add("Noto Sans Regular", makeFontEntry())
-            fontFaces.add("Noto Sans Bold", makeFontEntry())
-            root.toString()
         }.getOrDefault(styleJson)
+
+        private fun isArabicTransparentMark(c: Char): Boolean {
+            val cp = c.code
+            return (cp in 0x064B..0x065F) || cp == 0x0670
+        }
+
+        private fun isArabicDualJoining(c: Char): Boolean {
+            val cp = c.code
+            return cp == 0x0626 || cp == 0x0628 || (cp in 0x062A..0x062E) ||
+                (cp in 0x0633..0x063A) || (cp in 0x0640..0x0647) ||
+                (cp in 0x0649..0x064A) || cp == 0x067E || cp == 0x0686 ||
+                cp == 0x06A4 || cp == 0x06A9 || cp == 0x06AF || cp == 0x06B5 ||
+                cp == 0x06BE || cp == 0x06CC || cp == 0x06CE || cp == 0x200D
+        }
+
+        /**
+         * Workaround for MapLibre Native's vendored ICU u_shapeArabic (which only maps 0x0622..0x06D3
+         * and leaves Kurdish AE U+06D5 'ە' non-joining): converts 'ە' to Arabic Presentation Form
+         * U+FEEA (right-joining final) after dual-joining letters and U+FEE9 (isolated) otherwise
+         * so Kurdish bookmark labels join cleanly across 'ە' while keeping RTL order intact.
+         */
+        internal fun shapeKurdishAeForMapLibre(text: String): String {
+            if (!text.contains('\u06D5')) return text
+            val sb = StringBuilder(text.length)
+            for (i in text.indices) {
+                val ch = text[i]
+                if (ch == '\u06D5') {
+                    var prevIdx = i - 1
+                    while (prevIdx >= 0 && isArabicTransparentMark(text[prevIdx])) {
+                        prevIdx--
+                    }
+                    val joinsRight = prevIdx >= 0 && isArabicDualJoining(text[prevIdx])
+                    sb.append(if (joinsRight) '\uFEEA' else '\uFEE9')
+                } else {
+                    sb.append(ch)
+                }
+            }
+            return sb.toString()
+        }
 
         internal const val STYLE_SATELLITE = """
         {
           "version": 8,
           "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-          "font-faces": {
-            "Noto Sans Regular": [
-              {
-                "url": "asset://fonts/NotoSansArabic-Regular.ttf",
-                "unicode-range": ["U+0600-06FF", "U+0750-077F", "U+08A0-08FF"]
-              }
-            ],
-            "Noto Sans Bold": [
-              {
-                "url": "asset://fonts/NotoSansArabic-Regular.ttf",
-                "unicode-range": ["U+0600-06FF", "U+0750-077F", "U+08A0-08FF"]
-              }
-            ]
-          },
           "sources": {
             "sat": {
               "type": "raster",
@@ -202,19 +212,19 @@ class MapLayerRenderer(
     private fun fetchAndCacheVectorStyleJson(styleUrl: String, cacheFile: File): String? {
         return runCatching {
             val req = Request.Builder().url(styleUrl).get().build()
-            RoutingEngine.sharedOkHttpClient.newCall(req).execute().use { resp ->
+            RoutingEngine.mapTileOkHttpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@use null
                 val raw = resp.body?.string()?.takeIf { it.isNotBlank() } ?: return@use null
-                val patched = injectKurdishFontFaces(raw)
+                val cleaned = sanitizeStyleJson(raw)
                 runCatching {
                     val tmp = File(cacheFile.parentFile, "${cacheFile.name}.tmp")
-                    tmp.writeText(patched, Charsets.UTF_8)
+                    tmp.writeText(cleaned, Charsets.UTF_8)
                     if (!tmp.renameTo(cacheFile)) {
                         tmp.copyTo(cacheFile, overwrite = true)
                         tmp.delete()
                     }
                 }
-                patched
+                cleaned
             }
         }.getOrNull()
     }
@@ -259,9 +269,12 @@ class MapLayerRenderer(
             } else null
 
             if (cachedRaw != null) {
-                val patched = injectKurdishFontFaces(cachedRaw)
+                val cleaned = sanitizeStyleJson(cachedRaw)
+                if (cleaned != cachedRaw) {
+                    runCatching { cacheFile.writeText(cleaned, Charsets.UTF_8) }
+                }
                 AppExecutors.postMain {
-                    applyMapStyleBuilder(m, Style.Builder().fromJson(patched), night, seq)
+                    applyMapStyleBuilder(m, Style.Builder().fromJson(cleaned), night, seq)
                 }
                 if (System.currentTimeMillis() - cacheFile.lastModified() > STYLE_CACHE_MAX_AGE_MS) {
                     fetchAndCacheVectorStyleJson(styleUrl, cacheFile)
@@ -706,7 +719,7 @@ class MapLayerRenderer(
                     return Feature.fromGeometry(Point.fromLngLat(pin.lng, pin.lat)).apply {
                         addStringProperty("id", pin.id)
                         addStringProperty("name", pin.name)
-                        addStringProperty("label", shortLabel)
+                        addStringProperty("label", shapeKurdishAeForMapLibre(shortLabel))
                         addStringProperty("icon", st.iconId)
                     }
                 }

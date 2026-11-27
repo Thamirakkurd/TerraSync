@@ -63,15 +63,41 @@ object RoutingEngine {
 
     val sharedOkHttpClient: OkHttpClient by lazy {
         val dispatcher = Dispatcher().apply {
-            maxRequests = 6
-            maxRequestsPerHost = 5
+            maxRequests = 24
+            maxRequestsPerHost = 12
         }
         OkHttpClient.Builder()
             .dispatcher(dispatcher)
-            .connectionPool(ConnectionPool(5, 30, TimeUnit.SECONDS))
+            .connectionPool(ConnectionPool(12, 60, TimeUnit.SECONDS))
             .retryOnConnectionFailure(true)
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val req = chain.request().newBuilder()
+                    .header("User-Agent", userAgent)
+                    .build()
+                chain.proceed(req)
+            }
+            .build()
+    }
+
+    /**
+     * Dedicated high-concurrency HTTP/2 client for MapLibre live & offline tile/glyph downloads.
+     * Matches MapLibre Native's DEFAULT_MAXIMUM_CONCURRENT_REQUESTS (20) so offline packs
+     * download at full CDN speed without competing with routing/search calls.
+     */
+    val mapTileOkHttpClient: OkHttpClient by lazy {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 20
+        }
+        OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectionPool(ConnectionPool(20, 60, TimeUnit.SECONDS))
+            .retryOnConnectionFailure(true)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
             .addInterceptor { chain ->
                 val req = chain.request().newBuilder()

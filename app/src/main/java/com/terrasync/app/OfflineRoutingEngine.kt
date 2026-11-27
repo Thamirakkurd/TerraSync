@@ -16,16 +16,24 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.RandomAccessFile
 import java.net.URLEncoder
 import java.util.PriorityQueue
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 import okhttp3.Call
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.FormBody
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -169,14 +177,58 @@ object OfflineRoutingEngine {
     private class DownloadJob {
         val cancelled = AtomicBoolean(false)
         @Volatile var activeCall: Call? = null
+        val activeCalls = CopyOnWriteArrayList<Call>()
         @Volatile var workerThread: Thread? = null
+
+        fun registerCall(call: Call) {
+            activeCall = call
+            activeCalls.add(call)
+        }
+
+        fun unregisterCall(call: Call) {
+            activeCalls.remove(call)
+            if (activeCall === call) activeCall = null
+        }
+
+        fun cancelAllCalls() {
+            val single = activeCall
+            activeCall = null
+            single?.cancel()
+            for (c in activeCalls) {
+                runCatching { c.cancel() }
+            }
+            activeCalls.clear()
+        }
     }
 
-    private val overpassClient by lazy {
-        RoutingEngine.sharedOkHttpClient.newBuilder()
+    /**
+     * Dedicated OkHttpClient for road-pack downloads (isolated from MapLibre tile and routing pools)
+     * supporting parallel HTTP Range connections on GitHub Releases CDN.
+     */
+    private val downloadClient: OkHttpClient by lazy {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 16
+            maxRequestsPerHost = 8
+        }
+        OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectionPool(ConnectionPool(8, 60, TimeUnit.SECONDS))
+            .retryOnConnectionFailure(true)
             .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(70, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val req = chain.request().newBuilder()
+                    .header("User-Agent", RoutingEngine.userAgent)
+                    .build()
+                chain.proceed(req)
+            }
+            .build()
+    }
+
+    private val overpassClient: OkHttpClient by lazy {
+        downloadClient.newBuilder()
+            .readTimeout(70, TimeUnit.SECONDS)
             .build()
     }
 
@@ -260,9 +312,7 @@ object OfflineRoutingEngine {
     fun cancelDownload(packId: String) {
         val job = activeDownloads[packId] ?: return
         job.cancelled.set(true)
-        val call = job.activeCall
-        job.activeCall = null
-        call?.cancel()
+        job.cancelAllCalls()
         job.workerThread?.interrupt()
     }
 
@@ -1126,33 +1176,133 @@ object OfflineRoutingEngine {
                     val eLng = maxOf(minLng, maxLng)
                     val maxSpan = maxOf(nLat - sLat, eLng - wLng)
 
-                    // 1. Try pre-built TSR1 release asset first (fast CDN download, zero Overpass latency)
+                    // 1. Try pre-built TSR1 release asset first (fast parallel Range CDN download, zero Overpass latency)
                     if (packId != null) {
                         val fileName = packFileName(packId)
                         val outFile = File(dir(ctx), fileName)
                         val partFile = File(dir(ctx), "$fileName.part")
                         activePartFile = partFile
                         partFile.delete()
-                        var call: Call? = null
-                        try {
-                            emitProgress("Downloading $regionName roads...", 0, force = true)
-                            val req = Request.Builder()
-                                .url(prebuiltPackUrl(packId))
-                                .get()
-                                .build()
-                            val activeCall = overpassClient.newCall(req)
-                            call = activeCall
-                            job.activeCall = activeCall
+                        val dlStartMs = SystemClock.elapsedRealtime()
+
+                        fun formatSpeed(bytes: Long): String {
+                            val elapsedSec = ((SystemClock.elapsedRealtime() - dlStartMs).coerceAtLeast(250L)) / 1000.0
+                            val bps = bytes / elapsedSec
+                            return if (bps >= 1024.0 * 1024.0) {
+                                "${"%.1f".format(java.util.Locale.US, bps / (1024.0 * 1024.0))} MB/s"
+                            } else {
+                                "${(bps / 1024.0).toInt().coerceAtLeast(1)} KB/s"
+                            }
+                        }
+
+                        fun downloadParallelRanges(finalUrl: String, totalBytes: Long): Boolean {
+                            val numParts = 4
+                            val chunkSize = totalBytes / numParts
+                            val downloaded = AtomicLong(0L)
+                            val firstFailure = AtomicReference<Throwable?>(null)
+                            val latch = CountDownLatch(numParts)
+
+                            RandomAccessFile(partFile, "rw").use { raf ->
+                                raf.setLength(totalBytes)
+                            }
+
+                            val workers = ArrayList<Thread>(numParts)
+                            for (partIdx in 0 until numParts) {
+                                val rangeStart = partIdx * chunkSize
+                                val rangeEnd = if (partIdx == numParts - 1) totalBytes - 1L else ((partIdx + 1) * chunkSize) - 1L
+                                val t = Thread({
+                                    var partCall: Call? = null
+                                    try {
+                                        checkCancelled()
+                                        val req = Request.Builder()
+                                            .url(finalUrl)
+                                            .header("Range", "bytes=$rangeStart-$rangeEnd")
+                                            .get()
+                                            .build()
+                                        val activeCall = downloadClient.newCall(req)
+                                        partCall = activeCall
+                                        job.registerCall(activeCall)
+                                        checkCancelled()
+                                        activeCall.execute().use { resp ->
+                                            val body = resp.body
+                                            if (resp.code != 206 || body == null) {
+                                                throw java.io.IOException("Range HTTP ${resp.code}")
+                                            }
+                                            val buf = ByteArray(64 * 1024)
+                                            var writtenPart = 0L
+                                            val expectedPart = rangeEnd - rangeStart + 1L
+                                            BufferedInputStream(body.byteStream(), 64 * 1024).use { input ->
+                                                RandomAccessFile(partFile, "rw").use { raf ->
+                                                    raf.seek(rangeStart)
+                                                    while (true) {
+                                                        checkCancelled()
+                                                        if (firstFailure.get() != null) return@use
+                                                        val n = input.read(buf)
+                                                        if (n <= 0) break
+                                                        raf.write(buf, 0, n)
+                                                        writtenPart += n
+                                                        val totalDone = downloaded.addAndGet(n.toLong())
+                                                        val pct = ((totalDone * 98L) / totalBytes).toInt().coerceIn(0, 98)
+                                                        emitProgress(
+                                                            "Downloading $regionName roads (${formatTransferSize(totalDone)} / ${formatTransferSize(totalBytes)} • ${formatSpeed(totalDone)})",
+                                                            pct
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            if (firstFailure.get() == null && writtenPart != expectedPart) {
+                                                throw java.io.IOException("Truncated range ($writtenPart/$expectedPart)")
+                                            }
+                                        }
+                                    } catch (tErr: Throwable) {
+                                        firstFailure.compareAndSet(null, tErr)
+                                        if (tErr is CancelledSignal || tErr is CancellationException) {
+                                            job.cancelAllCalls()
+                                        }
+                                    } finally {
+                                        partCall?.let { job.unregisterCall(it) }
+                                        latch.countDown()
+                                    }
+                                }, "terrasync-road-part-$packId-$partIdx").apply {
+                                    isDaemon = true
+                                    start()
+                                }
+                                workers.add(t)
+                            }
+
+                            while (!latch.await(200L, TimeUnit.MILLISECONDS)) {
+                                if (job.cancelled.get()) {
+                                    job.cancelAllCalls()
+                                    workers.forEach { it.interrupt() }
+                                    throw CancelledSignal()
+                                }
+                            }
                             checkCancelled()
-                            activeCall.execute().use { resp ->
-                                val body = resp.body
-                                if (resp.code == 200 && body != null) {
+                            val err = firstFailure.get()
+                            if (err != null) {
+                                if (err is CancelledSignal || err is CancellationException || job.cancelled.get()) {
+                                    throw CancelledSignal()
+                                }
+                                return false
+                            }
+                            return partFile.length() == totalBytes
+                        }
+
+                        fun downloadSingleStream(targetUrl: String): Boolean {
+                            val req = Request.Builder().url(targetUrl).get().build()
+                            val activeCall = downloadClient.newCall(req)
+                            job.registerCall(activeCall)
+                            try {
+                                checkCancelled()
+                                activeCall.execute().use { resp ->
+                                    val body = resp.body
+                                    if (resp.code != 200 || body == null) return false
                                     val totalBytes = body.contentLength()
                                     var bytesWritten = 0L
-                                    val buf = ByteArray(32 * 1024)
-                                    BufferedInputStream(body.byteStream(), 32 * 1024).use { input ->
+                                    val buf = ByteArray(64 * 1024)
+                                    BufferedInputStream(body.byteStream(), 64 * 1024).use { input ->
                                         FileOutputStream(partFile).use { fos ->
-                                            BufferedOutputStream(fos, 32 * 1024).use { output ->
+                                            BufferedOutputStream(fos, 64 * 1024).use { output ->
                                                 while (true) {
                                                     checkCancelled()
                                                     val n = input.read(buf)
@@ -1162,13 +1312,13 @@ object OfflineRoutingEngine {
                                                     if (totalBytes > 0L) {
                                                         val pct = ((bytesWritten * 98L) / totalBytes).toInt().coerceIn(0, 98)
                                                         emitProgress(
-                                                            "Downloading $regionName roads (${formatTransferSize(bytesWritten)} / ${formatTransferSize(totalBytes)})",
+                                                            "Downloading $regionName roads (${formatTransferSize(bytesWritten)} / ${formatTransferSize(totalBytes)} • ${formatSpeed(bytesWritten)})",
                                                             pct
                                                         )
                                                     } else {
                                                         val pct = (bytesWritten / (256L * 1024L)).toInt().coerceIn(1, 95)
                                                         emitProgress(
-                                                            "Downloading $regionName roads (${formatTransferSize(bytesWritten)})",
+                                                            "Downloading $regionName roads (${formatTransferSize(bytesWritten)} • ${formatSpeed(bytesWritten)})",
                                                             pct
                                                         )
                                                     }
@@ -1178,29 +1328,71 @@ object OfflineRoutingEngine {
                                             }
                                         }
                                     }
-                                    checkCancelled()
-                                    emitProgress("Verifying $regionName roads...", 99, force = true)
-                                    val validated = FileInputStream(partFile).use { fis ->
-                                        readTsrHeaderFromStream(fileName, partFile.length(), fis)
-                                    }
-                                    if (validated != null && validated.nodeCount > 0 && validated.edgeCount > 0) {
-                                        if (outFile.exists()) outFile.delete()
-                                        if (!partFile.renameTo(outFile)) {
-                                            partFile.copyTo(outFile, overwrite = true)
-                                            partFile.delete()
-                                        }
-                                        val finalMeta = validated.copy(sizeBytes = outFile.length())
-                                        synchronized(graphCacheLock) {
-                                            if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
-                                        }
-                                        headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), finalMeta)
-                                        emitProgress("Downloaded $regionName roads", 100, force = true)
-                                        finishedCleanly = true
-                                        resultRegion = finalMeta
-                                    } else {
-                                        partFile.delete()
+                                    return bytesWritten > 64L
+                                }
+                            } finally {
+                                job.unregisterCall(activeCall)
+                            }
+                        }
+
+                        try {
+                            emitProgress("Downloading $regionName roads...", 0, force = true)
+                            val initialUrl = prebuiltPackUrl(packId)
+                            var finalUrl = initialUrl
+                            var contentLength = -1L
+                            var supportsRanges = false
+
+                            val headCall = downloadClient.newCall(Request.Builder().url(initialUrl).head().build())
+                            job.registerCall(headCall)
+                            try {
+                                checkCancelled()
+                                headCall.execute().use { headResp ->
+                                    if (headResp.isSuccessful) {
+                                        finalUrl = headResp.request.url.toString()
+                                        contentLength = headResp.header("Content-Length")?.toLongOrNull() ?: -1L
+                                        supportsRanges = headResp.header("Accept-Ranges")
+                                            ?.equals("bytes", ignoreCase = true) == true
                                     }
                                 }
+                            } finally {
+                                job.unregisterCall(headCall)
+                            }
+
+                            checkCancelled()
+                            val downloadedOk = if (supportsRanges && contentLength >= 2L * 1024L * 1024L) {
+                                downloadParallelRanges(finalUrl, contentLength) || run {
+                                    partFile.delete()
+                                    downloadSingleStream(finalUrl)
+                                }
+                            } else {
+                                downloadSingleStream(finalUrl)
+                            }
+
+                            if (downloadedOk) {
+                                checkCancelled()
+                                emitProgress("Verifying $regionName roads...", 99, force = true)
+                                val validated = FileInputStream(partFile).use { fis ->
+                                    readTsrHeaderFromStream(fileName, partFile.length(), fis)
+                                }
+                                if (validated != null && validated.nodeCount > 0 && validated.edgeCount > 0) {
+                                    if (outFile.exists()) outFile.delete()
+                                    if (!partFile.renameTo(outFile)) {
+                                        partFile.copyTo(outFile, overwrite = true)
+                                        partFile.delete()
+                                    }
+                                    val finalMeta = validated.copy(sizeBytes = outFile.length())
+                                    synchronized(graphCacheLock) {
+                                        if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                                    }
+                                    headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), finalMeta)
+                                    emitProgress("Downloaded $regionName roads", 100, force = true)
+                                    finishedCleanly = true
+                                    resultRegion = finalMeta
+                                } else {
+                                    partFile.delete()
+                                }
+                            } else {
+                                partFile.delete()
                             }
                         } catch (cs: CancelledSignal) {
                             partFile.delete()
@@ -1210,10 +1402,11 @@ object OfflineRoutingEngine {
                             throw e
                         } catch (_: Exception) {
                             partFile.delete()
-                            if (job.cancelled.get() || call?.isCanceled() == true) throw CancelledSignal()
+                            if (job.cancelled.get()) throw CancelledSignal()
                             // Fall back to Overpass below
                         } finally {
-                            if (job.activeCall === call) job.activeCall = null
+                            job.activeCalls.clear()
+                            job.activeCall = null
                         }
                     }
 

@@ -592,4 +592,28 @@ class TerraSyncCoreStressTest {
         }
     }
 
+    @Test
+    fun testKurdishStyleSanitizationAndPinAeShaping() {
+        val legacyCached = """{"version":8,"glyphs":"https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf","font-faces":{"Noto Sans Regular":[{"url":"asset://fonts/NotoSansArabic-Regular.ttf"}]},"layers":[]}"""
+        val sanitized = MapLayerRenderer.sanitizeStyleJson(legacyCached)
+        assertFalse(sanitized.contains("font-faces"))
+        assertTrue(sanitized.contains("glyphs"))
+        assertFalse(MapLayerRenderer.STYLE_SATELLITE.contains("font-faces"))
+        assertTrue(MapLayerRenderer.STYLE_SATELLITE.contains("\"maxzoom\": 17"))
+
+        // Kurdish AE (U+06D5): joins right after dual-joining letters, isolated after non-left-joining letters
+        assertEquals("ه\uFEEAولێر", MapLayerRenderer.shapeKurdishAeForMapLibre("هەولێر"))
+        assertEquals("د\uFEE9نگ", MapLayerRenderer.shapeKurdishAeForMapLibre("دەنگ"))
+        assertEquals("ق\uFEEAڵا", MapLayerRenderer.shapeKurdishAeForMapLibre("قەڵا"))
+        assertEquals("ن\uFEEAخۆشخان\uFEEA", MapLayerRenderer.shapeKurdishAeForMapLibre("نەخۆشخانە"))
+        assertEquals("Erbil 100m", MapLayerRenderer.shapeKurdishAeForMapLibre("Erbil 100m"))
+
+        assertEquals(20, RoutingEngine.mapTileOkHttpClient.dispatcher.maxRequestsPerHost)
+        assertTrue(RoutingEngine.mapTileOkHttpClient.dispatcher.maxRequests >= 64)
+        assertEquals(
+            "https://github.com/Thamirakkurd/TerraSync/releases/download/road-packs/pack_kurdistan_north.tsr",
+            OfflineRoutingEngine.prebuiltPackUrl(OfflineMapManager.PACK_KURDISTAN_ID)
+        )
+    }
+
 }

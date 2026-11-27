@@ -296,7 +296,7 @@ class MainActivity : AppCompatActivity() {
         RoutingEngine.userAgent = appUserAgent
 
         MapLibre.getInstance(this)
-        HttpRequestUtil.setOkHttpClient(RoutingEngine.sharedOkHttpClient)
+        HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
         contourManager.initDiskCache(cacheDir)
         offlineMaps = OfflineMapManager.getInstance(this).apply { refreshAll() }
         repository = TerraSyncRepository(applicationContext).apply {
