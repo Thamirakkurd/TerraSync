@@ -1140,10 +1140,11 @@ object OfflineRoutingEngine {
                                 .url(prebuiltPackUrl(packId))
                                 .get()
                                 .build()
-                            call = overpassClient.newCall(req)
-                            job.activeCall = call
+                            val activeCall = overpassClient.newCall(req)
+                            call = activeCall
+                            job.activeCall = activeCall
                             checkCancelled()
-                            call.execute().use { resp ->
+                            activeCall.execute().use { resp ->
                                 val body = resp.body
                                 if (resp.code == 200 && body != null) {
                                     val totalBytes = body.contentLength()
@@ -1280,10 +1281,11 @@ object OfflineRoutingEngine {
                                     .url(ep)
                                     .post(form)
                                     .build()
-                                call = overpassClient.newCall(req)
-                                job.activeCall = call
+                                val activeCall = overpassClient.newCall(req)
+                                call = activeCall
+                                job.activeCall = activeCall
                                 checkCancelled()
-                                call.execute().use { resp ->
+                                activeCall.execute().use { resp ->
                                     val code = resp.code
                                     val bodyStream = resp.body?.byteStream()
                                     if (code == 200 && bodyStream != null) {
