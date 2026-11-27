@@ -766,9 +766,16 @@ class OfflineMapManager private constructor(context: Context) {
 
     fun clearAmbientCache(onDone: (String) -> Unit) {
         manager.clearAmbientCache(object : OfflineManager.FileSourceCallback {
-            override fun onSuccess() = onDone("Temporary map cache cleared")
-            override fun onError(message: String) = onDone("Cache error: $message")
+            override fun onSuccess() = purgeTempDirsThen("Temporary map cache cleared", onDone)
+            override fun onError(message: String) = purgeTempDirsThen("Cache error: $message", onDone)
         })
+    }
+
+    private fun purgeTempDirsThen(msg: String, onDone: (String) -> Unit) {
+        AppExecutors.batchIoExecutor.execute {
+            runCatching { TempCacheCleaner.purge(appCtx.cacheDir) }
+            AppExecutors.postMain(Runnable { onDone(msg) })
+        }
     }
 
     private fun updateStateFromStatus(packId: String, status: OfflineRegionStatus, forceEmit: Boolean = false) {

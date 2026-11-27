@@ -569,4 +569,27 @@ class TerraSyncCoreStressTest {
         )
         assertEquals(listOf("p1", "p4"), withoutSent.map { it.id })
     }
+
+    @Test
+    fun testTempCacheCleanerPurgesDemAndExportsOnly() {
+        val root = java.nio.file.Files.createTempDirectory("ts_cache").toFile()
+        try {
+            java.io.File(root, "terrarium_dem/12").mkdirs()
+            java.io.File(root, "terrarium_dem/12/a.png").writeBytes(ByteArray(100))
+            java.io.File(root, "exports").mkdirs()
+            java.io.File(root, "exports/x.kml").writeBytes(ByteArray(50))
+            java.io.File(root, "keep").mkdirs()
+            java.io.File(root, "keep/keep.bin").writeBytes(ByteArray(7))
+            val freed = TempCacheCleaner.purge(root)
+            assertEquals(150L, freed)
+            assertTrue(java.io.File(root, "terrarium_dem").isDirectory)
+            assertTrue(java.io.File(root, "exports").isDirectory)
+            assertEquals(0, java.io.File(root, "terrarium_dem").listFiles()?.size ?: -1)
+            assertEquals(0, java.io.File(root, "exports").listFiles()?.size ?: -1)
+            assertTrue(java.io.File(root, "keep/keep.bin").exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
 }

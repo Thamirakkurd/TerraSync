@@ -1,6 +1,7 @@
 package com.terrasync.app
 
 import android.content.Context
+import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -15,6 +16,12 @@ class StatusUndoController(
     private val tvMessage: TextView,
     private val btnAction: TextView
 ) {
+    companion object {
+        /** Dedicated neutral charcoal pill; never derived from the primary CTA color. */
+        internal fun bannerFillColor(isDark: Boolean): Int =
+            Color.parseColor(if (isDark) "#242724" else "#2E292B")
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private var dismissRunnable: Runnable? = null
 
@@ -23,7 +30,7 @@ class StatusUndoController(
         val radiusPx = 22f * d
         banner.background = DesignSystem.buildOpaqueDrawable(
             ctx = ctx,
-            fillColor = p.actionDark,
+            fillColor = bannerFillColor(p.isDark),
             radiusDp = 22f,
             strokeColor = p.borderSubtle,
             strokeDp = if (p.isDark) 1f else 0f
@@ -31,14 +38,14 @@ class StatusUndoController(
         banner.elevation = 8f * d
         banner.clipToOutline = true
         DesignSystem.applyDirectionalShadow(banner, p)
-        tvMessage.setTextColor(p.onActionDark)
+        tvMessage.setTextColor(Color.WHITE)
         btnAction.setTextColor(p.accentWarm)
         UiAnimations.applyRoundedRipple(
             ctx,
             btnAction,
             android.graphics.Color.argb(44, 240, 101, 31),
             14f,
-            isDark = !p.isDark
+            isDark = true
         )
         UiAnimations.attachSnappyPress(btnAction, 0.94f)
         banner.outlineProvider = android.view.ViewOutlineProvider.BACKGROUND

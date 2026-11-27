@@ -598,4 +598,18 @@ class OfflineRoutingAndStoreRobolectricTest {
             LocalFolderStore.resetForTest(ctx)
         }
     }
+
+    @Test
+    fun testNightPaletteEmeraldCtaAndNeutralUndoBanner() {
+        val night = DesignSystem.palette(true)
+        assertEquals(android.graphics.Color.parseColor("#238E5E"), night.actionDark)
+        assertEquals(android.graphics.Color.WHITE, night.onActionDark)
+        assertEquals(android.graphics.Color.parseColor("#242724"), StatusUndoController.bannerFillColor(true))
+        assertEquals(android.graphics.Color.parseColor("#2E292B"), StatusUndoController.bannerFillColor(false))
+        assertTrue(StatusUndoController.bannerFillColor(true) != night.actionDark)
+        assertTrue(night.surfaceFloating != night.surfaceTonal)
+        assertTrue(night.surfaceTonal != night.surfaceCanvas)
+        assertTrue(night.surfaceFloating != night.surfaceCanvas)
+    }
+
 }

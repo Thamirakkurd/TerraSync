@@ -107,17 +107,22 @@ data class SheetActionItem(
 
 object DesignSystem {
 
+    const val RADIUS_CHIP_DP = 12
+    const val RADIUS_TILE_DP = 14
+    const val RADIUS_CARD_DP = 16
+    const val GAP_DP = 8
+
     fun palette(isDark: Boolean): ThemePalette {
         return if (isDark) {
             val canvas = Color.parseColor("#161715")
-            val floating = Color.parseColor("#222421")
+            val floating = Color.parseColor("#2A2C28")
             val frosted = Color.parseColor("#222421")
             val frostedTray = Color.parseColor("#222421")
             val navPill = Color.parseColor("#2E302C")
-            val tonal = Color.parseColor("#1F211E")
+            val tonal = Color.parseColor("#21231F")
             val primary = Color.parseColor("#238E5E")
             val primarySoft = Color.parseColor("#26238E5E")
-            val border = Color.parseColor("#343832")
+            val border = Color.parseColor("#3A3D37")
             val textPri = Color.parseColor("#F4F4F0")
             val textBdy = Color.parseColor("#C4C6C0")
             val textMut = Color.parseColor("#8F928C")
@@ -131,8 +136,8 @@ object DesignSystem {
                 surfaceTonal = tonal,
                 accentPrimary = primary,
                 accentPrimarySoft = primarySoft,
-                actionDark = Color.parseColor("#F4F3EE"),
-                onActionDark = Color.parseColor("#181A17"),
+                actionDark = Color.parseColor("#238E5E"),
+                onActionDark = Color.WHITE,
                 accentWarm = Color.parseColor("#F27B3F"),
                 accentWarmContainer = Color.parseColor("#38251C"),
                 dismissSurface = Color.parseColor("#3F423C"),
