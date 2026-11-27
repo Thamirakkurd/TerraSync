@@ -36,7 +36,7 @@
   - Release APK build: `./gradlew assembleRelease`
   - Tag push (`v*`) publishes a GitHub Release automatically.
 - **Where to Add Tests:** Add new unit tests inside `TerraSyncCoreStressTest.kt` (pure JVM) or `OfflineRoutingAndStoreRobolectricTest.kt` (Robolectric/SQLite/Context) so CI executes them automatically.
-- **Versioning (`app/build.gradle.kts`):** `versionName` derives from exact git tag on `HEAD` or fallback `tagVer`; `versionCode` computes `major*1000000 + minor*10000 + patch*100 + 99`.
+- **Versioning (`app/build.gradle.kts`):** `versionName` derives from exact git tag on `HEAD` or fallback `tagVer`; `versionCode` computes `major*1000000 + minor*10000 + patch*100 + 99`. **Always cut a new semver tag (e.g. `v3.13.1`) for every release — never force-update an existing release tag.**
 
 ## 5. Theme, Localization & Hardware Safety Conventions
 - Preserve Light/Dark parity via `DesignSystem.palette(isDark)` and RTL/BiDi safety (`DesignSystem.isolateBidi` / `joinBidi`, English/Kurdish/Arabic in `AppStrings.kt`).
