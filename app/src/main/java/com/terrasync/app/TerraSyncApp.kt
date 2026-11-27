@@ -13,7 +13,7 @@ class TerraSyncApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        val ver = BuildConfig.VERSION_NAME.trim().removePrefix("v").removePrefix("V").ifBlank { "3.13.5" }
+        val ver = BuildConfig.VERSION_NAME.trim().removePrefix("v").removePrefix("V").ifBlank { "3.13.6" }
         RoutingEngine.userAgent = "TerraSync/$ver (https://github.com/Thamirakkurd/TerraSync)"
         RoutingEngine.appContext = applicationContext
 
@@ -23,6 +23,8 @@ class TerraSyncApp : Application() {
         runCatching {
             MapLibre.getInstance(this)
             HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
+            // Keep OnlineFileSource active offline so HttpRequestImpl always reaches MapTileInterceptor -> LocalPmTilesStore.
+            MapLibre.setConnected(true)
         }
 
         AppExecutors.batchIoExecutor.execute {

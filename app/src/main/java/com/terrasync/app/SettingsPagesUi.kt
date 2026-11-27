@@ -1551,6 +1551,7 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
                         runOnUiThread {
                             Toast.makeText(this@buildSettingsSubPage, msg, Toast.LENGTH_SHORT).show()
                             refreshCacheSize()
+                            if (mapStyleMode == MapStyleMode.VECTOR) loadMapStyle()
                         }
                     }
                 }

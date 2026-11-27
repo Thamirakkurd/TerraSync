@@ -20,8 +20,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
  *    across all zoom levels (<0.5 ms, works 100% offline for Day & Night styles).
  * 3. Patches Kurdish Sorani labels inside MVT vector tiles via [MvtKurdishPatcher].
  * 4. Properly decompresses gzipped TileJSON, glyphs, and sprites before caching/returning,
- *    self-heals previously gzip-poisoned disk caches, and clamps offline TileJSON maxzoom
- *    to installed PMTiles bounds so street-level overzooming never goes blank.
+ *    and responds cleanly offline for uncached secondary assets so tile rendering never stalls.
  */
 class MapTileInterceptor(
     private val contextProvider: () -> Context?
@@ -43,13 +42,14 @@ class MapTileInterceptor(
         @Volatile private var cachedKurdishGlyphPbf: ByteArray? = null
         @Volatile private var cachedPunctGlyphPbf: ByteArray? = null
 
-        internal fun buildOfflineTileJson(maxZoom: Int): ByteArray {
+        internal fun buildOfflineTileJson(maxZoom: Int, minZoom: Int = 0): ByteArray {
             val clampedMax = maxZoom.coerceIn(0, 14)
+            val clampedMin = minZoom.coerceIn(0, clampedMax)
             return """{
   "tilejson": "3.0.0",
   "name": "TerraSync Offline",
   "scheme": "xyz",
-  "minzoom": 0,
+  "minzoom": $clampedMin,
   "maxzoom": $clampedMax,
   "bounds": [-180, -85.05112877980659, 180, 85.05112877980659],
   "tiles": ["https://tiles.openfreemap.org/planet/local/{z}/{x}/{y}.pbf"]
@@ -116,11 +116,15 @@ class MapTileInterceptor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val req = chain.request()
         val url = req.url
+        val ctx = contextProvider()
+
         if (!url.host.equals(OPENFREEMAP_HOST, ignoreCase = true)) {
+            if (!NetworkState.hasValidatedInternet(ctx)) {
+                return buildEmptyResponse(req, OCTET_MEDIA)
+            }
             return chain.proceed(req)
         }
 
-        val ctx = contextProvider()
         val path = url.encodedPath
 
         // 1. Patched Kurdish SDF glyph ranges
@@ -160,6 +164,10 @@ class MapTileInterceptor(
             return handleTileJson(chain, req, ctx)
         }
 
+        // 5. Secondary raster backdrops (e.g. ne2_shaded): skip immediately offline
+        if (!NetworkState.hasValidatedInternet(ctx)) {
+            return buildEmptyResponse(req, PNG_MEDIA)
+        }
         return chain.proceed(req)
     }
 
@@ -171,7 +179,9 @@ class MapTileInterceptor(
         x: Int,
         y: Int
     ): Response {
-        // Always check local PMTiles first across every zoom level (0.3ms, zero data)
+        val online = NetworkState.hasValidatedInternet(ctx)
+
+        // Always serve from local PMTiles first across every zoom level (0.3ms, zero data)
         when (val local = LocalPmTilesStore.readTile(ctx, z, x, y)) {
             is LocalPmTilesStore.TileLookup.Found -> {
                 val raw = if (local.isGzipped) gunzipIfNeeded(local.bytes) else local.bytes
@@ -179,15 +189,15 @@ class MapTileInterceptor(
                 return buildOkResponse(req, patched, PROTOBUF_MEDIA, "public, max-age=3600")
             }
             LocalPmTilesStore.TileLookup.EmptyInBounds -> {
-                return buildEmptyResponse(req)
+                if (!online) return buildEmptyResponse(req, PROTOBUF_MEDIA)
             }
             LocalPmTilesStore.TileLookup.Miss -> {
-                // Fall through to network only if internet is actually validated
+                // Fall through to network if online
             }
         }
 
-        if (!NetworkState.hasValidatedInternet(ctx)) {
-            throw IOException("Offline and tile $z/$x/$y not in local PMTiles")
+        if (!online) {
+            return buildEmptyResponse(req, PROTOBUF_MEDIA)
         }
 
         val resp = chain.proceed(req)
@@ -233,7 +243,11 @@ class MapTileInterceptor(
         }
 
         if (!NetworkState.hasValidatedInternet(ctx)) {
-            throw IOException("Offline and static asset not cached: $path")
+            return when {
+                path.endsWith(".json") -> buildOkResponse(req, "{}".toByteArray(Charsets.UTF_8), JSON_MEDIA, "no-store")
+                path.endsWith(".pbf") -> buildOkResponse(req, ByteArray(0), PROTOBUF_MEDIA, "no-store")
+                else -> buildEmptyResponse(req, mediaType)
+            }
         }
 
         val resp = chain.proceed(req)
@@ -258,21 +272,21 @@ class MapTileInterceptor(
 
         fun offlineFallbackResponse(): Response? {
             if (LocalPmTilesStore.hasAnyInstalledPack(ctx)) {
+                val minZ = LocalPmTilesStore.getInstalledMinZoom(ctx) ?: 0
                 val maxZ = LocalPmTilesStore.getInstalledMaxZoom(ctx) ?: 13
-                return buildOkResponse(req, buildOfflineTileJson(maxZ), JSON_MEDIA, "public, max-age=3600")
+                return buildOkResponse(req, buildOfflineTileJson(maxZ, minZ), JSON_MEDIA, "no-store")
             }
             if (cacheFile != null && cacheFile.exists() && cacheFile.length() > 32L) {
                 val raw = runCatching { cacheFile.readBytes() }.getOrNull()
                 if (raw != null && raw.isNotEmpty()) {
                     val plain = gunzipIfNeeded(raw)
                     if (plain !== raw) writeFileAtomic(cacheFile, plain)
-                    return buildOkResponse(req, plain, JSON_MEDIA, "public, max-age=3600")
+                    return buildOkResponse(req, plain, JSON_MEDIA, "no-store")
                 }
             }
             return null
         }
 
-        // Fast-path when offline or on dead 4G+ (avoids 15-45s timeout and clamps maxzoom for overzoom)
         if (!NetworkState.hasValidatedInternet(ctx)) {
             return offlineFallbackResponse() ?: throw IOException("Offline and no local TileJSON")
         }
@@ -287,6 +301,7 @@ class MapTileInterceptor(
                     return resp.newBuilder()
                         .removeHeader("Content-Encoding")
                         .removeHeader("Content-Length")
+                        .header("Cache-Control", "no-store")
                         .body(plain.toResponseBody(JSON_MEDIA))
                         .build()
                 }
@@ -321,14 +336,14 @@ class MapTileInterceptor(
             .build()
     }
 
-    private fun buildEmptyResponse(req: Request): Response {
+    private fun buildEmptyResponse(req: Request, mediaType: okhttp3.MediaType): Response {
         return Response.Builder()
             .request(req)
             .protocol(Protocol.HTTP_1_1)
             .code(204)
             .message("No Content")
-            .header("Cache-Control", "public, max-age=3600")
-            .body(ByteArray(0).toResponseBody(PROTOBUF_MEDIA))
+            .header("Cache-Control", "no-store")
+            .body(ByteArray(0).toResponseBody(mediaType))
             .build()
     }
 }

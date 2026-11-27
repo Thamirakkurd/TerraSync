@@ -434,6 +434,7 @@ class OfflineMapManager private constructor(context: Context) {
             STYLE_STREET_URL to File(stylesDir, "vector_day.json"),
             STYLE_DARK_URL to File(stylesDir, "vector_night.json")
         )
+        val dynamicSpriteUrls = LinkedHashSet<String>()
         for ((url, target) in stylePairs) {
             runCatching {
                 val req = Request.Builder().url(url).get().build()
@@ -441,6 +442,15 @@ class OfflineMapManager private constructor(context: Context) {
                     if (resp.isSuccessful) {
                         val raw = resp.body?.string()?.takeIf { it.isNotBlank() } ?: return@use
                         val cleaned = MapLayerRenderer.sanitizeStyleJson(raw)
+                        runCatching {
+                            val spriteBase = JSONObject(cleaned).optString("sprite", "").trim()
+                            if (spriteBase.startsWith("http")) {
+                                dynamicSpriteUrls.add("$spriteBase.json")
+                                dynamicSpriteUrls.add("$spriteBase.png")
+                                dynamicSpriteUrls.add("$spriteBase@2x.json")
+                                dynamicSpriteUrls.add("$spriteBase@2x.png")
+                            }
+                        }
                         val tmp = File(stylesDir, "${target.name}.tmp")
                         tmp.writeText(cleaned, Charsets.UTF_8)
                         if (!tmp.renameTo(target)) {
@@ -451,8 +461,8 @@ class OfflineMapManager private constructor(context: Context) {
                 }
             }
         }
-        // Core TileJSON, sprites, and Latin/Arabic/Punctuation glyph PBFs (cached by MapTileInterceptor)
-        val staticUrls = listOf(
+        // Core TileJSON, dynamically discovered sprites, and Latin/Arabic/Punctuation glyph PBFs
+        val staticUrls = dynamicSpriteUrls.toList() + listOf(
             "https://tiles.openfreemap.org/planet",
             "https://tiles.openfreemap.org/backup_planet",
             "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.json",

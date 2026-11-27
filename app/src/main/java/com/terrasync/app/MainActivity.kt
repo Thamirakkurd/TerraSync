@@ -298,6 +298,7 @@ class MainActivity : AppCompatActivity() {
 
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
+        MapLibre.setConnected(true)
         contourManager.initDiskCache(cacheDir)
         offlineMaps = OfflineMapManager.getInstance(this).apply {
             refreshAll()
@@ -2289,6 +2290,7 @@ class MainActivity : AppCompatActivity() {
         isActivityResumed = true
         backCallback?.isEnabled = true
         mapView.onResume()
+        MapLibre.setConnected(true)
         if (hasLocationPermission()) startLiveGpsUpdates()
         renderMapData()
     }

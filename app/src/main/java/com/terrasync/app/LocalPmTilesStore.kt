@@ -139,6 +139,11 @@ object LocalPmTilesStore {
         }
     }
 
+    fun getInstalledMinZoom(ctx: Context?): Int? {
+        if (ctx != null && loadedForDir == null) ensureLoaded(ctx)
+        return sortedArchives.minOfOrNull { it.header.minZoom }
+    }
+
     fun getInstalledMaxZoom(ctx: Context?): Int? {
         if (ctx != null && loadedForDir == null) ensureLoaded(ctx)
         return sortedArchives.maxOfOrNull { it.header.maxZoom }
