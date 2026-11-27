@@ -1,6 +1,7 @@
 package com.terrasync.app
 
 import android.app.Application
+import android.os.Build
 import org.maplibre.android.MapLibre
 import org.maplibre.android.module.http.HttpRequestUtil
 
@@ -16,8 +17,13 @@ class TerraSyncApp : Application() {
         RoutingEngine.userAgent = "TerraSync/$ver (https://github.com/Thamirakkurd/TerraSync)"
         RoutingEngine.appContext = applicationContext
 
-        MapLibre.getInstance(this)
-        HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
+        // Robolectric runs on the host JVM without Android native MapLibre .so binaries.
+        if ("robolectric".equals(Build.FINGERPRINT, ignoreCase = true)) return
+
+        runCatching {
+            MapLibre.getInstance(this)
+            HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
+        }
 
         AppExecutors.batchIoExecutor.execute {
             LocalPmTilesStore.ensureLoaded(applicationContext)
