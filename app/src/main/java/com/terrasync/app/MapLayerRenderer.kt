@@ -87,19 +87,19 @@ class MapLayerRenderer(
               "type": "raster",
               "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
               "tileSize": 256,
-              "maxzoom": 19
+              "maxzoom": 17
             },
             "roads": {
               "type": "raster",
               "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"],
               "tileSize": 256,
-              "maxzoom": 19
+              "maxzoom": 17
             },
             "places": {
               "type": "raster",
               "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
               "tileSize": 256,
-              "maxzoom": 19
+              "maxzoom": 17
             }
           },
           "layers": [
