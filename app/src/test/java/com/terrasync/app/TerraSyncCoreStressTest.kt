@@ -601,32 +601,49 @@ class TerraSyncCoreStressTest {
         assertFalse(MapLayerRenderer.STYLE_SATELLITE.contains("font-faces"))
         assertTrue(MapLayerRenderer.STYLE_SATELLITE.contains("\"maxzoom\": 17"))
 
-        // Full Kurdish Sorani contextual shaping: ە/ێ/ڵ/ڕ/ڤ + standard Arabic + Lam-Alef
+        // ICU-aware Kurdish Sorani shaping:
+        // - ە (U+06D5) -> ه + ALM (U+061C) so ICU shapes final/isolated ه and never joins left
+        // - ێ/ڵ/ڤ/ڕ -> safe convertFBto06==0 slots (U+FB5A..FB6F) flanked by invisible ZWJ on joined sides
         assertEquals(
-            "\uFEEB\uFEEA\uFEED\uFEDF${KurdishArabicShaper.YEH_SMALL_V_MEDI}\uFEAE",
+            "هه\u061Cول\u200D${KurdishArabicShaper.YEH_SMALL_V_MEDI}\u200Dر",
             KurdishArabicShaper.shape("هەولێر")
         )
         assertEquals(
-            "\uFEB3\uFEEA\uFEAD\uFEA9\uFEE9\uFEE1",
+            "سه\u061Cرده\u061Cم",
             KurdishArabicShaper.shape("سەردەم")
         )
         assertEquals(
-            "\uFED7\uFEEA${KurdishArabicShaper.LAM_SMALL_V_INIT}\uFE8E",
+            "مزگه\u061Cوتی فه\u061Cرحان سه\u061Cفه\u061Cر",
+            KurdishArabicShaper.shape("مزگەوتی فەرحان سەفەر")
+        )
+        assertEquals(
+            "قه\u061C${KurdishArabicShaper.LAM_SMALL_V_INIT}\u200Dا",
             KurdishArabicShaper.shape("قەڵا")
         )
         assertEquals(
-            "\uFB58${KurdishArabicShaper.REH_SMALL_V_FINA}",
+            "پ\u200D${KurdishArabicShaper.REH_SMALL_V_FINA}",
             KurdishArabicShaper.shape("پڕ")
         )
         assertEquals(
-            "\uFB90\uFBDA${KurdishArabicShaper.LAM_SMALL_V_INIT}\uFE8E\uFEE7\uFE8E \uFEB3\uFEEA\uFEAD\uFEA9\uFEE9\uFEE1",
+            "کۆ${KurdishArabicShaper.LAM_SMALL_V_INIT}\u200Dانا سه\u061Cرده\u061Cم",
             KurdishArabicShaper.shape("کۆڵانا سەردەم")
         )
         assertEquals("Erbil 100m", KurdishArabicShaper.shape("Erbil 100m"))
 
-        // Unshape restores clean logical Unicode for Place Cards & copy
-        val unshaped = KurdishArabicShaper.unshape(KurdishArabicShaper.shape("کۆڵانا سەردەم"))
-        assertTrue(unshaped.contains('ڵ') && unshaped.contains('ۆ') && unshaped.contains('ک'))
+        // Exact lossless unshape round-trip (even when Kurdish ە and Arabic ه appear together!)
+        for (sample in listOf(
+            "کۆڵانا سەردەم",
+            "مزگەوتی فەرحان سەفەر",
+            "خارنگەها فورات",
+            "هەولێر",
+            "سلێمانی",
+            "قەڵا",
+            "بەردەڕەش",
+            "گەرماڤا سەفید ئاغا",
+            "تاخا شاخکێ"
+        )) {
+            assertEquals(sample, KurdishArabicShaper.unshape(KurdishArabicShaper.shape(sample)))
+        }
 
         // MVT protobuf string-table patcher: shapes Kurdish strings while preserving Latin & structure
         fun encodeMvtVarint(v: Int): ByteArray {
@@ -655,7 +672,7 @@ class TerraSyncCoreStressTest {
         val mvtTile = wrapField(3, layerBytes)
         val patchedMvt = MvtKurdishPatcher.patchTile(mvtTile)
         val patchedStr = String(patchedMvt, Charsets.UTF_8)
-        assertTrue(patchedStr.contains("\uFEB3\uFEEA\uFEAD\uFEA9\uFEE9\uFEE1"))
+        assertTrue(patchedStr.contains("سه\u061Cرده\u061Cم"))
         assertTrue(patchedStr.contains("Sardam Street"))
 
         val latinOnlyMvt = wrapField(3, wrapField(4, latinVal))

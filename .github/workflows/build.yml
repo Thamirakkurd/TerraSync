@@ -16,11 +16,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Generate Patched Kurdish SDF Glyph PBF (64256-64511.pbf)
+      - name: Generate Patched Kurdish SDF Glyph PBFs (64256-64511 & 8192-8447)
         run: |
           pip install --no-cache-dir uharfbuzz freetype-py
-          python3 scripts/build_kurdish_glyph_pbf.py --out app/src/main/assets/fonts/64256-64511.pbf
-          ls -lh app/src/main/assets/fonts/64256-64511.pbf
+          python3 scripts/build_kurdish_glyph_pbf.py --out-dir app/src/main/assets/fonts
+          ls -lh app/src/main/assets/fonts/*.pbf
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

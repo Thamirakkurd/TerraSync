@@ -31,6 +31,8 @@ class MapTileInterceptor(
         private const val OPENFREEMAP_HOST = "tiles.openfreemap.org"
         private const val KURDISH_GLYPH_RANGE_SUFFIX = "/64256-64511.pbf"
         private const val KURDISH_GLYPH_ASSET_PATH = "fonts/64256-64511.pbf"
+        private const val PUNCT_GLYPH_RANGE_SUFFIX = "/8192-8447.pbf"
+        private const val PUNCT_GLYPH_ASSET_PATH = "fonts/8192-8447.pbf"
 
         private val TILE_ZXY_REGEX = Regex(""".*/(\d{1,2})/(\d+)/(\d+)\.pbf$""")
         private val PROTOBUF_MEDIA = "application/x-protobuf".toMediaType()
@@ -49,6 +51,7 @@ class MapTileInterceptor(
 }"""
 
         @Volatile private var cachedKurdishGlyphPbf: ByteArray? = null
+        @Volatile private var cachedPunctGlyphPbf: ByteArray? = null
 
         internal fun webCacheDir(ctx: Context): File =
             File(LocalPmTilesStore.dir(ctx), "web_cache").apply { mkdirs() }
@@ -69,6 +72,16 @@ class MapTileInterceptor(
                 c.assets.open(KURDISH_GLYPH_ASSET_PATH).use { it.readBytes() }
             }.getOrNull()?.takeIf { it.size > 256 }?.also {
                 cachedKurdishGlyphPbf = it
+            }
+        }
+
+        internal fun loadBundledPunctGlyphPbf(ctx: Context?): ByteArray? {
+            cachedPunctGlyphPbf?.let { return it }
+            val c = ctx ?: return null
+            return runCatching {
+                c.assets.open(PUNCT_GLYPH_ASSET_PATH).use { it.readBytes() }
+            }.getOrNull()?.takeIf { it.size > 256 }?.also {
+                cachedPunctGlyphPbf = it
             }
         }
 
@@ -96,9 +109,15 @@ class MapTileInterceptor(
         val ctx = contextProvider()
         val path = url.encodedPath
 
-        // 1. Kurdish patched SDF glyph range (64256-64511.pbf, U+FB00..U+FBFF)
+        // 1. Patched Kurdish SDF glyph ranges (64256-64511.pbf for ێ/ڵ/ڕ & 8192-8447.pbf for invisible ZWJ/ZWNJ)
         if (path.contains("/fonts/") && path.endsWith(KURDISH_GLYPH_RANGE_SUFFIX)) {
             val bundled = loadBundledKurdishGlyphPbf(ctx)
+            if (bundled != null) {
+                return buildOkResponse(req, bundled, PROTOBUF_MEDIA, "public, max-age=86400")
+            }
+        }
+        if (path.contains("/fonts/") && path.endsWith(PUNCT_GLYPH_RANGE_SUFFIX)) {
+            val bundled = loadBundledPunctGlyphPbf(ctx)
             if (bundled != null) {
                 return buildOkResponse(req, bundled, PROTOBUF_MEDIA, "public, max-age=86400")
             }

@@ -29,6 +29,9 @@ import uharfbuzz as hb
 OPENFREEMAP_BASE_PBF_URL = (
     "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/64256-64511.pbf"
 )
+OPENFREEMAP_PUNCT_PBF_URL = (
+    "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/8192-8447.pbf"
+)
 FONT_CANDIDATE_URLS = [
     # Latest official Noto Naskh Arabic (exact family used by OpenMapTiles/OpenFreeMap Noto Sans Regular)
     "https://raw.githubusercontent.com/notofonts/notofonts.github.io/main/fonts/NotoNaskhArabic/hinted/ttf/NotoNaskhArabic-Regular.ttf",
@@ -42,18 +45,21 @@ SDF_RADIUS = 8.0
 SDF_CUTOFF = 0.25
 INF = 1e20
 
+# All 10 target codepoints are assigned Arabic Presentation Forms-A (bidi=AL, cat=Lo)
+# with convertFBto06 == 0 AND presALink == 0 in MapLibre Native's vendored ICU ushape.cpp,
+# so applyArabicShaping() never alters them and ubidi preserves true RTL order.
 # (target_codepoint, shaping_text, target_cluster_index_in_utf16, description)
 KURDISH_GLYPH_SPECS: List[Tuple[int, str, int, str]] = [
     (0xFB5A, "\u06CE", 0, "YEH_SMALL_V isolated (ێ)"),
     (0xFB5B, "\u200D\u06CE", 1, "YEH_SMALL_V final (ـێ)"),
     (0xFB5C, "\u06CE\u200D", 0, "YEH_SMALL_V initial (ێـ)"),
     (0xFB5D, "\u200D\u06CE\u200D", 1, "YEH_SMALL_V medial (ـێـ)"),
-    (0xFB5E, "\u06B5", 0, "LAM_SMALL_V isolated (ڵ)"),
-    (0xFB5F, "\u200D\u06B5", 1, "LAM_SMALL_V final (ـڵ)"),
-    (0xFB60, "\u06B5\u200D", 0, "LAM_SMALL_V initial (ڵـ)"),
-    (0xFB61, "\u200D\u06B5\u200D", 1, "LAM_SMALL_V medial (ـڵـ)"),
-    (0xFB62, "\u0695", 0, "REH_SMALL_V isolated (ڕ)"),
-    (0xFB63, "\u200D\u0695", 1, "REH_SMALL_V final (ـڕ)"),
+    (0xFB62, "\u06B5", 0, "LAM_SMALL_V isolated (ڵ)"),
+    (0xFB63, "\u200D\u06B5", 1, "LAM_SMALL_V final (ـڵ)"),
+    (0xFB64, "\u06B5\u200D", 0, "LAM_SMALL_V initial (ڵـ)"),
+    (0xFB65, "\u200D\u06B5\u200D", 1, "LAM_SMALL_V medial (ـڵـ)"),
+    (0xFB6E, "\u0695", 0, "REH_SMALL_V isolated (ڕ)"),
+    (0xFB6F, "\u200D\u0695", 1, "REH_SMALL_V final (ـڕ)"),
 ]
 
 
@@ -534,16 +540,21 @@ def patch_fontstack_pbf(base_pbf: bytes, replacements: Dict[int, bytes]) -> byte
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build patched Kurdish SDF glyph PBF (64256-64511.pbf).")
+    parser = argparse.ArgumentParser(
+        description="Build patched Kurdish SDF glyph PBFs (64256-64511.pbf & 8192-8447.pbf)."
+    )
     parser.add_argument(
-        "--out",
+        "--out-dir",
         type=Path,
-        default=Path("app/src/main/assets/fonts/64256-64511.pbf"),
-        help="Output PBF path",
+        default=Path("app/src/main/assets/fonts"),
+        help="Output assets/fonts directory",
     )
     parser.add_argument("--font", type=Path, default=None, help="Optional local TTF path")
     args = parser.parse_args()
 
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Patch 64256-64511.pbf (Arabic Presentation Forms-A) with ێ/ڵ/ڕ SDF glyphs
     print(f"Downloading OpenFreeMap base range: {OPENFREEMAP_BASE_PBF_URL}")
     base_pbf = download_bytes(OPENFREEMAP_BASE_PBF_URL)
     base_metrics = parse_glyph_metrics(base_pbf)
@@ -582,9 +593,28 @@ def main() -> int:
                 f"Bitmap length mismatch for U+{target_cp:04X}: got {m.get('bmp_len')}, expected {expected_bmp}"
             )
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_bytes(patched)
-    print(f"[OK] Wrote {args.out} ({len(patched):,} bytes, {len(verified)} total glyphs)")
+    out_pres_a = args.out_dir / "64256-64511.pbf"
+    out_pres_a.write_bytes(patched)
+    print(f"[OK] Wrote {out_pres_a} ({len(patched):,} bytes, {len(verified)} total glyphs)")
+
+    # 2. Patch 8192-8447.pbf (General Punctuation) so ZWJ (U+200D) and ZWNJ (U+200C)
+    #    are 0x0 invisible (OpenFreeMap's Noto font draws visible control-mark symbols for them!).
+    print(f"Downloading OpenFreeMap punctuation range: {OPENFREEMAP_PUNCT_PBF_URL}")
+    punct_pbf = download_bytes(OPENFREEMAP_PUNCT_PBF_URL)
+    invisible_replacements = {
+        0x200C: encode_glyph_msg(0x200C, b"", 0, 0, 0, -26, 0),
+        0x200D: encode_glyph_msg(0x200D, b"", 0, 0, 0, -26, 0),
+    }
+    patched_punct = patch_fontstack_pbf(punct_pbf, invisible_replacements)
+    verified_punct = parse_glyph_metrics(patched_punct)
+    for cp in (0x200C, 0x200D):
+        m = verified_punct.get(cp)
+        if not m or m.get("w", -1) != 0 or m.get("h", -1) != 0 or m.get("adv", -1) != 0 or m.get("bmp_len", 0) != 0:
+            raise RuntimeError(f"Invisible control glyph verification failed for U+{cp:04X}: {m}")
+
+    out_punct = args.out_dir / "8192-8447.pbf"
+    out_punct.write_bytes(patched_punct)
+    print(f"[OK] Wrote {out_punct} ({len(patched_punct):,} bytes, invisible U+200C/U+200D)")
     return 0
 
 
