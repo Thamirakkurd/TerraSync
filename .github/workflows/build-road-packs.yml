@@ -1,0 +1,46 @@
+name: Build & Publish Offline Road Packs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-road-packs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyOsmium
+        run: pip install --no-cache-dir osmium
+
+      - name: Download Iraq OSM PBF & Compile TSR1 Road Packs
+        run: |
+          curl -fsSL -o iraq-latest.osm.pbf "https://download.geofabrik.de/asia/iraq-latest.osm.pbf"
+          python3 scripts/build_road_packs.py --pbf iraq-latest.osm.pbf --out-dir dist
+          ls -lh dist/*.tsr
+
+      - name: Publish Road Packs to GitHub Release (road-packs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view road-packs >/dev/null 2>&1; then
+            gh release upload road-packs \
+              dist/pack_kurdistan_north.tsr \
+              dist/pack_iraq_south.tsr \
+              --clobber
+          else
+            gh release create road-packs \
+              dist/pack_kurdistan_north.tsr \
+              dist/pack_iraq_south.tsr \
+              --title "Offline Road Graph Packs" \
+              --notes "Pre-built TSR1 offline routing graphs compiled weekly from Geofabrik Iraq OSM data." \
+              --latest=false
+          fi

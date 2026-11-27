@@ -62,6 +62,11 @@ object OfflineRoutingEngine {
     private const val FLAG_CAR = 1
     private const val FLAG_BIKE = 2
     private const val FLAG_WALK = 4
+    internal const val PREBUILT_ROAD_PACK_BASE_URL =
+        "https://github.com/Thamirakkurd/TerraSync/releases/download/road-packs"
+
+    internal fun prebuiltPackUrl(packId: String): String =
+        "$PREBUILT_ROAD_PACK_BASE_URL/${packFileName(packId)}"
 
     private class SpatialNodeGrid(
         val minLat: Double,
@@ -1121,10 +1126,101 @@ object OfflineRoutingEngine {
                     val eLng = maxOf(minLng, maxLng)
                     val maxSpan = maxOf(nLat - sLat, eLng - wLng)
 
+                    // 1. Try pre-built TSR1 release asset first (fast CDN download, zero Overpass latency)
+                    if (packId != null) {
+                        val fileName = packFileName(packId)
+                        val outFile = File(dir(ctx), fileName)
+                        val partFile = File(dir(ctx), "$fileName.part")
+                        activePartFile = partFile
+                        partFile.delete()
+                        var call: Call? = null
+                        try {
+                            emitProgress("Downloading $regionName roads...", 0, force = true)
+                            val req = Request.Builder()
+                                .url(prebuiltPackUrl(packId))
+                                .get()
+                                .build()
+                            call = overpassClient.newCall(req)
+                            job.activeCall = call
+                            checkCancelled()
+                            call.execute().use { resp ->
+                                val body = resp.body
+                                if (resp.code == 200 && body != null) {
+                                    val totalBytes = body.contentLength()
+                                    var bytesWritten = 0L
+                                    val buf = ByteArray(32 * 1024)
+                                    BufferedInputStream(body.byteStream(), 32 * 1024).use { input ->
+                                        FileOutputStream(partFile).use { fos ->
+                                            BufferedOutputStream(fos, 32 * 1024).use { output ->
+                                                while (true) {
+                                                    checkCancelled()
+                                                    val n = input.read(buf)
+                                                    if (n <= 0) break
+                                                    output.write(buf, 0, n)
+                                                    bytesWritten += n
+                                                    if (totalBytes > 0L) {
+                                                        val pct = ((bytesWritten * 98L) / totalBytes).toInt().coerceIn(0, 98)
+                                                        emitProgress(
+                                                            "Downloading $regionName roads (${formatTransferSize(bytesWritten)} / ${formatTransferSize(totalBytes)})",
+                                                            pct
+                                                        )
+                                                    } else {
+                                                        val pct = (bytesWritten / (256L * 1024L)).toInt().coerceIn(1, 95)
+                                                        emitProgress(
+                                                            "Downloading $regionName roads (${formatTransferSize(bytesWritten)})",
+                                                            pct
+                                                        )
+                                                    }
+                                                }
+                                                output.flush()
+                                                runCatching { fos.fd.sync() }
+                                            }
+                                        }
+                                    }
+                                    checkCancelled()
+                                    emitProgress("Verifying $regionName roads...", 99, force = true)
+                                    val validated = FileInputStream(partFile).use { fis ->
+                                        readTsrHeaderFromStream(fileName, partFile.length(), fis)
+                                    }
+                                    if (validated != null && validated.nodeCount > 0 && validated.edgeCount > 0) {
+                                        if (outFile.exists()) outFile.delete()
+                                        if (!partFile.renameTo(outFile)) {
+                                            partFile.copyTo(outFile, overwrite = true)
+                                            partFile.delete()
+                                        }
+                                        val finalMeta = validated.copy(sizeBytes = outFile.length())
+                                        synchronized(graphCacheLock) {
+                                            if (cachedGraph?.meta?.fileName == fileName) cachedGraph = null
+                                        }
+                                        headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), finalMeta)
+                                        emitProgress("Downloaded $regionName roads", 100, force = true)
+                                        finishedCleanly = true
+                                        resultRegion = finalMeta
+                                    } else {
+                                        partFile.delete()
+                                    }
+                                }
+                            }
+                        } catch (cs: CancelledSignal) {
+                            partFile.delete()
+                            throw cs
+                        } catch (e: CancellationException) {
+                            partFile.delete()
+                            throw e
+                        } catch (_: Exception) {
+                            partFile.delete()
+                            if (job.cancelled.get() || call?.isCanceled() == true) throw CancelledSignal()
+                            // Fall back to Overpass below
+                        } finally {
+                            if (job.activeCall === call) job.activeCall = null
+                        }
+                    }
+
+                    if (!finishedCleanly) {
                     val fullStreetRegex =
                         "^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|track|path|footway|cycleway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|road)$"
                     val arterialRegex =
-                        "^(motorway|trunk|primary|secondary|tertiary|unclassified|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
+                        "^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
                     val highwayOnlyRegex =
                         "^(motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"
 
@@ -1159,8 +1255,7 @@ object OfflineRoutingEngine {
 
                     val endpoints = listOf(
                         "https://overpass-api.de/api/interpreter",
-                        "https://overpass.kumi.systems/api/interpreter",
-                        "https://lz4.overpass-api.de/api/interpreter"
+                        "https://overpass.private.coffee/api/interpreter"
                     )
 
                     val activeCompiler = RoadGraphStagingCompiler(stageDir, ::checkCancelled, ::emitProgress).also {
@@ -1318,6 +1413,7 @@ object OfflineRoutingEngine {
                         headerCache[fileName] = CachedHeader(outFile.lastModified(), outFile.length(), meta)
                         finishedCleanly = true
                         resultRegion = meta
+                    }
                     }
                 }
             } catch (_: CancelledSignal) {

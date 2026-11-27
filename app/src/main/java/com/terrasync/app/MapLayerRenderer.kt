@@ -3,6 +3,11 @@ package com.terrasync.app
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import java.io.File
+import okhttp3.Request
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
@@ -78,10 +83,55 @@ class MapLayerRenderer(
         const val USER_LOC_SOURCE = "terrasync-userloc-source"
         const val USER_LOC_LAYER = "terrasync-userloc-layer"
 
-        private const val STYLE_SATELLITE = """
+        private const val KURDISH_FONT_ASSET_URL = "asset://fonts/NotoSansArabic-Regular.ttf"
+        private const val STYLE_CACHE_MAX_AGE_MS = 24L * 3600L * 1000L
+
+        private val KURDISH_UNICODE_RANGES = listOf(
+            "U+0600-06FF",
+            "U+0750-077F",
+            "U+08A0-08FF"
+        )
+
+        internal fun injectKurdishFontFaces(styleJson: String): String = runCatching {
+            val root = JsonParser.parseString(styleJson).asJsonObject
+            val fontFaces = if (root.has("font-faces") && root.get("font-faces").isJsonObject) {
+                root.getAsJsonObject("font-faces")
+            } else {
+                JsonObject().also { root.add("font-faces", it) }
+            }
+            fun makeFontEntry(): JsonArray {
+                val ranges = JsonArray().apply {
+                    for (r in KURDISH_UNICODE_RANGES) add(r)
+                }
+                val faceObj = JsonObject().apply {
+                    addProperty("url", KURDISH_FONT_ASSET_URL)
+                    add("unicode-range", ranges)
+                }
+                return JsonArray().apply { add(faceObj) }
+            }
+            fontFaces.add("Noto Sans Regular", makeFontEntry())
+            fontFaces.add("Noto Sans Bold", makeFontEntry())
+            root.toString()
+        }.getOrDefault(styleJson)
+
+        internal const val STYLE_SATELLITE = """
         {
           "version": 8,
           "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+          "font-faces": {
+            "Noto Sans Regular": [
+              {
+                "url": "asset://fonts/NotoSansArabic-Regular.ttf",
+                "unicode-range": ["U+0600-06FF", "U+0750-077F", "U+08A0-08FF"]
+              }
+            ],
+            "Noto Sans Bold": [
+              {
+                "url": "asset://fonts/NotoSansArabic-Regular.ttf",
+                "unicode-range": ["U+0600-06FF", "U+0750-077F", "U+08A0-08FF"]
+              }
+            ]
+          },
           "sources": {
             "sat": {
               "type": "raster",
@@ -117,6 +167,7 @@ class MapLayerRenderer(
     private var lastRoutePillKey: String? = null
     @Volatile private var pinRenderSeq: Long = 0L
     @Volatile private var trackRenderSeq: Long = 0L
+    @Volatile private var styleLoadSeq: Long = 0L
     private val trackPointCache = HashMap<String, Pair<Long, List<Point>>>()
     private var pulseAnimator: ValueAnimator? = null
 
@@ -134,6 +185,7 @@ class MapLayerRenderer(
     fun destroy() {
         pinRenderSeq++
         trackRenderSeq++
+        styleLoadSeq++
         pulseAnimator?.cancel()
         pulseAnimator = null
         synchronized(trackPointCache) {
@@ -142,19 +194,35 @@ class MapLayerRenderer(
         map = null
     }
 
-    fun loadMapStyle() {
-        val m = map ?: return
-        pulseAnimator?.cancel()
-        pulseAnimator = null
-        contourManager.cancelPending()
-        val night = isDarkMapUi()
-        val builder = when (viewModel.mapStyleMode) {
-            MapStyleMode.SATELLITE -> Style.Builder().fromJson(STYLE_SATELLITE)
-            MapStyleMode.VECTOR -> Style.Builder().fromUri(
-                if (night) OfflineMapManager.STYLE_DARK_URL else OfflineMapManager.STYLE_STREET_URL
-            )
-        }
+    private fun styleCacheFile(night: Boolean): File {
+        val dir = File(context.filesDir, "styles").apply { mkdirs() }
+        return File(dir, if (night) "vector_night.json" else "vector_day.json")
+    }
+
+    private fun fetchAndCacheVectorStyleJson(styleUrl: String, cacheFile: File): String? {
+        return runCatching {
+            val req = Request.Builder().url(styleUrl).get().build()
+            RoutingEngine.sharedOkHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val raw = resp.body?.string()?.takeIf { it.isNotBlank() } ?: return@use null
+                val patched = injectKurdishFontFaces(raw)
+                runCatching {
+                    val tmp = File(cacheFile.parentFile, "${cacheFile.name}.tmp")
+                    tmp.writeText(patched, Charsets.UTF_8)
+                    if (!tmp.renameTo(cacheFile)) {
+                        tmp.copyTo(cacheFile, overwrite = true)
+                        tmp.delete()
+                    }
+                }
+                patched
+            }
+        }.getOrNull()
+    }
+
+    private fun applyMapStyleBuilder(m: MapLibreMap, builder: Style.Builder, night: Boolean, seq: Long) {
+        if (!isActivityAlive() || seq != styleLoadSeq || map !== m) return
         m.setStyle(builder) { style ->
+            if (!isActivityAlive() || seq != styleLoadSeq || map !== m) return@setStyle
             lastRoutePillKey = null
             lastPinsRenderKey = null
             lastTracksRenderKey = null
@@ -169,6 +237,47 @@ class MapLayerRenderer(
             renderMapData()
             onFlushPendingZoom()
             contourManager.scheduleUpdate(m, DevicePrefs.isContoursEnabled(context), viewModel.mapStyleMode == MapStyleMode.VECTOR)
+        }
+    }
+
+    fun loadMapStyle() {
+        val m = map ?: return
+        pulseAnimator?.cancel()
+        pulseAnimator = null
+        contourManager.cancelPending()
+        val night = isDarkMapUi()
+        val seq = ++styleLoadSeq
+        if (viewModel.mapStyleMode == MapStyleMode.SATELLITE) {
+            applyMapStyleBuilder(m, Style.Builder().fromJson(STYLE_SATELLITE), night, seq)
+            return
+        }
+        val styleUrl = if (night) OfflineMapManager.STYLE_DARK_URL else OfflineMapManager.STYLE_STREET_URL
+        AppExecutors.batchIoExecutor.execute {
+            val cacheFile = styleCacheFile(night)
+            val cachedRaw = if (cacheFile.exists() && cacheFile.length() > 128L) {
+                runCatching { cacheFile.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() }
+            } else null
+
+            if (cachedRaw != null) {
+                val patched = injectKurdishFontFaces(cachedRaw)
+                AppExecutors.postMain {
+                    applyMapStyleBuilder(m, Style.Builder().fromJson(patched), night, seq)
+                }
+                if (System.currentTimeMillis() - cacheFile.lastModified() > STYLE_CACHE_MAX_AGE_MS) {
+                    fetchAndCacheVectorStyleJson(styleUrl, cacheFile)
+                }
+                return@execute
+            }
+
+            val fetched = fetchAndCacheVectorStyleJson(styleUrl, cacheFile)
+            val builder = if (fetched != null) {
+                Style.Builder().fromJson(fetched)
+            } else {
+                Style.Builder().fromUri(styleUrl)
+            }
+            AppExecutors.postMain {
+                applyMapStyleBuilder(m, builder, night, seq)
+            }
         }
     }
 

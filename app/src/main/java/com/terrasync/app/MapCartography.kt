@@ -30,7 +30,7 @@ object MapCartography {
         val fillTargets: List<Pair<FillLayer, String>>,
         val lineTargets: List<Triple<LineLayer, Boolean, String>>,
         val shieldLayers: List<Pair<SymbolLayer, Boolean>>,
-        val mainLabelLayers: List<SymbolLayer>,
+        val mainLabelLayers: List<Pair<SymbolLayer, Boolean>>,
         val poiTextLayers: List<SymbolLayer>,
         val building3dLayers: List<Layer>,
         var basePoiSuppressed: Boolean = false
@@ -47,7 +47,7 @@ object MapCartography {
         val fills = ArrayList<Pair<FillLayer, String>>()
         val lines = ArrayList<Triple<LineLayer, Boolean, String>>()
         val shields = ArrayList<Pair<SymbolLayer, Boolean>>()
-        val mainLabels = ArrayList<SymbolLayer>()
+        val mainLabels = ArrayList<Pair<SymbolLayer, Boolean>>()
         val poiText = ArrayList<SymbolLayer>()
         val bldgs3d = ArrayList<Layer>()
 
@@ -89,7 +89,8 @@ object MapCartography {
                         id.contains("shield") || id == "highway_ref" -> shields.add(layer to (id == "highway_ref"))
                         sl == "place" || sl == "water_name" || sl == "waterway" ||
                             sl == "mountain_peak" ||
-                            (sl == "transportation_name" && !id.contains("shield") && id != "highway_ref") -> mainLabels.add(layer)
+                            (sl == "transportation_name" && !id.contains("shield") && id != "highway_ref") ->
+                            mainLabels.add(layer to (sl == "transportation_name"))
                         (sl == "poi" || id.contains("poi")) &&
                             id != MOSQUES_LAYER_ID && id != POI_BADGES_LAYER_ID -> poiText.add(layer)
                     }
@@ -316,11 +317,18 @@ object MapCartography {
                     )
                 }
             }
-            for (layer in idx.mainLabelLayers) {
+            for ((layer, isRoadLabel) in idx.mainLabelLayers) {
                 layer.setProperties(
                     PropertyFactory.textField(mainLabelExpr),
                     PropertyFactory.textFont(arrayOf("Noto Sans Regular"))
                 )
+                if (isDark && isRoadLabel) {
+                    layer.setProperties(
+                        PropertyFactory.textColor(Color.parseColor("#E8ECF2")),
+                        PropertyFactory.textHaloColor(Color.parseColor("#14181F")),
+                        PropertyFactory.textHaloWidth(1.6f)
+                    )
+                }
             }
             for (layer in idx.poiTextLayers) {
                 if (poiLabelExpr == null) {
