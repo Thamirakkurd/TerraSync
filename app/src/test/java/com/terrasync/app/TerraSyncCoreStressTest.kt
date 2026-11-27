@@ -601,18 +601,87 @@ class TerraSyncCoreStressTest {
         assertFalse(MapLayerRenderer.STYLE_SATELLITE.contains("font-faces"))
         assertTrue(MapLayerRenderer.STYLE_SATELLITE.contains("\"maxzoom\": 17"))
 
-        // Kurdish AE (U+06D5): joins right after dual-joining letters, isolated after non-left-joining letters
-        assertEquals("ه\uFEEAولێر", MapLayerRenderer.shapeKurdishAeForMapLibre("هەولێر"))
-        assertEquals("د\uFEE9نگ", MapLayerRenderer.shapeKurdishAeForMapLibre("دەنگ"))
-        assertEquals("ق\uFEEAڵا", MapLayerRenderer.shapeKurdishAeForMapLibre("قەڵا"))
-        assertEquals("ن\uFEEAخۆشخان\uFEEA", MapLayerRenderer.shapeKurdishAeForMapLibre("نەخۆشخانە"))
-        assertEquals("Erbil 100m", MapLayerRenderer.shapeKurdishAeForMapLibre("Erbil 100m"))
+        // Full Kurdish Sorani contextual shaping: ە/ێ/ڵ/ڕ/ڤ + standard Arabic + Lam-Alef
+        assertEquals(
+            "\uFEEB\uFEEA\uFEED\uFEDF${KurdishArabicShaper.YEH_SMALL_V_MEDI}\uFEAE",
+            KurdishArabicShaper.shape("هەولێر")
+        )
+        assertEquals(
+            "\uFEB3\uFEEA\uFEAD\uFEA9\uFEE9\uFEE1",
+            KurdishArabicShaper.shape("سەردەم")
+        )
+        assertEquals(
+            "\uFED7\uFEEA${KurdishArabicShaper.LAM_SMALL_V_INIT}\uFE8E",
+            KurdishArabicShaper.shape("قەڵا")
+        )
+        assertEquals(
+            "\uFB58${KurdishArabicShaper.REH_SMALL_V_FINA}",
+            KurdishArabicShaper.shape("پڕ")
+        )
+        assertEquals(
+            "\uFB90\uFBDA${KurdishArabicShaper.LAM_SMALL_V_INIT}\uFE8E\uFEE7\uFE8E \uFEB3\uFEEA\uFEAD\uFEA9\uFEE9\uFEE1",
+            KurdishArabicShaper.shape("کۆڵانا سەردەم")
+        )
+        assertEquals("Erbil 100m", KurdishArabicShaper.shape("Erbil 100m"))
+
+        // Unshape restores clean logical Unicode for Place Cards & copy
+        val unshaped = KurdishArabicShaper.unshape(KurdishArabicShaper.shape("کۆڵانا سەردەم"))
+        assertTrue(unshaped.contains('ڵ') && unshaped.contains('ۆ') && unshaped.contains('ک'))
+
+        // MVT protobuf string-table patcher: shapes Kurdish strings while preserving Latin & structure
+        fun encodeMvtVarint(v: Int): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            var n = v
+            while (true) {
+                if ((n and 0x7F.inv()) == 0) { out.write(n); break }
+                out.write((n and 0x7F) or 0x80); n = n ushr 7
+            }
+            return out.toByteArray()
+        }
+        fun wrapField(fieldNum: Int, payload: ByteArray): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            out.write((fieldNum shl 3) or 2)
+            out.write(encodeMvtVarint(payload.size))
+            out.write(payload)
+            return out.toByteArray()
+        }
+        val kurdishVal = wrapField(1, "سەردەم".toByteArray(Charsets.UTF_8))
+        val latinVal = wrapField(1, "Sardam Street".toByteArray(Charsets.UTF_8))
+        val layerBytes = java.io.ByteArrayOutputStream().apply {
+            write(wrapField(1, "transportation_name".toByteArray(Charsets.UTF_8)))
+            write(wrapField(4, kurdishVal))
+            write(wrapField(4, latinVal))
+        }.toByteArray()
+        val mvtTile = wrapField(3, layerBytes)
+        val patchedMvt = MvtKurdishPatcher.patchTile(mvtTile)
+        val patchedStr = String(patchedMvt, Charsets.UTF_8)
+        assertTrue(patchedStr.contains("\uFEB3\uFEEA\uFEAD\uFEA9\uFEE9\uFEE1"))
+        assertTrue(patchedStr.contains("Sardam Street"))
+
+        val latinOnlyMvt = wrapField(3, wrapField(4, latinVal))
+        assertTrue(MvtKurdishPatcher.patchTile(latinOnlyMvt) === latinOnlyMvt)
+
+        // PMTiles v3 Hilbert curve & directory parser
+        assertEquals(0L, LocalPmTilesStore.zxyToTileId(0, 0, 0))
+        assertEquals(1L, LocalPmTilesStore.zxyToTileId(1, 0, 0))
+        assertEquals(2L, LocalPmTilesStore.zxyToTileId(1, 0, 1))
+        assertEquals(3L, LocalPmTilesStore.zxyToTileId(1, 1, 1))
+        assertEquals(4L, LocalPmTilesStore.zxyToTileId(1, 1, 0))
+        assertEquals(5L, LocalPmTilesStore.zxyToTileId(2, 0, 0))
+        assertEquals(6L, LocalPmTilesStore.zxyToTileId(2, 1, 0))
+        assertEquals(16L, LocalPmTilesStore.zxyToTileId(2, 3, 2))
+        assertEquals(17L, LocalPmTilesStore.zxyToTileId(2, 3, 1))
+        assertEquals(20L, LocalPmTilesStore.zxyToTileId(2, 3, 0))
 
         assertEquals(20, RoutingEngine.mapTileOkHttpClient.dispatcher.maxRequestsPerHost)
         assertTrue(RoutingEngine.mapTileOkHttpClient.dispatcher.maxRequests >= 64)
         assertEquals(
             "https://github.com/Thamirakkurd/TerraSync/releases/download/road-packs/pack_kurdistan_north.tsr",
             OfflineRoutingEngine.prebuiltPackUrl(OfflineMapManager.PACK_KURDISTAN_ID)
+        )
+        assertEquals(
+            "https://github.com/Thamirakkurd/TerraSync/releases/download/road-packs/pack_kurdistan_north.pmtiles",
+            OfflineMapManager.prebuiltMapPackUrl(OfflineMapManager.PACK_KURDISTAN_ID)
         )
     }
 

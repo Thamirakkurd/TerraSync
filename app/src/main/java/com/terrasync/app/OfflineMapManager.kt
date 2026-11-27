@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
@@ -68,8 +69,13 @@ class OfflineMapManager private constructor(context: Context) {
         const val STYLE_DARK_URL = "https://tiles.openfreemap.org/styles/fiord"
         const val PACK_KURDISTAN_ID = "kurdistan_north"
         const val PACK_SOUTHERN_IRAQ_ID = "iraq_south"
-        private const val MIN_FREE_BYTES_KURDISTAN = 350L * 1024L * 1024L
-        private const val MIN_FREE_BYTES_SOUTH = 250L * 1024L * 1024L
+        internal const val PREBUILT_MAP_PACK_BASE_URL =
+            "https://github.com/Thamirakkurd/TerraSync/releases/download/road-packs"
+        private const val MIN_FREE_BYTES_KURDISTAN = 250L * 1024L * 1024L
+        private const val MIN_FREE_BYTES_SOUTH = 150L * 1024L * 1024L
+
+        internal fun prebuiltMapPackUrl(packId: String): String =
+            "$PREBUILT_MAP_PACK_BASE_URL/${LocalPmTilesStore.packFileName(packId)}"
 
         val REGIONAL_PACKS = listOf(
             OfflinePackSpec(
@@ -119,6 +125,8 @@ class OfflineMapManager private constructor(context: Context) {
     private val mapErrors = ConcurrentHashMap<String, String>()
     private val autoChainRoads = ConcurrentHashMap<String, Boolean>()
     private val activeTilePacks = ConcurrentHashMap.newKeySet<String>()
+    private val pmTilesDownloads = ConcurrentHashMap<String, ParallelFileDownloader.Handle>()
+    private val pmTilesDiskCache = ConcurrentHashMap<String, LocalPmTilesStore.PackInfo>()
     private val pendingDownloads = ConcurrentHashMap<String, Pair<OfflinePackSpec, Float>>()
     private val lastProgressEmitMs = ConcurrentHashMap<String, Long>()
     private data class RoadDiskSnapshot(val region: OfflineRoadRegion?, val hasPartial: Boolean)
@@ -159,6 +167,9 @@ class OfflineMapManager private constructor(context: Context) {
         if (force) diskRefreshInFlight.add(packId)
         RoutingEngine.batchIoExecutor.execute {
             try {
+                LocalPmTilesStore.getPackInfo(appCtx, packId)?.let {
+                    pmTilesDiskCache[packId] = it
+                } ?: pmTilesDiskCache.remove(packId)
                 val snap = RoadDiskSnapshot(
                     region = OfflineRoutingEngine.getPackRegion(appCtx, packId),
                     hasPartial = OfflineRoutingEngine.hasPartialPackData(appCtx, packId)
@@ -199,8 +210,16 @@ class OfflineMapManager private constructor(context: Context) {
         serviceListener = listener
     }
 
+    private fun isPmTilesDownloading(packId: String): Boolean {
+        val h = pmTilesDownloads[packId] ?: return false
+        return !h.cancelled.get()
+    }
+
     fun hasAnyActiveDownload(): Boolean {
-        if (pendingDownloads.isNotEmpty() || activeTilePacks.isNotEmpty() || autoChainRoads.values.any { it }) {
+        if (pendingDownloads.isNotEmpty() || activeTilePacks.isNotEmpty() ||
+            pmTilesDownloads.values.any { !it.cancelled.get() } ||
+            autoChainRoads.values.any { it }
+        ) {
             return true
         }
         return REGIONAL_PACKS.any { pack ->
@@ -217,7 +236,7 @@ class OfflineMapManager private constructor(context: Context) {
                 val detail = if (st.requiredResources > 0) {
                     "${st.progressPercent}% (${st.completedResources}/${st.requiredResources}) • $mb"
                 } else {
-                    st.statusText
+                    st.statusText.ifBlank { "Downloading ${st.progressPercent}%" }
                 }
                 return ActiveDownloadSummary(
                     packId = pack.id,
@@ -225,7 +244,7 @@ class OfflineMapManager private constructor(context: Context) {
                     stageLabel = "Map Tiles",
                     detailText = detail,
                     percent = st.progressPercent,
-                    indeterminate = st.requiredResources <= 0L
+                    indeterminate = st.requiredResources <= 0L && st.progressPercent <= 0
                 )
             }
             if (st.isRoadDownloading || OfflineRoutingEngine.isDownloading(pack.id)) {
@@ -264,22 +283,34 @@ class OfflineMapManager private constructor(context: Context) {
         val roadNote = roadProgressNotes[packId].orEmpty()
         val rErr = roadErrors[packId]
         val mErr = mapErrors[packId]
+        val pmPack = pmTilesDiskCache[packId]
+        val isMapReady = pmPack != null
+        val mapSize = pmPack?.sizeBytes ?: 0L
         return OfflinePackState(
+            isDownloaded = isMapReady,
+            isDownloading = isPmTilesDownloading(packId),
+            progressPercent = if (isMapReady) 100 else 0,
+            sizeBytes = mapSize,
             statusText = when {
-                mErr != null -> mErr
+                mErr != null && !isMapReady -> mErr
+                isMapReady && road != null ->
+                    "Map ${formatSize(mapSize)} + Roads ${formatSize(road.sizeBytes)} (fully offline)"
+                isMapReady -> "Map Ready (${formatSize(mapSize)})"
                 road != null -> "Roads ready (${formatSize(road.sizeBytes)}) • Map not downloaded"
                 else -> "Not downloaded (online only)"
             },
             mapError = mErr,
             hasRoadGraph = road != null,
             isRoadDownloading = roadDl,
-            isRoadQueued = false,
+            isRoadQueued = !roadDl && road == null && (autoChainRoads[packId] == true),
             roadProgressPercent = if (roadDl) (roadProgressPercents[packId] ?: 0) else 0,
             roadSizeBytes = road?.sizeBytes ?: 0L,
             roadStatusText = when {
                 roadDl -> roadNote.ifBlank { "Downloading offline roads..." }
                 road != null -> "Offline routing ready (${formatSize(road.sizeBytes)})"
                 rErr != null -> rErr
+                !roadDl && road == null && (autoChainRoads[packId] == true) -> "Queued after map tiles finish"
+                isMapReady -> "Offline routing not downloaded yet"
                 else -> ""
             },
             roadError = rErr,
@@ -320,6 +351,10 @@ class OfflineMapManager private constructor(context: Context) {
                 validIds.forEach { id ->
                     if (id !in foundIds) {
                         regionHandles.remove(id)
+                        if (!isPmTilesDownloading(id)) {
+                            states[id] = buildIdleState(id)
+                        }
+                    } else if (pmTilesDiskCache.containsKey(id) && !isPmTilesDownloading(id)) {
                         states[id] = buildIdleState(id)
                     }
                 }
@@ -327,7 +362,7 @@ class OfflineMapManager private constructor(context: Context) {
                 if (pendingDownloads.isNotEmpty()) {
                     val queued = pendingDownloads.values.toList()
                     pendingDownloads.clear()
-                    queued.forEach { (pack, ratio) -> startTileDownload(pack, ratio) }
+                    queued.forEach { (pack, ratio) -> startLegacyTileDownload(pack, ratio) }
                 }
                 notifyListeners()
                 if (matchedRegions.isEmpty()) {
@@ -337,7 +372,9 @@ class OfflineMapManager private constructor(context: Context) {
                     matchedRegions.forEach { (id, reg) ->
                         reg.getStatus(object : OfflineRegion.OfflineRegionStatusCallback {
                             override fun onStatus(status: OfflineRegionStatus?) {
-                                if (status != null) updateStateFromStatus(id, status, forceEmit = true)
+                                if (status != null && !pmTilesDiskCache.containsKey(id) && !isPmTilesDownloading(id)) {
+                                    updateStateFromStatus(id, status, forceEmit = true)
+                                }
                                 if (remaining.decrementAndGet() == 0) onReady?.invoke()
                             }
                             override fun onError(error: String?) {
@@ -354,7 +391,22 @@ class OfflineMapManager private constructor(context: Context) {
         })
     }
 
-    private fun startTileDownload(pack: OfflinePackSpec, pixelRatio: Float) {
+    private fun startLegacyTileDownload(pack: OfflinePackSpec, pixelRatio: Float) {
+        if (!regionsLoaded) {
+            pendingDownloads[pack.id] = pack to pixelRatio
+            val cur = getState(pack.id)
+            states[pack.id] = cur.copy(
+                isDownloading = true,
+                mapError = null,
+                roadError = null,
+                isRoadQueued = autoChainRoads[pack.id] == true,
+                statusText = "Preparing offline pack..."
+            )
+            notifyListeners()
+            refreshAll()
+            return
+        }
+        activeTilePacks.add(pack.id)
         val existing = regionHandles[pack.id]
         if (existing != null) {
             attachObserverAndStart(pack.id, existing)
@@ -368,9 +420,202 @@ class OfflineMapManager private constructor(context: Context) {
     }
 
     /**
+     * Pre-warms essential styles (Day + Night), TileJSON, sprites, and core Latin/Arabic glyph
+     * ranges so downloaded PMTiles packs work 100% offline in Airplane Mode on both themes.
+     */
+    private fun prewarmOfflineMapAssets() {
+        val stylesDir = File(appCtx.filesDir, "styles").apply { mkdirs() }
+        val stylePairs = listOf(
+            STYLE_STREET_URL to File(stylesDir, "vector_day.json"),
+            STYLE_DARK_URL to File(stylesDir, "vector_night.json")
+        )
+        for ((url, target) in stylePairs) {
+            runCatching {
+                val req = Request.Builder().url(url).get().build()
+                RoutingEngine.mapTileOkHttpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val raw = resp.body?.string()?.takeIf { it.isNotBlank() } ?: return@use
+                        val cleaned = MapLayerRenderer.sanitizeStyleJson(raw)
+                        val tmp = File(stylesDir, "${target.name}.tmp")
+                        tmp.writeText(cleaned, Charsets.UTF_8)
+                        if (!tmp.renameTo(target)) {
+                            tmp.copyTo(target, overwrite = true)
+                            tmp.delete()
+                        }
+                    }
+                }
+            }
+        }
+        // Core TileJSON, sprites, and Latin/Arabic/Punctuation glyph PBFs (cached by MapTileInterceptor)
+        val staticUrls = listOf(
+            "https://tiles.openfreemap.org/planet",
+            "https://tiles.openfreemap.org/backup_planet",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.json",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.png",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm@2x.json",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm@2x.png",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/0-255.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/256-511.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/1536-1791.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/8192-8447.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/65024-65279.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Bold/0-255.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Bold/256-511.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Bold/1536-1791.pbf",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Bold/65024-65279.pbf"
+        )
+        for (url in staticUrls) {
+            runCatching {
+                val req = Request.Builder().url(url).get().build()
+                RoutingEngine.mapTileOkHttpClient.newCall(req).execute().use { resp ->
+                    resp.body?.bytes()
+                }
+            }
+        }
+    }
+
+    private fun startPrebuiltMapDownload(pack: OfflinePackSpec, pixelRatio: Float) {
+        if (isPmTilesDownloading(pack.id)) return
+        val handle = ParallelFileDownloader.Handle()
+        pmTilesDownloads[pack.id] = handle
+
+        val cur = getState(pack.id)
+        states[pack.id] = cur.copy(
+            isDownloading = true,
+            progressPercent = 0,
+            completedResources = 0L,
+            requiredResources = 0L,
+            mapError = null,
+            roadError = null,
+            isRoadQueued = autoChainRoads[pack.id] == true,
+            statusText = "Downloading ${pack.title} map..."
+        )
+        notifyListeners()
+
+        Thread({
+            val outFile = LocalPmTilesStore.packFile(appCtx, pack.id)
+            val partFile = File(LocalPmTilesStore.dir(appCtx), "${outFile.name}.part")
+            var lastEmitMs = 0L
+            var downloadedOk = false
+            var cancelled = false
+            var packInfo: LocalPmTilesStore.PackInfo? = null
+
+            try {
+                val ok = ParallelFileDownloader.downloadToFile(
+                    url = prebuiltMapPackUrl(pack.id),
+                    partFile = partFile,
+                    label = "${pack.title} map",
+                    handle = handle
+                ) { downloadedBytes, _, pct, statusText, force ->
+                    val now = SystemClock.elapsedRealtime()
+                    if (!force && now - lastEmitMs < 350L) return@downloadToFile
+                    lastEmitMs = now
+                    runOnMain {
+                        if (!isPmTilesDownloading(pack.id)) return@runOnMain
+                        val prev = states[pack.id] ?: buildIdleState(pack.id)
+                        states[pack.id] = prev.copy(
+                            isDownloading = true,
+                            progressPercent = pct,
+                            completedResources = 0L,
+                            requiredResources = 0L,
+                            sizeBytes = downloadedBytes,
+                            statusText = statusText,
+                            mapError = null
+                        )
+                        notifyListeners()
+                    }
+                }
+
+                if (ok) {
+                    runOnMain {
+                        val prev = states[pack.id] ?: buildIdleState(pack.id)
+                        states[pack.id] = prev.copy(
+                            isDownloading = true,
+                            progressPercent = 99,
+                            statusText = "Verifying ${pack.title} map..."
+                        )
+                        notifyListeners()
+                    }
+                    val header = LocalPmTilesStore.validateHeader(partFile)
+                    if (header != null) {
+                        if (outFile.exists()) outFile.delete()
+                        if (!partFile.renameTo(outFile)) {
+                            partFile.copyTo(outFile, overwrite = true)
+                            partFile.delete()
+                        }
+                        packInfo = LocalPmTilesStore.registerPack(appCtx, pack.id)
+                        if (packInfo != null) {
+                            prewarmOfflineMapAssets()
+                            downloadedOk = true
+                        }
+                    } else {
+                        partFile.delete()
+                    }
+                }
+            } catch (_: ParallelFileDownloader.CancelledException) {
+                cancelled = true
+                partFile.delete()
+            } catch (_: Exception) {
+                partFile.delete()
+                if (handle.cancelled.get()) cancelled = true
+            } finally {
+                pmTilesDownloads.remove(pack.id, handle)
+            }
+
+            runOnMain {
+                val info = packInfo
+                if (downloadedOk && info != null) {
+                    pmTilesDiskCache[pack.id] = info
+                    manager.invalidateAmbientCache(null)
+                    val chainRoads = autoChainRoads[pack.id] == true
+                    val hasRoad = getCachedRoadSnapshot(pack.id).region != null
+                    states[pack.id] = buildIdleState(pack.id)
+                    notifyListeners()
+                    if (chainRoads && !hasRoad && !OfflineRoutingEngine.isDownloading(pack.id)) {
+                        mainHandler.postDelayed({
+                            val stillNoRoad = getCachedRoadSnapshot(pack.id).region == null
+                            if (autoChainRoads[pack.id] == true && !OfflineRoutingEngine.isDownloading(pack.id) && stillNoRoad) {
+                                if (!OfflineRoutingEngine.hasEnoughStorage(appCtx, OfflineRoutingEngine.MIN_FREE_BYTES_ROADS)) {
+                                    val freeStr = formatSize(OfflineRoutingEngine.availableStorageBytes(appCtx))
+                                    val msg = "Not enough free storage for offline roads ($freeStr free)"
+                                    roadErrors[pack.id] = msg
+                                    setRoadChainPending(pack.id, false)
+                                    syncRoadFields(pack.id, forceNotDownloading = true)
+                                    if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                                } else {
+                                    startEmbeddedRoadDownload(pack.id, pack.title, pack.minLat, pack.minLng, pack.maxLat, pack.maxLng)
+                                    OfflineDownloadService.startOrUpdate(appCtx)
+                                }
+                            } else {
+                                setRoadChainPending(pack.id, false)
+                                if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                            }
+                        }, 250L)
+                    } else {
+                        setRoadChainPending(pack.id, false)
+                        if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                    }
+                } else if (cancelled) {
+                    states[pack.id] = buildIdleState(pack.id)
+                    notifyListeners()
+                    if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
+                } else {
+                    // Pre-built PMTiles asset unavailable -> fall back seamlessly to legacy tile downloader
+                    startLegacyTileDownload(pack, pixelRatio)
+                }
+            }
+        }, "terrasync-map-dl-${pack.id}").apply {
+            handle.workerThread = this
+            isDaemon = true
+            start()
+        }
+    }
+
+    /**
      * Sequential two-stage download:
-     * Stage 1 downloads vector map tiles first; Stage 2 (Road Routing) starts only after Stage 1 completes,
-     * so tile sockets and road SQLite indexing never compete for heap or bandwidth.
+     * Stage 1 downloads pre-built PMTiles vector map archive (4-stream parallel HTTP Range,
+     * falling back to legacy tile-by-tile download if unavailable); Stage 2 (Road Routing)
+     * starts right after Stage 1 completes.
      */
     fun downloadPack(pack: OfflinePackSpec, pixelRatio: Float) {
         mapErrors.remove(pack.id)
@@ -404,21 +649,7 @@ class OfflineMapManager private constructor(context: Context) {
         val needRoads = getCachedRoadSnapshot(pack.id).region == null && !cur.hasRoadGraph
         setRoadChainPending(pack.id, needRoads)
 
-        if (!regionsLoaded) {
-            pendingDownloads[pack.id] = pack to pixelRatio
-            states[pack.id] = cur.copy(
-                isDownloading = true,
-                mapError = null,
-                roadError = null,
-                isRoadQueued = needRoads,
-                statusText = "Preparing offline pack..."
-            )
-            notifyListeners()
-            refreshAll()
-        } else {
-            activeTilePacks.add(pack.id)
-            startTileDownload(pack, pixelRatio)
-        }
+        startPrebuiltMapDownload(pack, pixelRatio)
         OfflineDownloadService.startOrUpdate(appCtx)
     }
 
@@ -433,6 +664,7 @@ class OfflineMapManager private constructor(context: Context) {
         }
         // Never download tiles and roads simultaneously
         activeTilePacks.remove(pack.id)
+        pmTilesDownloads.remove(pack.id)?.cancelAll()
         setRoadChainPending(pack.id, false)
         pendingDownloads.remove(pack.id)
         regionHandles[pack.id]?.let { reg ->
@@ -502,6 +734,9 @@ class OfflineMapManager private constructor(context: Context) {
         forceNotDownloading: Boolean = false
     ) {
         val cur = states[packId] ?: buildIdleState(packId)
+        val pmPack = pmTilesDiskCache[packId]
+        val isMapReady = cur.isDownloaded || pmPack != null
+        val mapSize = if (pmPack != null) pmPack.sizeBytes else cur.sizeBytes
         val snap = getCachedRoadSnapshot(packId)
         val road = snap.region
         val roadDl = if (forceNotDownloading) false else (isStarting || OfflineRoutingEngine.isDownloading(packId))
@@ -515,14 +750,19 @@ class OfflineMapManager private constructor(context: Context) {
             road != null -> "Offline routing ready (${formatSize(road.sizeBytes)})"
             rErr != null -> rErr
             queued -> "Queued after map tiles finish"
-            else -> if (cur.isDownloaded) "Offline routing not downloaded yet" else ""
+            else -> if (isMapReady) "Offline routing not downloaded yet" else ""
         }
-        val nextStatus = if (cur.isDownloaded && road != null) {
-            "Map ${formatSize(cur.sizeBytes)} + Roads ${formatSize(road.sizeBytes)} (fully offline)"
-        } else {
-            cur.statusText
+        val nextStatus = when {
+            isMapReady && road != null ->
+                "Map ${formatSize(mapSize)} + Roads ${formatSize(road.sizeBytes)} (fully offline)"
+            isMapReady && !cur.isDownloading ->
+                "Map Ready (${formatSize(mapSize)})"
+            else -> cur.statusText
         }
         states[packId] = cur.copy(
+            isDownloaded = isMapReady,
+            progressPercent = if (isMapReady) 100 else cur.progressPercent,
+            sizeBytes = mapSize,
             statusText = nextStatus,
             hasRoadGraph = road != null,
             isRoadDownloading = roadDl,
@@ -670,6 +910,7 @@ class OfflineMapManager private constructor(context: Context) {
 
     fun pauseDownload(packId: String) {
         activeTilePacks.remove(packId)
+        pmTilesDownloads.remove(packId)?.cancelAll()
         pendingDownloads.remove(packId)
         setRoadChainPending(packId, false)
         OfflineRoutingEngine.cancelDownload(packId)
@@ -700,7 +941,7 @@ class OfflineMapManager private constructor(context: Context) {
     fun pauseAllDownloads() {
         REGIONAL_PACKS.forEach { pack ->
             val st = getState(pack.id)
-            if (st.isDownloading || st.isRoadDownloading || OfflineRoutingEngine.isDownloading(pack.id) || pendingDownloads.containsKey(pack.id)) {
+            if (st.isDownloading || isPmTilesDownloading(pack.id) || st.isRoadDownloading || OfflineRoutingEngine.isDownloading(pack.id) || pendingDownloads.containsKey(pack.id)) {
                 pauseDownload(pack.id)
             }
         }
@@ -708,6 +949,8 @@ class OfflineMapManager private constructor(context: Context) {
 
     fun deletePack(packId: String, onDone: (String) -> Unit) {
         activeTilePacks.remove(packId)
+        pmTilesDownloads.remove(packId)?.cancelAll()
+        pmTilesDiskCache.remove(packId)
         pendingDownloads.remove(packId)
         setRoadChainPending(packId, false)
         mapErrors.remove(packId)
@@ -716,6 +959,7 @@ class OfflineMapManager private constructor(context: Context) {
         roadProgressPercents.remove(packId)
         roadDiskCache[packId] = RoadDiskSnapshot(null, false)
         RoutingEngine.batchIoExecutor.execute {
+            val removedMap = LocalPmTilesStore.removePack(appCtx, packId)
             val removedRoads = OfflineRoutingEngine.deletePackRegion(appCtx, packId)
             runOnMain {
                 val reg = regionHandles[packId]
@@ -723,7 +967,14 @@ class OfflineMapManager private constructor(context: Context) {
                     states[packId] = buildIdleState(packId)
                     notifyListeners()
                     if (!hasAnyActiveDownload()) OfflineDownloadService.stop(appCtx)
-                    onDone(if (removedRoads) "Offline roads removed" else "Already removed")
+                    onDone(
+                        when {
+                            removedMap && removedRoads -> "Offline map & routing deleted"
+                            removedMap -> "Offline map deleted"
+                            removedRoads -> "Offline roads removed"
+                            else -> "Already removed"
+                        }
+                    )
                     return@runOnMain
                 }
                 reg.setDownloadState(OfflineRegion.STATE_INACTIVE)

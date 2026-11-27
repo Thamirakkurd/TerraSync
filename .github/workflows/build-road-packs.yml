@@ -1,4 +1,4 @@
-name: Build & Publish Offline Road Packs
+name: Build & Publish Offline Map & Road Packs
 
 on:
   workflow_dispatch:
@@ -18,8 +18,21 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
       - name: Install PyOsmium
         run: pip install --no-cache-dir osmium
+
+      - name: Cache Planetiler Auxiliary Sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/sources
+            planetiler.jar
+          key: planetiler-v0.10.2-sources-v1
 
       - name: Download Iraq OSM PBF & Compile TSR1 Road Packs
         run: |
@@ -44,20 +57,43 @@ jobs:
           python3 scripts/build_road_packs.py --pbf iraq-latest.osm.pbf --out-dir dist
           ls -lh dist/*.tsr
 
-      - name: Publish Road Packs to GitHub Release (road-packs)
+      - name: Compile OpenMapTiles PMTiles Vector Map Packs (Planetiler)
+        run: |
+          if [ ! -f planetiler.jar ]; then
+            curl -fsSL --retry 3 --retry-delay 5 -o planetiler.jar \
+              "https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar"
+          fi
+          java -Xmx4g -jar planetiler.jar \
+            --osm-path=iraq-latest.osm.pbf \
+            --download \
+            --bounds=42.35,34.45,46.35,37.38 \
+            --maxzoom=14 \
+            --output=dist/pack_kurdistan_north.pmtiles \
+            --force
+          java -Xmx4g -jar planetiler.jar \
+            --osm-path=iraq-latest.osm.pbf \
+            --download \
+            --bounds=38.75,29.05,48.65,34.45 \
+            --maxzoom=12 \
+            --output=dist/pack_iraq_south.pmtiles \
+            --force
+          ls -lh dist/*.pmtiles
+
+      - name: Publish Map & Road Packs to GitHub Release (road-packs)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ASSETS=(
+            dist/pack_kurdistan_north.tsr
+            dist/pack_iraq_south.tsr
+            dist/pack_kurdistan_north.pmtiles
+            dist/pack_iraq_south.pmtiles
+          )
           if gh release view road-packs >/dev/null 2>&1; then
-            gh release upload road-packs \
-              dist/pack_kurdistan_north.tsr \
-              dist/pack_iraq_south.tsr \
-              --clobber
+            gh release upload road-packs "${ASSETS[@]}" --clobber
           else
-            gh release create road-packs \
-              dist/pack_kurdistan_north.tsr \
-              dist/pack_iraq_south.tsr \
-              --title "Offline Road Graph Packs" \
-              --notes "Pre-built TSR1 offline routing graphs compiled weekly from Geofabrik Iraq OSM data." \
+            gh release create road-packs "${ASSETS[@]}" \
+              --title "Offline Map & Road Packs" \
+              --notes "Pre-built PMTiles vector map archives and TSR1 offline routing graphs compiled weekly from Geofabrik Iraq OSM data." \
               --latest=false
           fi

@@ -294,11 +294,16 @@ class MainActivity : AppCompatActivity() {
         val installedVer = getInstalledVersionName()
         val appUserAgent = "TerraSync/$installedVer (https://github.com/Thamirakkurd/TerraSync)"
         RoutingEngine.userAgent = appUserAgent
+        RoutingEngine.appContext = applicationContext
 
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
         contourManager.initDiskCache(cacheDir)
         offlineMaps = OfflineMapManager.getInstance(this).apply { refreshAll() }
+        if (!DevicePrefs.isKurdishGlyphCacheMigratedV2(applicationContext)) {
+            DevicePrefs.markKurdishGlyphCacheMigratedV2(applicationContext)
+            offlineMaps.clearAmbientCache {}
+        }
         repository = TerraSyncRepository(applicationContext).apply {
             onSnapshotUpdated = { snap ->
                 if (!isFinishing && !isDestroyed) {
@@ -306,11 +311,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        RoutingEngine.appContext = applicationContext
         LocalFolderStore.preloadAsync(applicationContext) {
             repository.applyMergedFolders()
         }
-        AppExecutors.batchIoExecutor.execute { OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext) }
+        AppExecutors.batchIoExecutor.execute {
+            LocalPmTilesStore.ensureLoaded(applicationContext)
+            OfflineRoutingEngine.cleanupOrphanedTempFiles(applicationContext)
+        }
         setContentView(R.layout.activity_main)
 
         visibleStatuses = DevicePrefs.getVisibleStatuses(this).toMutableSet()

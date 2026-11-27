@@ -217,7 +217,7 @@ object MapCartography {
     fun resolveFeatureDisplayName(props: com.google.gson.JsonObject, lang: MapLabelLanguage): String? {
         fun pick(vararg keys: String): String? = keys.firstNotNullOfOrNull { k ->
             if (props.has(k) && !props.get(k).isJsonNull) {
-                props.get(k).asString.trim().takeIf { it.isNotBlank() }
+                KurdishArabicShaper.unshape(props.get(k).asString).trim().takeIf { it.isNotBlank() }
             } else null
         }
         return when (lang) {

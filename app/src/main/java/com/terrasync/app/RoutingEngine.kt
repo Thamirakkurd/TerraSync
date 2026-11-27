@@ -84,8 +84,8 @@ object RoutingEngine {
 
     /**
      * Dedicated high-concurrency HTTP/2 client for MapLibre live & offline tile/glyph downloads.
-     * Matches MapLibre Native's DEFAULT_MAXIMUM_CONCURRENT_REQUESTS (20) so offline packs
-     * download at full CDN speed without competing with routing/search calls.
+     * Matches MapLibre Native's DEFAULT_MAXIMUM_CONCURRENT_REQUESTS (20) and wires
+     * [MapTileInterceptor] for local PMTiles serving, Kurdish MVT shaping, and bundled Kurdish SDF glyphs.
      */
     val mapTileOkHttpClient: OkHttpClient by lazy {
         val dispatcher = Dispatcher().apply {
@@ -105,6 +105,7 @@ object RoutingEngine {
                     .build()
                 chain.proceed(req)
             }
+            .addInterceptor(MapTileInterceptor { appContext })
             .build()
     }
 

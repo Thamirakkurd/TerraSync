@@ -13,6 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate Patched Kurdish SDF Glyph PBF (64256-64511.pbf)
+        run: |
+          pip install --no-cache-dir uharfbuzz freetype-py
+          python3 scripts/build_kurdish_glyph_pbf.py --out app/src/main/assets/fonts/64256-64511.pbf
+          ls -lh app/src/main/assets/fonts/64256-64511.pbf
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

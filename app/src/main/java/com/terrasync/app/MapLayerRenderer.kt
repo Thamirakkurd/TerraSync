@@ -99,44 +99,8 @@ class MapLayerRenderer(
             }
         }.getOrDefault(styleJson)
 
-        private fun isArabicTransparentMark(c: Char): Boolean {
-            val cp = c.code
-            return (cp in 0x064B..0x065F) || cp == 0x0670
-        }
-
-        private fun isArabicDualJoining(c: Char): Boolean {
-            val cp = c.code
-            return cp == 0x0626 || cp == 0x0628 || (cp in 0x062A..0x062E) ||
-                (cp in 0x0633..0x063A) || (cp in 0x0640..0x0647) ||
-                (cp in 0x0649..0x064A) || cp == 0x067E || cp == 0x0686 ||
-                cp == 0x06A4 || cp == 0x06A9 || cp == 0x06AF || cp == 0x06B5 ||
-                cp == 0x06BE || cp == 0x06CC || cp == 0x06CE || cp == 0x200D
-        }
-
-        /**
-         * Workaround for MapLibre Native's vendored ICU u_shapeArabic (which only maps 0x0622..0x06D3
-         * and leaves Kurdish AE U+06D5 'ە' non-joining): converts 'ە' to Arabic Presentation Form
-         * U+FEEA (right-joining final) after dual-joining letters and U+FEE9 (isolated) otherwise
-         * so Kurdish bookmark labels join cleanly across 'ە' while keeping RTL order intact.
-         */
-        internal fun shapeKurdishAeForMapLibre(text: String): String {
-            if (!text.contains('\u06D5')) return text
-            val sb = StringBuilder(text.length)
-            for (i in text.indices) {
-                val ch = text[i]
-                if (ch == '\u06D5') {
-                    var prevIdx = i - 1
-                    while (prevIdx >= 0 && isArabicTransparentMark(text[prevIdx])) {
-                        prevIdx--
-                    }
-                    val joinsRight = prevIdx >= 0 && isArabicDualJoining(text[prevIdx])
-                    sb.append(if (joinsRight) '\uFEEA' else '\uFEE9')
-                } else {
-                    sb.append(ch)
-                }
-            }
-            return sb.toString()
-        }
+        internal fun shapeKurdishAeForMapLibre(text: String): String =
+            KurdishArabicShaper.shape(text)
 
         internal const val STYLE_SATELLITE = """
         {

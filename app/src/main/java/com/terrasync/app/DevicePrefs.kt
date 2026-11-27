@@ -483,4 +483,11 @@ object DevicePrefs {
         prefs(ctx).edit().remove(KEY_WORK_HOURS_PRESETS).apply()
         return DEFAULT_WORK_HOUR_PRESETS
     }
+
+    fun isKurdishGlyphCacheMigratedV2(ctx: Context): Boolean =
+        prefs(ctx).getBoolean("kurdish_glyph_cache_migrated_v2", false)
+
+    fun markKurdishGlyphCacheMigratedV2(ctx: Context) {
+        prefs(ctx).edit().putBoolean("kurdish_glyph_cache_migrated_v2", true).apply()
+    }
 }

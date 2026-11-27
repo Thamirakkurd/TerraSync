@@ -1368,9 +1368,14 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
                         st.mapError != null && !st.isDownloaded ->
                             Triple("Map Tiles: ${st.mapError}", p.red, true)
                         st.isDownloading -> {
-                            val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
-                            val sizePart = if (st.sizeBytes > 0L) " • $sizeStr" else ""
-                            Triple("Map Tiles: ${AppStrings.downloading(this@buildSettingsSubPage)} ${st.progressPercent}%$countPart$sizePart", p.accentPrimary, true)
+                            if (st.requiredResources > 0) {
+                                val countPart = " (${st.completedResources}/${st.requiredResources})"
+                                val sizePart = if (st.sizeBytes > 0L) " • $sizeStr" else ""
+                                Triple("Map Tiles: ${AppStrings.downloading(this@buildSettingsSubPage)} ${st.progressPercent}%$countPart$sizePart", p.accentPrimary, true)
+                            } else {
+                                val detail = st.statusText.ifBlank { "${AppStrings.downloading(this@buildSettingsSubPage)} ${st.progressPercent}%" }
+                                Triple("Map Tiles: $detail", p.accentPrimary, true)
+                            }
                         }
                         hasPartialTiles -> {
                             val countPart = if (st.requiredResources > 0) " (${st.completedResources}/${st.requiredResources})" else ""
@@ -1410,8 +1415,10 @@ internal fun MainActivity.buildSettingsSubPage(section: SettingsSection): View {
                     progressBar.progressTintList = ColorStateList.valueOf(activeTint)
                     progressBar.indeterminateTintList = ColorStateList.valueOf(activeTint)
                     if (st.isDownloading) {
-                        progressBar.isIndeterminate = st.requiredResources <= 0L
-                        progressBar.setProgress(st.progressPercent, !UiAnimations.isReducedMotion(this@buildSettingsSubPage))
+                        progressBar.isIndeterminate = st.requiredResources <= 0L && st.progressPercent <= 0
+                        if (st.progressPercent > 0 || st.requiredResources > 0L) {
+                            progressBar.setProgress(st.progressPercent, !UiAnimations.isReducedMotion(this@buildSettingsSubPage))
+                        }
                     } else if (st.isRoadDownloading) {
                         progressBar.isIndeterminate = st.roadProgressPercent <= 0
                         if (st.roadProgressPercent > 0) {
