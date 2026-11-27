@@ -485,9 +485,9 @@ object DevicePrefs {
     }
 
     fun isKurdishGlyphCacheMigratedV2(ctx: Context): Boolean =
-        prefs(ctx).getBoolean("kurdish_glyph_cache_migrated_v2", false)
+        prefs(ctx).getBoolean("kurdish_glyph_cache_migrated_v3", false)
 
     fun markKurdishGlyphCacheMigratedV2(ctx: Context) {
-        prefs(ctx).edit().putBoolean("kurdish_glyph_cache_migrated_v2", true).apply()
+        prefs(ctx).edit().putBoolean("kurdish_glyph_cache_migrated_v3", true).apply()
     }
 }

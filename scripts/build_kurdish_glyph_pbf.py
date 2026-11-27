@@ -294,10 +294,15 @@ def shape_cluster_glyphs(
     buf.direction = "rtl"
     buf.script = "Arab"
     buf.language = "ckb"
+    if hasattr(hb, "BufferFlags") and hasattr(hb.BufferFlags, "REMOVE_DEFAULT_IGNORABLES"):
+        buf.flags = hb.BufferFlags.REMOVE_DEFAULT_IGNORABLES
     hb.shape(hb_font, buf)
+    zwj_gid = hb_font.get_nominal_glyph(0x200D)
     out: List[Tuple[int, int, int, int]] = []
     for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
         if info.cluster == target_cluster:
+            if zwj_gid is not None and info.codepoint == zwj_gid:
+                continue
             out.append((info.codepoint, pos.x_advance, pos.x_offset, pos.y_offset))
     if not out:
         raise RuntimeError(f"Could not find cluster {target_cluster} in shaped output for {text!r}")
