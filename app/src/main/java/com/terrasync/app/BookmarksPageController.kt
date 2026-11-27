@@ -715,7 +715,7 @@ class BookmarksPageController(
                                         title = "Leave Folder (This Phone)",
                                         subtitle = if (isPinned) "Unpin folder first to leave" else null,
                                         iconRes = R.drawable.ic_close,
-                                        destructive = true
+                                        destructive = false
                                     ) {
                                         if (isPinned) {
                                             Toast.makeText(activity, "Folder is pinned. Unpin it first to leave.", Toast.LENGTH_LONG).show()

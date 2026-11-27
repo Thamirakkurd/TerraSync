@@ -147,8 +147,7 @@ class BookmarkSearchAdapter(
                     setOnClickListener { onQuickFilter?.invoke(actionKey) }
                 }
                 chipRow.addView(makeChip(AppStrings.pending(ctx), "pending", palette.amber, 6))
-                chipRow.addView(makeChip(AppStrings.issue(ctx), "issue", palette.red, 6))
-                chipRow.addView(makeChip(AppStrings.nearestPending(ctx), "nearest", palette.accentPrimary, 0))
+                chipRow.addView(makeChip(AppStrings.issue(ctx), "issue", palette.red, 0))
                 card.addView(chipRow)
                 SimpleVH(card)
             }

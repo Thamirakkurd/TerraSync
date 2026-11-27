@@ -185,7 +185,7 @@ class PinCardSheetController(
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = dp(2)
-                bottomMargin = dp(8)
+                bottomMargin = dp(10)
             }
         }
         val pinBadge = DesignSystem.createHeaderBadge(
@@ -215,6 +215,13 @@ class PinCardSheetController(
         }
         titleCol.addView(TextView(activity).apply {
             text = pin.name
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+            setOnLongClickListener { v ->
+                UiAnimations.hapticTick(v)
+                copyToClipboard("Pin Name", pin.name)
+                true
+            }
             textSize = 19.5f
             letterSpacing = -0.01f
             setLineSpacing(0f, 1.12f)
@@ -291,6 +298,8 @@ class PinCardSheetController(
         coordActionRow.addView(TextView(activity).apply {
             text = "${"%.6f".format(Locale.US, pin.lat)}, ${"%.6f".format(Locale.US, pin.lng)}"
             textSize = 13f
+            textDirection = View.TEXT_DIRECTION_LTR
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_START
             setTextColor(txtSub)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -576,13 +585,20 @@ class PinCardSheetController(
             })
             sheetContent.addView(TextView(activity).apply {
                 text = pin.description
+                textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                setOnLongClickListener { v ->
+                    UiAnimations.hapticTick(v)
+                    copyToClipboard("Description", pin.description)
+                    true
+                }
                 textSize = 14f
                 setLineSpacing(dp(3).toFloat(), 1.05f)
                 setTextColor(p.textBody)
                 setPadding(dp(14), dp(12), dp(14), dp(12))
                 background = GradientDrawable().apply {
                     setColor(cardTint)
-                    cornerRadius = dp(14).toFloat()
+                    cornerRadius = dp(DesignSystem.RADIUS_TILE_DP).toFloat()
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -637,7 +653,7 @@ class PinCardSheetController(
                 setPadding(dp(6), 0, dp(6), 0)
                 setTextColor(txtPrimary)
                 setBackgroundColor(chipBg)
-                cornerRadius = dp(10)
+                cornerRadius = dp(DesignSystem.RADIUS_CHIP_DP)
                 layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
                     if (idx < 2) marginEnd = dp(8)
                 }

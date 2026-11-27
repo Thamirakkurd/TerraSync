@@ -247,6 +247,37 @@ class MapLayerRenderer(
             )
         }
 
+        if (style.getSource(PULSE_SOURCE) == null) {
+            style.addSource(GeoJsonSource(PULSE_SOURCE))
+            style.addLayer(
+                CircleLayer(PULSE_LAYER, PULSE_SOURCE).withProperties(
+                    PropertyFactory.circleColor(Expression.get("color")),
+                    PropertyFactory.circleStrokeColor(Expression.get("color")),
+                    PropertyFactory.circleStrokeWidth(2f),
+                    PropertyFactory.circleStrokeOpacity(0f),
+                    PropertyFactory.circleRadius(8f),
+                    PropertyFactory.circleOpacity(0f)
+                )
+            )
+        }
+
+        attachPinsSourceAndLayers(style)
+
+        if (style.getSource(SELECTED_SOURCE) == null) {
+            style.addSource(GeoJsonSource(SELECTED_SOURCE))
+            val haloLayer = CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
+                PropertyFactory.circleColor("#5AA8E8"),
+                PropertyFactory.circleOpacity(0.90f),
+                PropertyFactory.circleRadius(15.5f),
+                PropertyFactory.circleStrokeWidth(0f),
+                PropertyFactory.circleStrokeOpacity(0f)
+            )
+            if (style.getLayer(PINS_LAYER) != null) {
+                style.addLayerBelow(haloLayer, PINS_LAYER)
+            } else {
+                style.addLayer(haloLayer)
+            }
+        }
         if (style.getSource(ROUTE_SOURCE) == null) {
             style.addSource(GeoJsonSource(ROUTE_SOURCE))
             style.addLayer(
@@ -298,37 +329,6 @@ class MapLayerRenderer(
             )
         }
 
-        if (style.getSource(PULSE_SOURCE) == null) {
-            style.addSource(GeoJsonSource(PULSE_SOURCE))
-            style.addLayer(
-                CircleLayer(PULSE_LAYER, PULSE_SOURCE).withProperties(
-                    PropertyFactory.circleColor(Expression.get("color")),
-                    PropertyFactory.circleStrokeColor(Expression.get("color")),
-                    PropertyFactory.circleStrokeWidth(2f),
-                    PropertyFactory.circleStrokeOpacity(0f),
-                    PropertyFactory.circleRadius(8f),
-                    PropertyFactory.circleOpacity(0f)
-                )
-            )
-        }
-
-        attachPinsSourceAndLayers(style)
-
-        if (style.getSource(SELECTED_SOURCE) == null) {
-            style.addSource(GeoJsonSource(SELECTED_SOURCE))
-            val haloLayer = CircleLayer(SELECTED_HALO_LAYER, SELECTED_SOURCE).withProperties(
-                PropertyFactory.circleColor("#5AA8E8"),
-                PropertyFactory.circleOpacity(0.90f),
-                PropertyFactory.circleRadius(15.5f),
-                PropertyFactory.circleStrokeWidth(0f),
-                PropertyFactory.circleStrokeOpacity(0f)
-            )
-            if (style.getLayer(PINS_LAYER) != null) {
-                style.addLayerBelow(haloLayer, PINS_LAYER)
-            } else {
-                style.addLayer(haloLayer)
-            }
-        }
         if (style.getSource(SELECTED_PIN_SOURCE) == null) {
             style.addSource(GeoJsonSource(SELECTED_PIN_SOURCE))
             val selectedPinLayer = SymbolLayer(SELECTED_PIN_LAYER, SELECTED_PIN_SOURCE).withProperties(
@@ -340,6 +340,8 @@ class MapLayerRenderer(
                 PropertyFactory.iconIgnorePlacement(true)
             )
             when {
+                style.getLayer(ROUTE_PILL_LAYER) != null ->
+                    style.addLayerAbove(selectedPinLayer, ROUTE_PILL_LAYER)
                 style.getLayer(PINS_CLUSTER_COUNT_LAYER) != null ->
                     style.addLayerAbove(selectedPinLayer, PINS_CLUSTER_COUNT_LAYER)
                 style.getLayer(PINS_LAYER) != null ->
