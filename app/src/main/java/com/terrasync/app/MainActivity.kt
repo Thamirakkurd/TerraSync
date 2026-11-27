@@ -299,7 +299,16 @@ class MainActivity : AppCompatActivity() {
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(RoutingEngine.mapTileOkHttpClient)
         contourManager.initDiskCache(cacheDir)
-        offlineMaps = OfflineMapManager.getInstance(this).apply { refreshAll() }
+        offlineMaps = OfflineMapManager.getInstance(this).apply {
+            refreshAll()
+            setOnMapPackInstalledListener {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed && mapStyleMode == MapStyleMode.VECTOR && ::mapRenderer.isInitialized) {
+                        loadMapStyle()
+                    }
+                }
+            }
+        }
         if (!DevicePrefs.isKurdishGlyphCacheMigratedV2(applicationContext)) {
             DevicePrefs.markKurdishGlyphCacheMigratedV2(applicationContext)
             offlineMaps.clearAmbientCache {}
@@ -2043,6 +2052,7 @@ class MainActivity : AppCompatActivity() {
         livePinListRefresh = null
         liveEditHistoryRefresh = null
         offlineMaps.setStateListener(null)
+        offlineMaps.setOnMapPackInstalledListener(null)
         hideSoftKeyboard()
         pageOverlayContainer.setBackgroundColor(currentPalette().pageBackdrop)
         val backView = builder()
@@ -2291,6 +2301,7 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onStop() {
         isActivityStarted = false
+        LocalFolderStore.flushPendingWritesAsync(applicationContext)
         mapView.onStop()
         super.onStop()
     }

@@ -117,7 +117,16 @@ class TerraSyncRepository(
     @Volatile var snapshot: FolderIndexSnapshot = FolderIndexSnapshot()
         private set
 
+    private val snapshotListeners = java.util.concurrent.CopyOnWriteArraySet<(FolderIndexSnapshot) -> Unit>()
     var onSnapshotUpdated: ((FolderIndexSnapshot) -> Unit)? = null
+
+    fun addSnapshotListener(listener: (FolderIndexSnapshot) -> Unit) {
+        snapshotListeners.add(listener)
+    }
+
+    fun removeSnapshotListener(listener: (FolderIndexSnapshot) -> Unit) {
+        snapshotListeners.remove(listener)
+    }
 
     fun applyMergedFolders(onIndexed: ((FolderIndexSnapshot) -> Unit)? = null) {
         if (onIndexed != null) {
@@ -180,6 +189,7 @@ class TerraSyncRepository(
                 }
             }
             onSnapshotUpdated?.invoke(built)
+            snapshotListeners.forEach { it.invoke(built) }
             callbacksToNotify.forEach { it.invoke(built) }
         }
 
@@ -455,6 +465,7 @@ class TerraSyncRepository(
 
     fun stop() {
         onSnapshotUpdated = null
+        snapshotListeners.clear()
         if (syncRepoDelegate.isInitialized()) {
             syncRepo.stopListening()
         }

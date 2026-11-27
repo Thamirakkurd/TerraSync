@@ -470,6 +470,7 @@ class MapToolsController(
         val mapLang = DevicePrefs.getMapLabelLanguage(activity)
         for (f in vectorFeatures) {
             val props = f.properties() ?: continue
+            if (props.has("icon") || props.has("isMajor") || props.has("bearing") || props.has("num")) continue
             val name = MapCartography.resolveFeatureDisplayName(props, mapLang)
             if (name != null) {
                 detectedTitle = name

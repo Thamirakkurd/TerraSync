@@ -135,6 +135,7 @@ class OfflineMapManager private constructor(context: Context) {
     @Volatile private var regionsLoaded = false
     @Volatile private var uiListener: (() -> Unit)? = null
     @Volatile private var serviceListener: (() -> Unit)? = null
+    @Volatile private var mapPackInstalledListener: ((String) -> Unit)? = null
 
     init {
         DevicePrefs.getPendingRoadChainPackIds(appCtx).forEach { packId ->
@@ -208,6 +209,10 @@ class OfflineMapManager private constructor(context: Context) {
 
     fun setServiceListener(listener: (() -> Unit)?) {
         serviceListener = listener
+    }
+
+    fun setOnMapPackInstalledListener(listener: ((String) -> Unit)?) {
+        mapPackInstalledListener = listener
     }
 
     private fun isPmTilesDownloading(packId: String): Boolean {
@@ -295,7 +300,7 @@ class OfflineMapManager private constructor(context: Context) {
                 mErr != null && !isMapReady -> mErr
                 isMapReady && road != null ->
                     "Map ${formatSize(mapSize)} + Roads ${formatSize(road.sizeBytes)} (fully offline)"
-                isMapReady -> "Map Ready (${formatSize(mapSize)})"
+                isMapReady -> "Map Ready (${formatSize(mapSize)} • z${pmPack!!.header.minZoom}–${pmPack.header.maxZoom})"
                 road != null -> "Roads ready (${formatSize(road.sizeBytes)}) • Map not downloaded"
                 else -> "Not downloaded (online only)"
             },
@@ -567,6 +572,7 @@ class OfflineMapManager private constructor(context: Context) {
                 if (downloadedOk && info != null) {
                     pmTilesDiskCache[pack.id] = info
                     manager.invalidateAmbientCache(null)
+                    mapPackInstalledListener?.invoke(pack.id)
                     val chainRoads = autoChainRoads[pack.id] == true
                     val hasRoad = getCachedRoadSnapshot(pack.id).region != null
                     states[pack.id] = buildIdleState(pack.id)
@@ -1002,7 +1008,9 @@ class OfflineMapManager private constructor(context: Context) {
     fun estimateAmbientCacheBytes(): Long {
         val dbBytes = listOf("mbgl-offline.db", "mbgl-offline.db-wal", "mbgl-offline.db-shm")
             .sumOf { name -> File(appCtx.filesDir, name).takeIf { it.exists() }?.length() ?: 0L }
-        val offlinePackBytes = states.values.sumOf { it.sizeBytes }
+        val offlinePackBytes = states.entries.sumOf { (id, st) ->
+            if (regionHandles.containsKey(id) && !pmTilesDiskCache.containsKey(id)) st.sizeBytes else 0L
+        }
         val ambientDbBytes = (dbBytes - offlinePackBytes).coerceAtLeast(0L)
         fun dirBytes(dir: File?): Long {
             if (dir == null || !dir.exists()) return 0L

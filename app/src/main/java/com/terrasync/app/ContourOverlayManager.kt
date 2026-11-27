@@ -297,6 +297,7 @@ class ContourOverlayManager {
         }
         val diskBytes = readDiskTile(z, x, y)
         val bytes = diskBytes ?: run {
+            if (!NetworkState.hasValidatedInternet(RoutingEngine.appContext)) return null
             val url = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/$z/$x/$y.png"
             val req = Request.Builder().url(url).build()
             runCatching {

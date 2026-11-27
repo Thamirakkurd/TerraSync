@@ -985,6 +985,38 @@ object DesignSystem {
     fun joinBidi(vararg parts: String, sep: String = " • "): String =
         parts.filter { it.isNotBlank() }.joinToString(sep) { isolateBidi(it) }
 
+    /** Reusable single-line pill MaterialButton with zero default vertical insets & snappy press. */
+    fun createCompactButton(
+        ctx: Context,
+        label: String,
+        palette: ThemePalette,
+        radiusDp: Int = RADIUS_CHIP_DP,
+        textSizeSp: Float = 13f,
+        primaryCta: Boolean = false,
+        onClick: () -> Unit
+    ): MaterialButton {
+        val d = ctx.resources.displayMetrics.density
+        return MaterialButton(ctx).apply {
+            text = label
+            textSize = textSizeSp
+            isAllCaps = false
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            insetTop = 0
+            insetBottom = 0
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding((10 * d).toInt(), 0, (10 * d).toInt(), 0)
+            cornerRadius = (radiusDp * d).toInt()
+            if (primaryCta) applyPrimaryCtaButton(this, palette) else applySecondaryTonalButton(this, palette)
+            UiAnimations.attachSnappyPress(this)
+            setOnClickListener { onClick() }
+        }
+    }
+
     fun createGroupedRowBackground(
         ctx: Context,
         palette: ThemePalette,

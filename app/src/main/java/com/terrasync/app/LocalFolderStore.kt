@@ -189,6 +189,17 @@ object LocalFolderStore {
         cachedSnapshot = null
     }
 
+    fun flushPendingWritesAsync(ctx: Context) {
+        val appCtx = ctx.applicationContext
+        ioExecutor.execute {
+            runCatching {
+                synchronized(diskLock) {
+                    dbHelper?.writableDatabase?.rawQuery("PRAGMA wal_checkpoint(PASSIVE)", null)?.use { it.moveToFirst() }
+                }
+            }
+        }
+    }
+
     internal fun flushPendingWritesForTest(ctx: Context) {
         drainPendingWritesIfNotOnIoThread()
         synchronized(diskLock) {

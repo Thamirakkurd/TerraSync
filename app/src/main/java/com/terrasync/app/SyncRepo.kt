@@ -39,9 +39,12 @@ class SyncRepo(context: Context? = null) {
 
     private val auth: FirebaseAuth? = runCatching { FirebaseAuth.getInstance() }.getOrNull()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val syncExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "terrasync-sync").apply { isDaemon = true }
+    companion object {
+        private val sharedSyncExecutor = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "terrasync-sync").apply { isDaemon = true }
+        }
     }
+    private val syncExecutor get() = sharedSyncExecutor
     private val stateLock = Any()
     private val layerRegs = mutableMapOf<String, List<ListenerRegistration>>()
     private val layerMap = mutableMapOf<String, LayerItem>()
@@ -129,15 +132,7 @@ class SyncRepo(context: Context? = null) {
         }
     }
 
-    private fun isOnline(): Boolean {
-        val ctx = appCtx ?: RoutingEngine.appContext ?: return true
-        return runCatching {
-            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val net = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(net) ?: return false
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        }.getOrDefault(true)
-    }
+    private fun isOnline(): Boolean = NetworkState.hasValidatedInternet(appCtx ?: RoutingEngine.appContext)
 
     private data class BatchWriteOp(
         val ref: DocumentReference,

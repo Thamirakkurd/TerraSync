@@ -130,7 +130,19 @@ object LocalPmTilesStore {
     }
 
     private val openArchives = ConcurrentHashMap<String, OpenArchive>()
+    @Volatile private var sortedArchives: List<OpenArchive> = emptyList()
     @Volatile private var loadedForDir: String? = null
+
+    private fun rebuildSortedArchives() {
+        sortedArchives = openArchives.values.sortedBy {
+            (it.header.maxLat - it.header.minLat) * (it.header.maxLng - it.header.minLng)
+        }
+    }
+
+    fun getInstalledMaxZoom(ctx: Context?): Int? {
+        if (ctx != null && loadedForDir == null) ensureLoaded(ctx)
+        return sortedArchives.maxOfOrNull { it.header.maxZoom }
+    }
 
     fun dir(ctx: Context): File = File(ctx.filesDir, "offline_maps").apply { mkdirs() }
 
@@ -175,6 +187,7 @@ object LocalPmTilesStore {
                 openArchives.remove(oldId)?.closeQuietly()
             }
         }
+        rebuildSortedArchives()
         loadedForDir = base.absolutePath
     }
 
@@ -187,6 +200,7 @@ object LocalPmTilesStore {
         }
         val opened = openPackInternal(packId, f) ?: return null
         openArchives.put(packId, opened)?.closeQuietly()
+        rebuildSortedArchives()
         loadedForDir = dir(ctx).absolutePath
         return PackInfo(packId, f.name, f.length(), opened.header)
     }
@@ -194,6 +208,7 @@ object LocalPmTilesStore {
     @Synchronized
     fun removePack(ctx: Context, packId: String): Boolean {
         openArchives.remove(packId)?.closeQuietly()
+        rebuildSortedArchives()
         val f = packFile(ctx, packId)
         File(dir(ctx), "${f.name}.part").delete()
         return f.exists() && f.delete()
@@ -258,6 +273,8 @@ object LocalPmTilesStore {
         val maxLng = bb.getInt(110) / 1e7
         val maxLat = bb.getInt(114) / 1e7
         if (rootDirLength <= 0L || tileDataOffset < HEADER_SIZE) return null
+        if (internalCompression != COMPRESSION_NONE && internalCompression != COMPRESSION_GZIP) return null
+        if (tileCompression != COMPRESSION_NONE && tileCompression != COMPRESSION_GZIP) return null
         return Header(
             rootDirOffset = rootDirOffset,
             rootDirLength = rootDirLength,
@@ -420,10 +437,8 @@ object LocalPmTilesStore {
         val tileId = zxyToTileId(z, x, y)
         var strictlyInsideAny = false
 
-        // Prefer smaller (higher-detail) packs first when bboxes overlap
-        val archives = openArchives.values.sortedBy {
-            (it.header.maxLat - it.header.minLat) * (it.header.maxLng - it.header.minLng)
-        }
+        // Prefer smaller (higher-detail) packs first (pre-sorted on pack load/change)
+        val archives = sortedArchives
         for (arc in archives) {
             val h = arc.header
             if (z < h.minZoom || z > h.maxZoom) continue

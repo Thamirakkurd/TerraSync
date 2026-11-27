@@ -109,15 +109,7 @@ object RoutingEngine {
             .build()
     }
 
-    private fun isNetworkAvailable(ctx: Context?): Boolean {
-        if (ctx == null) return true
-        return runCatching {
-            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val net = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(net) ?: return false
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        }.getOrDefault(true)
-    }
+    private fun isNetworkAvailable(ctx: Context?): Boolean = NetworkState.hasValidatedInternet(ctx)
 
     fun fetchRoute(
         startLat: Double,
