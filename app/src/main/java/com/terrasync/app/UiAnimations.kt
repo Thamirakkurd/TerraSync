@@ -550,8 +550,106 @@ object UiAnimations {
             .start()
     }
 
+    /**
+     * Smooth IME (keyboard) glide for bottom-anchored content. Applies interpolated bottom padding only
+     * during the ~250ms keyboard animation (never during map pan/zoom). No-op under Reduced Motion.
+     */
+    fun attachImePaddingGlide(
+        target: View,
+        navBottomProvider: () -> Int,
+        restingBottomProvider: () -> Int,
+        applyBottom: (Int) -> Unit
+    ) {
+        var imeAnim: androidx.core.view.WindowInsetsAnimationCompat? = null
+        var startBottom = 0
+        var endBottom = 0
+        var lastApplied = -1
+        androidx.core.view.ViewCompat.setWindowInsetsAnimationCallback(
+            target,
+            object : androidx.core.view.WindowInsetsAnimationCompat.Callback(androidx.core.view.WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP) {
+                override fun onPrepare(animation: androidx.core.view.WindowInsetsAnimationCompat) {
+                    if ((animation.typeMask and androidx.core.view.WindowInsetsCompat.Type.ime()) != 0 &&
+                        !isReducedMotion(target.context)
+                    ) {
+                        imeAnim = animation
+                        startBottom = restingBottomProvider()
+                        endBottom = startBottom
+                        lastApplied = -1
+                    }
+                }
+
+                override fun onStart(
+                    animation: androidx.core.view.WindowInsetsAnimationCompat,
+                    bounds: androidx.core.view.WindowInsetsAnimationCompat.BoundsCompat
+                ): androidx.core.view.WindowInsetsAnimationCompat.BoundsCompat {
+                    if (animation === imeAnim) {
+                        endBottom = restingBottomProvider()
+                        if (endBottom == startBottom) {
+                            imeAnim = null
+                        } else {
+                            lastApplied = startBottom
+                            applyBottom(startBottom)
+                        }
+                    }
+                    return bounds
+                }
+
+                override fun onProgress(
+                    insets: androidx.core.view.WindowInsetsCompat,
+                    runningAnimations: List<androidx.core.view.WindowInsetsAnimationCompat>
+                ): androidx.core.view.WindowInsetsCompat {
+                    val anim = imeAnim ?: return insets
+                    if (runningAnimations.none { it === anim }) return insets
+                    val imeBottom = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
+                    val cur = maxOf(navBottomProvider(), imeBottom)
+                        .coerceIn(minOf(startBottom, endBottom), maxOf(startBottom, endBottom))
+                    if (cur != lastApplied) {
+                        lastApplied = cur
+                        applyBottom(cur)
+                    }
+                    return insets
+                }
+
+                override fun onEnd(animation: androidx.core.view.WindowInsetsAnimationCompat) {
+                    if (animation === imeAnim) {
+                        imeAnim = null
+                        lastApplied = -1
+                        applyBottom(restingBottomProvider())
+                    }
+                }
+            }
+        )
+    }
+
+    /** Android 14+ predictive-back preview: subtle horizontal shift + scale on the full-screen overlay page. */
+    fun applyPredictiveBackProgress(view: View, progress: Float, fromLeftEdge: Boolean) {
+        val eased = android.view.animation.DecelerateInterpolator().getInterpolation(progress.coerceIn(0f, 1f))
+        val maxShift = minOf(view.width * 0.06f, 28f * view.resources.displayMetrics.density)
+        view.translationX = (if (fromLeftEdge) 1f else -1f) * maxShift * eased
+        val scale = 1f - 0.05f * eased
+        view.scaleX = scale
+        view.scaleY = scale
+    }
+
+    fun cancelPredictiveBack(view: View) {
+        view.animate()
+            .translationX(0f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(160L)
+            .setInterpolator(EMPHASIZED_DECELERATE)
+            .start()
+    }
+
+    fun resetPredictiveBack(view: View) {
+        view.translationX = 0f
+        view.scaleX = 1f
+        view.scaleY = 1f
+    }
+
     fun animatePageEnter(container: View) {
         container.animate().cancel()
+        resetPredictiveBack(container)
         container.visibility = View.VISIBLE
         if (isReducedMotion(container.context)) {
             container.alpha = 1f
@@ -576,6 +674,7 @@ object UiAnimations {
             container.visibility = View.GONE
             container.alpha = 1f
             container.translationY = 0f
+            resetPredictiveBack(container)
             onEnd()
             return
         }
@@ -589,6 +688,7 @@ object UiAnimations {
                 container.visibility = View.GONE
                 container.alpha = 1f
                 container.translationY = 0f
+                resetPredictiveBack(container)
                 onEnd()
             }
             .start()

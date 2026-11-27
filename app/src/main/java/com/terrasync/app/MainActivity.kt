@@ -27,6 +27,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -391,12 +392,8 @@ class MainActivity : AppCompatActivity() {
             if (::sheetBehavior.isInitialized) {
                 sheetBehavior.maxHeight = maxSheetH
             }
-            val sheetBottomInset = maxOf(navBarInsetBottom, imeInsetBottom)
-            sheetContent.setPadding(dp(16), 0, dp(16), sheetBottomInset + dp(20))
-            val pageBottom = maxOf(navBarInsetBottom, imeInsetBottom)
-            for (i in 0 until pageOverlayContainer.childCount) {
-                pageOverlayContainer.getChildAt(i).setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, pageBottom)
-            }
+            applySheetBottomInset(maxOf(navBarInsetBottom, imeInsetBottom))
+            applyPageBottomInset(maxOf(navBarInsetBottom, imeInsetBottom))
             topCluster.requestLayout()
             navBanner.requestLayout()
             bottomDock.requestLayout()
@@ -415,6 +412,19 @@ class MainActivity : AppCompatActivity() {
             }
             insets
         }
+
+        UiAnimations.attachImePaddingGlide(
+            inScreenSheet,
+            navBottomProvider = { navBarInsetBottom },
+            restingBottomProvider = { maxOf(navBarInsetBottom, imeInsetBottom) },
+            applyBottom = ::applySheetBottomInset
+        )
+        UiAnimations.attachImePaddingGlide(
+            pageOverlayContainer,
+            navBottomProvider = { navBarInsetBottom },
+            restingBottomProvider = { maxOf(navBarInsetBottom, imeInsetBottom) },
+            applyBottom = ::applyPageBottomInset
+        )
 
         sheetBehavior = BottomSheetBehavior.from(inScreenSheet).apply {
             state = BottomSheetBehavior.STATE_HIDDEN
@@ -1591,11 +1601,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applySheetBottomInset(bottom: Int) {
+        sheetContent.setPadding(dp(16), 0, dp(16), bottom + dp(20))
+    }
+
+    private fun applyPageBottomInset(bottom: Int) {
+        for (i in 0 until pageOverlayContainer.childCount) {
+            pageOverlayContainer.getChildAt(i).setPadding(sideInsetLeft, statusBarInsetTop, sideInsetRight, bottom)
+        }
+    }
+
     private fun setupBackNavigation() {
         val cb = object : OnBackPressedCallback(true) {
+            private var predictiveBackActive = false
+
+            override fun handleOnBackStarted(backEvent: BackEventCompat) {
+                predictiveBackActive = pageOverlayContainer.visibility == View.VISIBLE &&
+                    !UiAnimations.isReducedMotion(this@MainActivity)
+            }
+
+            override fun handleOnBackProgressed(backEvent: BackEventCompat) {
+                if (predictiveBackActive) {
+                    UiAnimations.applyPredictiveBackProgress(
+                        pageOverlayContainer,
+                        backEvent.progress,
+                        backEvent.swipeEdge == BackEventCompat.EDGE_LEFT
+                    )
+                }
+            }
+
+            override fun handleOnBackCancelled() {
+                if (predictiveBackActive) {
+                    predictiveBackActive = false
+                    UiAnimations.cancelPredictiveBack(pageOverlayContainer)
+                }
+            }
+
             override fun handleOnBackPressed() {
+                predictiveBackActive = false
                 if (pageOverlayContainer.visibility == View.VISIBLE) {
                     if (pageBackStack.isNotEmpty()) {
+                        UiAnimations.resetPredictiveBack(pageOverlayContainer)
                         val back = pageBackStack.removeAt(pageBackStack.lastIndex)
                         back()
                     } else {

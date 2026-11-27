@@ -1,7 +1,7 @@
 # AGENTS.md — TerraSync Contributor & Agent Guide
 
 ## 1. Architecture Overview
-- **Single-Activity + Extracted Controllers:** `MainActivity.kt` is the slim host (~2,334 lines) owning Activity lifecycle, view binding, inset/chrome theming, ActivityResultLaunchers, and top-level navigation between map chrome and full-screen overlays.
+- **Single-Activity + Extracted Controllers:** `MainActivity.kt` is the slim host (~2,380 lines) owning Activity lifecycle, view binding, inset/chrome theming, ActivityResultLaunchers, and top-level navigation between map chrome and full-screen overlays.
 - **UI-Agnostic State (`MapViewModel.kt`):** Holds domain & interaction state (`FolderIndexSnapshot`, `visibleStatuses`, `hideSentPins`, selection/stack state, `GeoPoint` markers, ruler/lasso/navigation/search state) with **zero** Android `Context`, `View`, or MapLibre `Style` imports.
 - **Unified Data Layer (`TerraSyncRepository.kt`):** Merges local SQLite WAL folders (`LocalFolderStore`) and Firestore cloud folders (`SyncRepo`) into immutable `FolderIndexSnapshot` instances, builds spatial stack buckets off the UI thread (`AppExecutors.uiQueryExecutor` when `>= 200` pins), and routes unified CRUD mutations (`savePinStatus`, `savePinsStatusBatch`, `savePinText`, `deletePinHistoryEntry`, `restorePinStatusSnapshot`, `resetPinStatus`, `deletePin`, `deletePins`, `addManualPin`, `renameLayer`, `deleteLocalLayer`).
 - **Focused Feature Controllers (explicit constructor injection + `destroy()` cleanup):**
@@ -41,4 +41,5 @@
 ## 5. Theme, Localization & Hardware Safety Conventions
 - Preserve Light/Dark parity via `DesignSystem.palette(isDark)` and RTL/BiDi safety (`DesignSystem.isolateBidi` / `joinBidi`, English/Kurdish/Arabic in `AppStrings.kt`).
 - Keep `DevicePrefs` backward-compatible when upgrading in place.
+- **v3.13.0 Conventions:** Night `actionDark` is emerald (`#238E5E`) with white `onActionDark`; the Undo banner uses `StatusUndoController.bannerFillColor(isDark)` (never `actionDark`). Map route layers sit above pin layers and below the selected pin/coord/ruler/user puck (`MapLayerRenderer.attachOverlayLayers`). Keyboard glide uses `UiAnimations.attachImePaddingGlide` and Predictive Back uses `UiAnimations.applyPredictiveBackProgress`; both respect `UiAnimations.isReducedMotion`. `TempCacheCleaner` purges `terrarium_dem`/`exports` contents but keeps the directories. Directional drawables (e.g. `ic_back`) must set `android:autoMirrored="true"`.
 - Never alter screen resolution/density (`wm size/density`) or commit `.test_runs/` artifacts.
